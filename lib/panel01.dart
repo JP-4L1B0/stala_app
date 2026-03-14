@@ -296,63 +296,147 @@ class _PanelMidContent extends StatelessWidget {
   }
 }
 
+
+/// ============================================================
+/// MID SECTION CONTENT
+/// ============================================================
+/// This file contains:
+/// - Home tab content
+/// - Search tab content
+/// - Settings tab content
+///
+/// Notes:
+/// - The placeholder list in Home is TEMPORARY only.
+/// - Once the save/load section of the application is functional,
+///   replace `_temporaryPlaceholderItems` with real saved file data.
+/// ============================================================
+
+/// ------------------------------------------------------------
 /// HOME TAB CONTENT
+/// ------------------------------------------------------------
+/// Displays recently accessed or recently added files.
 ///
-/// Refactored based on the new reference image.
+/// Current temporary behavior:
+/// - Uses 10 placeholder entries
+/// - Shows only 5 initially
+/// - "View All" expands the full list
 ///
-/// Structure per item:
-/// - Large left title: Saved #
-/// - Right details column:
-///   - Title
-///   - Date created
-///   - Modified
-class _HomeTabView extends StatelessWidget {
+/// Future behavior:
+/// - Replace placeholder list with actual saved transposed music sheets
+class _HomeTabView extends StatefulWidget {
   const _HomeTabView({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final items = [
-      const SavedItemData(
-        indexLabel: 'Saved #1',
-        fileTitle: 'Unnamed_01',
-        dateCreated: 'dd/mm/yyyy',
-        modifiedText: '## (min or h) ago',
-      ),
-      const SavedItemData(
-        indexLabel: 'Saved #2',
-        fileTitle: 'Session_Archive',
-        dateCreated: 'dd/mm/yyyy',
-        modifiedText: '## (min or h) ago',
-      ),
-      const SavedItemData(
-        indexLabel: 'Saved #3',
-        fileTitle: 'Exported_Tab_01',
-        dateCreated: 'dd/mm/yyyy',
-        modifiedText: '## (min or h) ago',
-      ),
-      const SavedItemData(
-        indexLabel: 'Saved #4',
-        fileTitle: 'Draft_Output',
-        dateCreated: 'dd/mm/yyyy',
-        modifiedText: '## (min or h) ago',
-      ),
-    ];
+  State<_HomeTabView> createState() => _HomeTabViewState();
+}
 
+class _HomeTabViewState extends State<_HomeTabView> {
+  bool _showAll = false;
+
+  /// TEMPORARY PLACEHOLDER DATA
+  ///
+  /// Remove this once the actual save system is ready.
+  late final List<SavedItemData> _temporaryPlaceholderItems = List.generate(
+    10,
+        (index) => SavedItemData(
+      fileTitle: 'Unnamed_${(index + 1).toString().padLeft(2, '0')}',
+      dateCreated: _generatePlaceholderDate(index),
+      modifiedText: _generateModifiedText(index),
+    ),
+  );
+
+  List<SavedItemData> get _visibleItems {
+    return _showAll
+        ? _temporaryPlaceholderItems
+        : _temporaryPlaceholderItems.take(5).toList();
+  }
+
+  static String _generatePlaceholderDate(int index) {
+    final now = DateTime.now().subtract(Duration(days: index));
+    final day = now.day.toString().padLeft(2, '0');
+    final month = now.month.toString().padLeft(2, '0');
+    final year = now.year.toString();
+    return '$day/$month/$year';
+  }
+
+  static String _generateModifiedText(int index) {
+    if (index < 5) {
+      return '${(index + 1) * 7} min ago';
+    }
+    return '${index - 3} h ago';
+  }
+
+  void _handleRename(int index) {
+    final controller = TextEditingController(
+      text: _temporaryPlaceholderItems[index].fileTitle,
+    );
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Rename File'),
+          content: TextField(
+            controller: controller,
+            decoration: const InputDecoration(
+              hintText: 'Enter new title',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final updatedTitle = controller.text.trim();
+
+                if (updatedTitle.isNotEmpty) {
+                  setState(() {
+                    _temporaryPlaceholderItems[index] =
+                        _temporaryPlaceholderItems[index].copyWith(
+                          fileTitle: updatedTitle,
+                        );
+                  });
+                }
+
+                Navigator.pop(context);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Column(
       key: const ValueKey('home-content'),
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(
+        _SectionHeader(
           title: 'Recent',
-          actionText: 'View All',
+          actionText: _showAll ? 'Show Less' : 'View All',
+          onActionTap: () {
+            setState(() {
+              _showAll = !_showAll;
+            });
+          },
         ),
         const SizedBox(height: 14),
         Expanded(
           child: ListView.separated(
             physics: const BouncingScrollPhysics(),
-            itemCount: items.length,
+            itemCount: _visibleItems.length,
             separatorBuilder: (_, __) => const SizedBox(height: 10),
-            itemBuilder: (context, index) => SavedListCard(data: items[index]),
+            itemBuilder: (context, index) {
+              return SavedListCard(
+                data: _visibleItems[index],
+                onEdit: () => _handleRename(index),
+              );
+            },
           ),
         ),
       ],
@@ -360,28 +444,41 @@ class _HomeTabView extends StatelessWidget {
   }
 }
 
-/// Data model for the refactored home list cards.
+/// Data model for saved/transposed sheet items.
+/// Future-ready for local or cloud-based real saved data.
 class SavedItemData {
-  final String indexLabel;
   final String fileTitle;
   final String dateCreated;
   final String modifiedText;
 
   const SavedItemData({
-    required this.indexLabel,
     required this.fileTitle,
     required this.dateCreated,
     required this.modifiedText,
   });
+
+  SavedItemData copyWith({
+    String? fileTitle,
+    String? dateCreated,
+    String? modifiedText,
+  }) {
+    return SavedItemData(
+      fileTitle: fileTitle ?? this.fileTitle,
+      dateCreated: dateCreated ?? this.dateCreated,
+      modifiedText: modifiedText ?? this.modifiedText,
+    );
+  }
 }
 
-/// Card widget based on the new user-provided structure image.
+/// Card widget for each saved file item in Home tab.
 class SavedListCard extends StatelessWidget {
   final SavedItemData data;
+  final VoidCallback onEdit;
 
   const SavedListCard({
     super.key,
     required this.data,
+    required this.onEdit,
   });
 
   @override
@@ -390,45 +487,75 @@ class SavedListCard extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
       decoration: BoxDecoration(
         color: const Color(0xFF566487),
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            flex: 4,
-            child: Text(
-              data.indexLabel,
-              style: const TextStyle(
+          /// Large left icon/text
+          Container(
+            width: 90,
+            alignment: Alignment.center,
+            child: const Text(
+              'Saved',
+              textAlign: TextAlign.center,
+              style: TextStyle(
                 color: Colors.white,
-                fontSize: 34,
-                fontWeight: FontWeight.w400,
-                letterSpacing: 1.2,
+                fontSize: 28,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 1,
               ),
             ),
           ),
-          const SizedBox(width: 14),
+          const SizedBox(width: 16),
+
+          /// Right details column
           Expanded(
-            flex: 5,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                RichText(
-                  text: TextSpan(
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 15,
-                      height: 1.4,
-                    ),
-                    children: [
-                      const TextSpan(text: 'Title: '),
-                      TextSpan(
-                        text: data.fileTitle,
-                        style: const TextStyle(fontWeight: FontWeight.w500),
+                Row(
+                  children: [
+                    Expanded(
+                      child: RichText(
+                        text: TextSpan(
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            height: 1.4,
+                          ),
+                          children: [
+                            const TextSpan(text: 'Title: '),
+                            TextSpan(
+                              text: data.fileTitle,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                      const TextSpan(text: '   -Edit-', style: TextStyle(fontStyle: FontStyle.italic)),
-                    ],
-                  ),
+                    ),
+                    TextButton(
+                      onPressed: onEdit,
+                      style: TextButton.styleFrom(
+                        minimumSize: Size.zero,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text(
+                        'Edit',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontStyle: FontStyle.italic,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 6),
                 Text(
@@ -457,6 +584,9 @@ class SavedListCard extends StatelessWidget {
   }
 }
 
+/// ------------------------------------------------------------
+/// SEARCH TAB CONTENT
+/// ------------------------------------------------------------
 class _SearchTabView extends StatelessWidget {
   const _SearchTabView({super.key});
 
@@ -479,7 +609,7 @@ class _SearchTabView extends StatelessWidget {
         SizedBox(height: 10),
         _InfoCard(
           title: 'Cloud Backup',
-          subtitle: 'Open synced albums, documents, and online backups.',
+          subtitle: 'Open synced documents and online backups.',
           icon: Icons.cloud_outlined,
         ),
         SizedBox(height: 10),
@@ -493,54 +623,255 @@ class _SearchTabView extends StatelessWidget {
   }
 }
 
+/// ------------------------------------------------------------
 /// SETTINGS TAB CONTENT
-///
-/// Required by your specification:
-/// "Controls, Permission, and infos".
-class _SettingsTabView extends StatelessWidget {
+/// ------------------------------------------------------------
+/// Accordion / dropdown behavior:
+/// - Only one panel can stay open at a time
+/// - Opening one closes the others
+class _SettingsTabView extends StatefulWidget {
   const _SettingsTabView({super.key});
+
+  @override
+  State<_SettingsTabView> createState() => _SettingsTabViewState();
+}
+
+class _SettingsTabViewState extends State<_SettingsTabView> {
+  _SettingsPanel? _openPanel;
+
+  bool _autoSaveEnabled = true;
+  bool _autoSaveToCloud = false;
+  String _selectedSaveFormat = 'zip';
+
+  bool _cameraPermission = true;
+  bool _storagePermission = true;
+  bool _notificationPermission = false;
+
+  void _togglePanel(_SettingsPanel panel) {
+    setState(() {
+      if (_openPanel == panel) {
+        _openPanel = null;
+      } else {
+        _openPanel = panel;
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return ListView(
       key: const ValueKey('settings-content'),
       physics: const BouncingScrollPhysics(),
-      children: const [
-        _SectionHeader(
+      children: [
+        const _SectionHeader(
           title: 'Settings',
           actionText: 'Manage',
         ),
-        SizedBox(height: 14),
-        _InfoCard(
+        const SizedBox(height: 14),
+
+        /// Controls
+        _ExpandableSettingsCard(
           title: 'Controls',
-          subtitle: 'Customize gestures, transitions, and app behavior.',
+          subtitle: 'Adjust save behavior and content output settings.',
           icon: Icons.tune_outlined,
+          isExpanded: _openPanel == _SettingsPanel.controls,
+          onTap: () => _togglePanel(_SettingsPanel.controls),
+          child: Column(
+            children: [
+              SwitchListTile(
+                value: _autoSaveEnabled,
+                onChanged: (value) {
+                  setState(() {
+                    _autoSaveEnabled = value;
+                  });
+                },
+                contentPadding: EdgeInsets.zero,
+                title: const Text(
+                  'Enable Auto-save',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Saved content format',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF20304A),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: DropdownButton<String>(
+                      value: _selectedSaveFormat,
+                      dropdownColor: const Color(0xFF20304A),
+                      underline: const SizedBox(),
+                      iconEnabledColor: Colors.white,
+                      style: const TextStyle(color: Colors.white),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'zip',
+                          child: Text('zip'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'pdf',
+                          child: Text('pdf'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'excel',
+                          child: Text('excel'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) {
+                          setState(() {
+                            _selectedSaveFormat = value;
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                value: _autoSaveToCloud,
+                onChanged: (value) {
+                  setState(() {
+                    _autoSaveToCloud = value;
+                  });
+                },
+                contentPadding: EdgeInsets.zero,
+                title: const Text(
+                  'Enable Auto-save to Cloud',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
         ),
-        SizedBox(height: 10),
-        _InfoCard(
+
+        const SizedBox(height: 10),
+
+        /// Permissions
+        _ExpandableSettingsCard(
           title: 'Permissions',
-          subtitle: 'Review camera, storage, and notification access.',
+          subtitle: 'Review and control app access permissions.',
           icon: Icons.lock_open_outlined,
+          isExpanded: _openPanel == _SettingsPanel.permissions,
+          onTap: () => _togglePanel(_SettingsPanel.permissions),
+          child: Column(
+            children: [
+              SwitchListTile(
+                value: _cameraPermission,
+                onChanged: (value) {
+                  setState(() {
+                    _cameraPermission = value;
+                  });
+                },
+                contentPadding: EdgeInsets.zero,
+                title: const Text(
+                  'Camera Access Permission',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+              SwitchListTile(
+                value: _storagePermission,
+                onChanged: (value) {
+                  setState(() {
+                    _storagePermission = value;
+                  });
+                },
+                contentPadding: EdgeInsets.zero,
+                title: const Text(
+                  'Storage Access Permission',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+              SwitchListTile(
+                value: _notificationPermission,
+                onChanged: (value) {
+                  setState(() {
+                    _notificationPermission = value;
+                  });
+                },
+                contentPadding: EdgeInsets.zero,
+                title: const Text(
+                  'Notification Permission',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
         ),
-        SizedBox(height: 10),
-        _InfoCard(
+
+        const SizedBox(height: 10),
+
+        /// Information
+        _ExpandableSettingsCard(
           title: 'Information',
-          subtitle: 'Read app version details, support notes, and FAQs.',
+          subtitle: 'Read the application version, description, and about us.',
           icon: Icons.info_outline,
+          isExpanded: _openPanel == _SettingsPanel.information,
+          onTap: () => _togglePanel(_SettingsPanel.information),
+          child: const Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              /// CHANGE APP VERSION HERE
+              /// Example:
+              /// const String appVersion = 'stala-version-1';
+              _InfoDetailRow(
+                label: 'Version',
+                value: 'stala-version-1',
+              ),
+              SizedBox(height: 10),
+              _InfoDetailRow(
+                label: 'Description',
+                value:
+                'A musical application for a GrandStaff (Piano) to Tablature (Guitar) translation.',
+              ),
+              SizedBox(height: 10),
+              _InfoDetailRow(
+                label: 'About Us',
+                value:
+                'A team of college students developing STALA as a music translation support application.',
+              ),
+            ],
+          ),
         ),
       ],
     );
   }
 }
 
-/// Shared section title row used in the mid content.
+enum _SettingsPanel {
+  controls,
+  permissions,
+  information,
+}
+
+/// ------------------------------------------------------------
+/// SHARED SECTION HEADER
+/// ------------------------------------------------------------
+/// Only define this ONCE.
+/// Your old code had duplicate `_SectionHeader` declarations.
 class _SectionHeader extends StatelessWidget {
   final String title;
   final String actionText;
+  final VoidCallback? onActionTap;
 
   const _SectionHeader({
     required this.title,
     required this.actionText,
+    this.onActionTap,
   });
 
   @override
@@ -565,12 +896,15 @@ class _SectionHeader extends StatelessWidget {
           ),
         ),
         const Spacer(),
-        Text(
-          actionText,
-          style: const TextStyle(
-            color: Color(0xFFFFB264),
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
+        GestureDetector(
+          onTap: onActionTap,
+          child: Text(
+            actionText,
+            style: const TextStyle(
+              color: Color(0xFFFFB264),
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ),
       ],
@@ -578,7 +912,10 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-/// Reusable informational card for Search and Settings tabs.
+/// ------------------------------------------------------------
+/// SHARED INFO CARD
+/// ------------------------------------------------------------
+/// Used in Search tab cards.
 class _InfoCard extends StatelessWidget {
   final String title;
   final String subtitle;
@@ -636,6 +973,147 @@ class _InfoCard extends StatelessWidget {
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// ------------------------------------------------------------
+/// EXPANDABLE SETTINGS CARD
+/// ------------------------------------------------------------
+/// Used by Settings tab for Controls / Permissions / Information
+class _ExpandableSettingsCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final bool isExpanded;
+  final VoidCallback onTap;
+  final Widget child;
+
+  const _ExpandableSettingsCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.isExpanded,
+    required this.onTap,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeInOut,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF16243B),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.05)),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF20304A),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(icon, color: const Color(0xFFFF8A2B)),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        subtitle,
+                        style: const TextStyle(
+                          color: Color(0xFFA9B6C8),
+                          fontSize: 12,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                AnimatedRotation(
+                  turns: isExpanded ? 0.5 : 0.0,
+                  duration: const Duration(milliseconds: 220),
+                  child: const Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    color: Colors.white70,
+                    size: 28,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          if (isExpanded) ...[
+            const SizedBox(height: 14),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFF20304A),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: child,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// ------------------------------------------------------------
+/// INFORMATION DETAIL ROW
+/// ------------------------------------------------------------
+class _InfoDetailRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _InfoDetailRow({
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return RichText(
+      text: TextSpan(
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 14,
+          height: 1.5,
+        ),
+        children: [
+          TextSpan(
+            text: '$label: ',
+            style: const TextStyle(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          TextSpan(text: value),
         ],
       ),
     );
