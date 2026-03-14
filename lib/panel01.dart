@@ -1194,6 +1194,7 @@ class _PanelFooter extends StatelessWidget {
               builder: (context, child) {
                 return Positioned(
                   top: cameraFloatAnimation.value,
+                  left: MediaQuery.of(context).size.width * 0.29, // Horizontal position of floating camera button (adjust X-axis here)
                   child: child!,
                 );
               },
