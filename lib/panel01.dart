@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/services.dart';
+import 'camera_panel.dart';
 
 class AccessibilityServiceHelper {
   static const MethodChannel _channel =
@@ -107,7 +108,7 @@ class _MainPanel01PageState extends State<MainPanel01Page>
   /// Handles taps from the bottom navigation.
   void _onTabSelected(PanelTab tab) {
     if (tab == PanelTab.camera) {
-      _openPanel02Placeholder();
+      _openCameraPanel();
       return;
     }
 
@@ -116,13 +117,11 @@ class _MainPanel01PageState extends State<MainPanel01Page>
     });
   }
 
-  /// Temporary navigation target for Panel 02.
-  ///
-  /// Replace this later with your real camera/upload/scan panel page.
-  void _openPanel02Placeholder() {
+  /// Opens Panel 02, which now contains the live camera workflow.
+  void _openCameraPanel() {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => const Panel02PlaceholderPage(),
+        builder: (_) => const CameraPanelPage(),
       ),
     );
   }
@@ -1440,39 +1439,3 @@ class _NavItem extends StatelessWidget {
   }
 }
 
-// -----------------------------------------------------------------------------
-// PANEL 02 PLACEHOLDER
-// -----------------------------------------------------------------------------
-
-/// Temporary placeholder page for the special camera navigation.
-///
-/// Replace this file later with your actual Panel 02 implementation.
-class Panel02PlaceholderPage extends StatelessWidget {
-  const Panel02PlaceholderPage({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF071326),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0B162B),
-        foregroundColor: Colors.white,
-        title: const Text('Panel 02 Placeholder'),
-      ),
-      body: const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text(
-            'This is a placeholder for Panel 02.\n\nThe camera button from Panel 01 should navigate here.\nReplace this page with your actual second panel later.',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 16,
-              height: 1.5,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
