@@ -1,9 +1,30 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter/services.dart';
 
-/// Entry point of the sample Flutter UI.
-///
-/// This file recreates the provided "Snap Vault" main panel design
-/// and keeps the code well-documented so each section is easy to follow.
+class AccessibilityServiceHelper {
+  static const MethodChannel _channel =
+  MethodChannel('stala_app/accessibility');
+
+  static Future<bool> isAccessibilityEnabled() async {
+    try {
+      final bool? result =
+      await _channel.invokeMethod<bool>('isAccessibilityEnabled');
+      return result ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> openAccessibilitySettings() async {
+    try {
+      await _channel.invokeMethod('openAccessibilitySettings');
+    } catch (_) {
+      //
+    }
+  }
+}
+
 void main() {
   runApp(const StalaApp());
 }
@@ -643,9 +664,14 @@ class _SettingsTabViewState extends State<_SettingsTabView> {
   bool _autoSaveToCloud = false;
   String _selectedSaveFormat = 'zip';
 
-  bool _cameraPermission = true;
-  bool _storagePermission = true;
+  /// -------------------------------------
+  /// PERMISSION STATES
+  /// -------------------------------------
+  /// Default all to false first, then update once user grants them.
+  bool _cameraPermission = false;
+  bool _storagePermission = false;
   bool _notificationPermission = false;
+  bool _accessibilityEnabled = false;
 
   void _togglePanel(_SettingsPanel panel) {
     setState(() {
@@ -772,41 +798,59 @@ class _SettingsTabViewState extends State<_SettingsTabView> {
             children: [
               SwitchListTile(
                 value: _cameraPermission,
-                onChanged: (value) {
-                  setState(() {
-                    _cameraPermission = value;
-                  });
-                },
+                onChanged: (_) => _requestCameraPermission(),
                 contentPadding: EdgeInsets.zero,
                 title: const Text(
                   'Camera Access Permission',
                   style: TextStyle(color: Colors.white),
                 ),
+                subtitle: const Text(
+                  'Required for capturing music sheet images.',
+                  style: TextStyle(color: Color(0xFFA9B6C8)),
+                ),
               ),
               SwitchListTile(
                 value: _storagePermission,
-                onChanged: (value) {
-                  setState(() {
-                    _storagePermission = value;
-                  });
-                },
+                onChanged: (_) => _requestStoragePermission(),
                 contentPadding: EdgeInsets.zero,
                 title: const Text(
                   'Storage Access Permission',
                   style: TextStyle(color: Colors.white),
                 ),
+                subtitle: const Text(
+                  'Required for saving and loading transposed files.',
+                  style: TextStyle(color: Color(0xFFA9B6C8)),
+                ),
               ),
               SwitchListTile(
                 value: _notificationPermission,
-                onChanged: (value) {
-                  setState(() {
-                    _notificationPermission = value;
-                  });
-                },
+                onChanged: (_) => _requestNotificationPermission(),
                 contentPadding: EdgeInsets.zero,
                 title: const Text(
                   'Notification Permission',
                   style: TextStyle(color: Colors.white),
+                ),
+                subtitle: const Text(
+                  'Required for save status and reminder notifications.',
+                  style: TextStyle(color: Color(0xFFA9B6C8)),
+                ),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text(
+                  'Accessibility Access',
+                  style: TextStyle(color: Colors.white),
+                ),
+                subtitle: Text(
+                  _accessibilityEnabled
+                      ? 'Accessibility service is enabled.'
+                      : 'Open device settings to manually enable accessibility support.',
+                  style: const TextStyle(color: Color(0xFFA9B6C8)),
+                ),
+                trailing: TextButton(
+                  onPressed: _openAccessibilityPrompt,
+                  child: Text(_accessibilityEnabled ? 'Enabled' : 'Grant'),
                 ),
               ),
             ],
@@ -848,6 +892,113 @@ class _SettingsTabViewState extends State<_SettingsTabView> {
           ),
         ),
       ],
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPermissionStates();
+  }
+
+  /// Load current permission states from the device.
+  Future<void> _loadPermissionStates() async {
+    final cameraStatus = await Permission.camera.status;
+    final storageStatus = await Permission.storage.status;
+    final notificationStatus = await Permission.notification.status;
+    final accessibilityStatus =
+    await AccessibilityServiceHelper.isAccessibilityEnabled();
+
+    if (!mounted) return;
+
+    setState(() {
+      _cameraPermission = cameraStatus.isGranted;
+      _storagePermission = storageStatus.isGranted;
+      _notificationPermission = notificationStatus.isGranted;
+      _accessibilityEnabled = accessibilityStatus;
+    });
+  }
+
+  Future<void> _requestCameraPermission() async {
+    final status = await Permission.camera.request();
+
+    if (!mounted) return;
+    setState(() {
+      _cameraPermission = status.isGranted;
+    });
+
+    if (status.isPermanentlyDenied) {
+      await openAppSettings();
+    }
+  }
+
+  Future<void> _requestStoragePermission() async {
+    final status = await Permission.storage.request();
+
+    if (!mounted) return;
+    setState(() {
+      _storagePermission = status.isGranted;
+    });
+
+    if (status.isPermanentlyDenied) {
+      await openAppSettings();
+    }
+  }
+
+  Future<void> _requestNotificationPermission() async {
+    final status = await Permission.notification.request();
+
+    if (!mounted) return;
+    setState(() {
+      _notificationPermission = status.isGranted;
+    });
+
+    if (status.isPermanentlyDenied) {
+      await openAppSettings();
+    }
+  }
+
+  /// Accessibility is not a standard runtime permission.
+  /// Best practice is to redirect the user to device/app settings.
+  Future<void> _openAccessibilityPrompt() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Enable Accessibility'),
+          content: const Text(
+            'Accessibility access cannot be granted from a normal permission popup. '
+                'You will be redirected to device settings where you can enable it manually.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(context);
+
+                await AccessibilityServiceHelper.openAccessibilitySettings();
+                await Future.delayed(const Duration(milliseconds: 500));
+
+                if (!mounted) return;
+
+                final enabled =
+                await AccessibilityServiceHelper.isAccessibilityEnabled();
+
+                if (!mounted) return;
+
+                setState(() {
+                  _accessibilityEnabled = enabled;
+                });
+
+              },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        );
+      },
     );
   }
 }
