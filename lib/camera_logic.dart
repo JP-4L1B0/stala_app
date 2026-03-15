@@ -1,4 +1,5 @@
 import 'dart:io';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -25,6 +26,106 @@ class CameraLogicPage extends StatefulWidget {
 
   @override
   State<CameraLogicPage> createState() => _CameraLogicPageState();
+}
+
+/// Stores one normalized corner point.
+///
+/// Values are normalized from 0.0 to 1.0 relative to image width and height.
+class DocumentCorner {
+  final double x;
+  final double y;
+
+  const DocumentCorner({
+    required this.x,
+    required this.y,
+  });
+
+  factory DocumentCorner.fromMap(Map<dynamic, dynamic> map) {
+    return DocumentCorner(
+      x: (map['x'] as num).toDouble(),
+      y: (map['y'] as num).toDouble(),
+    );
+  }
+
+  Map<String, double> toMap() {
+    return {
+      'x': x,
+      'y': y,
+    };
+  }
+
+  DocumentCorner copyWith({
+    double? x,
+    double? y,
+  }) {
+    return DocumentCorner(
+      x: x ?? this.x,
+      y: y ?? this.y,
+    );
+  }
+}
+
+/// Holds the detected document boundary corners.
+///
+/// Expected order:
+/// - topLeft
+/// - topRight
+/// - bottomRight
+/// - bottomLeft
+class DocumentBounds {
+  final DocumentCorner topLeft;
+  final DocumentCorner topRight;
+  final DocumentCorner bottomRight;
+  final DocumentCorner bottomLeft;
+
+  const DocumentBounds({
+    required this.topLeft,
+    required this.topRight,
+    required this.bottomRight,
+    required this.bottomLeft,
+  });
+
+  factory DocumentBounds.fromMap(Map<dynamic, dynamic> map) {
+    return DocumentBounds(
+      topLeft: DocumentCorner.fromMap(map['topLeft']),
+      topRight: DocumentCorner.fromMap(map['topRight']),
+      bottomRight: DocumentCorner.fromMap(map['bottomRight']),
+      bottomLeft: DocumentCorner.fromMap(map['bottomLeft']),
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'topLeft': topLeft.toMap(),
+      'topRight': topRight.toMap(),
+      'bottomRight': bottomRight.toMap(),
+      'bottomLeft': bottomLeft.toMap(),
+    };
+  }
+
+  /// Fallback bounds used when no OpenCV result is available yet.
+  factory DocumentBounds.defaultInset() {
+    return const DocumentBounds(
+      topLeft: DocumentCorner(x: 0.08, y: 0.12),
+      topRight: DocumentCorner(x: 0.92, y: 0.12),
+      bottomRight: DocumentCorner(x: 0.92, y: 0.90),
+      bottomLeft: DocumentCorner(x: 0.08, y: 0.90),
+    );
+  }
+
+  DocumentBounds copyWith({
+    DocumentCorner? topLeft,
+    DocumentCorner? topRight,
+    DocumentCorner? bottomRight,
+    DocumentCorner? bottomLeft,
+  }) {
+    return DocumentBounds(
+      topLeft: topLeft ?? this.topLeft,
+      topRight: topRight ?? this.topRight,
+      bottomRight: bottomRight ?? this.bottomRight,
+      bottomLeft: bottomLeft ?? this.bottomLeft,
+    );
+  }
 }
 
 class _CameraLogicPageState extends State<CameraLogicPage> {
@@ -191,15 +292,165 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     }
   }
 
+  /// Requests document boundary detection from the native / Python layer.
+  ///
+  /// The returned points are expected to be normalized relative to image size.
+  /// If detection fails, a safe default rectangle is returned instead.
+  Future<DocumentBounds> _detectDocumentBounds(String imagePath) async {
+    try {
+      final dynamic result = await _pythonChannel.invokeMethod(
+        'detectDocumentBounds',
+        {'imagePath': imagePath},
+      );
+
+      if (result is Map) {
+        return DocumentBounds.fromMap(result);
+      }
+    } catch (_) {
+      //
+    }
+
+    return DocumentBounds.defaultInset();
+  }
+
+  /// Reruns OpenCV boundary detection and restores the detected corners.
+  ///
+  /// This is used by the Reset action in the preview footer.
+  Future<DocumentBounds> _resetDocumentBounds(String imagePath) async {
+    final DocumentBounds bounds = await _detectDocumentBounds(imagePath);
+    return bounds;
+  }
+
+  /// Crops the document using the currently selected boundary corners.
+  ///
+  /// The native / Python layer should:
+  /// - map normalized points back to image pixel coordinates
+  /// - apply perspective correction if needed
+  /// - save the cropped output
+  /// - return the new cropped image path
+  ///
+  /// If cropping fails, the original image path is returned as fallback.
+  Future<String> _cropDocumentImage({
+    required String imagePath,
+    required DocumentBounds bounds,
+  }) async {
+    try {
+      final dynamic result = await _pythonChannel.invokeMethod(
+        'cropDocumentImage',
+        {
+          'imagePath': imagePath,
+          'bounds': bounds.toMap(),
+        },
+      );
+
+      if (result is String && result.isNotEmpty) {
+        return result;
+      }
+    } catch (_) {
+      //
+    }
+
+    return imagePath;
+  }
+
+  /// Keeps a normalized point inside the valid preview area.
+  double _clampNormalized(double value) {
+    return value.clamp(0.0, 1.0);
+  }
+
+  /// Applies movement limits so document corners cannot cross each other
+  /// or invert the crop shape.
+  ///
+  /// A small gap is enforced between opposite sides so the quadrilateral
+  /// remains valid for cropping and perspective correction.
+  DocumentBounds _updateDraggedCorner({
+    required DocumentBounds bounds,
+    required String cornerKey,
+    required DragUpdateDetails details,
+    required Size previewSize,
+  }) {
+    const double minGap = 0.06;
+
+    final double dx = details.delta.dx / previewSize.width;
+    final double dy = details.delta.dy / previewSize.height;
+
+    switch (cornerKey) {
+      case 'topLeft':
+        final double newX = (bounds.topLeft.x + dx).clamp(
+          0.0,
+          bounds.topRight.x - minGap,
+        );
+        final double newY = (bounds.topLeft.y + dy).clamp(
+          0.0,
+          bounds.bottomLeft.y - minGap,
+        );
+
+        return bounds.copyWith(
+          topLeft: bounds.topLeft.copyWith(x: newX, y: newY),
+        );
+
+      case 'topRight':
+        final double newX = (bounds.topRight.x + dx).clamp(
+          bounds.topLeft.x + minGap,
+          1.0,
+        );
+        final double newY = (bounds.topRight.y + dy).clamp(
+          0.0,
+          bounds.bottomRight.y - minGap,
+        );
+
+        return bounds.copyWith(
+          topRight: bounds.topRight.copyWith(x: newX, y: newY),
+        );
+
+      case 'bottomRight':
+        final double newX = (bounds.bottomRight.x + dx).clamp(
+          bounds.bottomLeft.x + minGap,
+          1.0,
+        );
+        final double newY = (bounds.bottomRight.y + dy).clamp(
+          bounds.topRight.y + minGap,
+          1.0,
+        );
+
+        return bounds.copyWith(
+          bottomRight: bounds.bottomRight.copyWith(x: newX, y: newY),
+        );
+
+      case 'bottomLeft':
+        final double newX = (bounds.bottomLeft.x + dx).clamp(
+          0.0,
+          bounds.bottomRight.x - minGap,
+        );
+        final double newY = (bounds.bottomLeft.y + dy).clamp(
+          bounds.topLeft.y + minGap,
+          1.0,
+        );
+
+        return bounds.copyWith(
+          bottomLeft: bounds.bottomLeft.copyWith(x: newX, y: newY),
+        );
+
+      default:
+        return bounds;
+    }
+  }
+
   /// Shows the selected or captured image inside a bottom-sheet preview panel.
   ///
   /// Footer actions:
   /// - Retry: closes the sheet and returns to camera
-  /// - Accept: sends the image path to the native bridge
+  /// - Reset: reruns OpenCV detection and restores detected corners
+  /// - Continue: crops the current document region, then sends it to processing
   Future<void> _showImagePreviewSheet({
     required String imagePath,
     required String sourceLabel,
   }) async {
+    final DocumentBounds initialBounds =
+    await _detectDocumentBounds(imagePath);
+
+    if (!mounted) return;
+
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -208,111 +459,241 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (context) {
-        return SafeArea(
-          top: false,
-          child: SizedBox(
-            height: MediaQuery.of(context).size.height * 0.80,
-            child: Column(
-              children: [
-                const SizedBox(height: 12),
+        DocumentBounds currentBounds = initialBounds;
+        bool isProcessing = false;
 
-                /// Drag handle for the modal sheet.
-                Container(
-                  width: 42,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF566487),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                ),
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return SafeArea(
+              top: false,
+              child: SizedBox(
+                height: MediaQuery.of(context).size.height * 0.80,
+                child: Column(
+                  children: [
+                    const SizedBox(height: 12),
 
-                const SizedBox(height: 16),
+                    /// Drag handle for the modal sheet.
+                    Container(
+                      width: 42,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF566487),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
 
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  child: Row(
-                    children: [
-                      const Expanded(
-                        child: Text(
-                          'Image Preview',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w600,
-                            fontFamily: 'Poppins',
+                    const SizedBox(height: 16),
+
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Image Preview',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                fontFamily: 'Poppins',
+                              ),
+                            ),
+                          ),
+                          Text(
+                            sourceLabel,
+                            style: const TextStyle(
+                              color: Color(0xFFA0AFC4),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              fontFamily: 'Inter',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    /// Main preview container.
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(20),
+                          child: Container(
+                            width: double.infinity,
+                            color: const Color(0xFF05101D),
+                            child: LayoutBuilder(
+                              builder: (context, constraints) {
+                                final Size previewSize = Size(
+                                  constraints.maxWidth,
+                                  constraints.maxHeight,
+                                );
+
+                                return Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    Image.file(
+                                      File(imagePath),
+                                      fit: BoxFit.contain,
+                                    ),
+
+                                    /// Visual highlighted document border.
+                                    IgnorePointer(
+                                      child: CustomPaint(
+                                        painter: _DocumentBoundsPainter(
+                                          bounds: currentBounds,
+                                        ),
+                                      ),
+                                    ),
+
+                                    /// Draggable corner handles.
+                                    _DraggableCornerHandle(
+                                      point: currentBounds.topLeft,
+                                      previewSize: previewSize,
+                                      onDragUpdate: (details) {
+                                        setModalState(() {
+                                          currentBounds = _updateDraggedCorner(
+                                            bounds: currentBounds,
+                                            cornerKey: 'topLeft',
+                                            details: details,
+                                            previewSize: previewSize,
+                                          );
+                                        });
+                                      },
+                                    ),
+                                    _DraggableCornerHandle(
+                                      point: currentBounds.topRight,
+                                      previewSize: previewSize,
+                                      onDragUpdate: (details) {
+                                        setModalState(() {
+                                          currentBounds = _updateDraggedCorner(
+                                            bounds: currentBounds,
+                                            cornerKey: 'topRight',
+                                            details: details,
+                                            previewSize: previewSize,
+                                          );
+                                        });
+                                      },
+                                    ),
+                                    _DraggableCornerHandle(
+                                      point: currentBounds.bottomRight,
+                                      previewSize: previewSize,
+                                      onDragUpdate: (details) {
+                                        setModalState(() {
+                                          currentBounds = _updateDraggedCorner(
+                                            bounds: currentBounds,
+                                            cornerKey: 'bottomRight',
+                                            details: details,
+                                            previewSize: previewSize,
+                                          );
+                                        });
+                                      },
+                                    ),
+                                    _DraggableCornerHandle(
+                                      point: currentBounds.bottomLeft,
+                                      previewSize: previewSize,
+                                      onDragUpdate: (details) {
+                                        setModalState(() {
+                                          currentBounds = _updateDraggedCorner(
+                                            bounds: currentBounds,
+                                            cornerKey: 'bottomLeft',
+                                            details: details,
+                                            previewSize: previewSize,
+                                          );
+                                        });
+                                      },
+                                    ),
+
+                                    if (isProcessing)
+                                      Container(
+                                        color: const Color(0x55000000),
+                                        child: const Center(
+                                          child: CircularProgressIndicator(
+                                            color: Color(0xFFFF8F69),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                );
+                              },
+                            ),
                           ),
                         ),
                       ),
-                      Text(
-                        sourceLabel,
-                        style: const TextStyle(
-                          color: Color(0xFFA0AFC4),
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          fontFamily: 'Inter',
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    /// Footer with retry, reset, and continue actions.
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF091425),
+                        borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(20),
                         ),
                       ),
-                    ],
-                  ),
-                ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          _PreviewFooterAction(
+                            icon: Icons.refresh_rounded,
+                            label: 'Retry',
+                            color: const Color(0xFFA0AFC4),
+                            onTap: () {
+                              Navigator.pop(context);
+                            },
+                          ),
+                          _PreviewFooterAction(
+                            icon: Icons.crop_free_rounded,
+                            label: 'Auto Crop',
+                            color: const Color(0xFFFFA36A),
+                            onTap: () async {
+                              setModalState(() {
+                                isProcessing = true;
+                              });
 
-                const SizedBox(height: 16),
+                              final DocumentBounds detectedBounds =
+                              await _resetDocumentBounds(imagePath);
 
-                /// Main preview container.
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(20),
-                      child: Container(
-                        width: double.infinity,
-                        color: const Color(0xFF05101D),
-                        child: Image.file(
-                          File(imagePath),
-                          fit: BoxFit.contain,
-                        ),
+                              if (!mounted) return;
+
+                              setModalState(() {
+                                currentBounds = detectedBounds;
+                                isProcessing = false;
+                              });
+                            },
+                          ),
+                          _PreviewFooterAction(
+                            icon: Icons.check_circle_rounded,
+                            label: 'Continue',
+                            color: const Color(0xFFFF8F69),
+                            onTap: () async {
+                              setModalState(() {
+                                isProcessing = true;
+                              });
+
+                              final String croppedImagePath =
+                              await _cropDocumentImage(
+                                imagePath: imagePath,
+                                bounds: currentBounds,
+                              );
+
+                              if (!mounted) return;
+
+                              Navigator.pop(context);
+                              await _acceptImage(croppedImagePath);
+                            },
+                          ),
+                        ],
                       ),
                     ),
-                  ),
+                  ],
                 ),
-
-                const SizedBox(height: 16),
-
-                /// Footer with retry and accept actions.
-                Container(
-                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF091425),
-                    borderRadius: BorderRadius.vertical(
-                      top: Radius.circular(20),
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _PreviewFooterAction(
-                        icon: Icons.refresh_rounded,
-                        label: 'Retry',
-                        color: const Color(0xFFA0AFC4),
-                        onTap: () {
-                          Navigator.pop(context);
-                        },
-                      ),
-                      _PreviewFooterAction(
-                        icon: Icons.check_circle_rounded,
-                        label: 'Accept',
-                        color: const Color(0xFFFF8F69),
-                        onTap: () async {
-                          Navigator.pop(context);
-                          await _acceptImage(imagePath);
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
@@ -653,6 +1034,117 @@ class _PreviewFooterAction extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// Draggable corner handle placed over the detected document bounds.
+///
+/// The handle position is based on normalized coordinates and can be dragged
+/// to manually refine the crop area if OpenCV detection is inaccurate.
+class _DraggableCornerHandle extends StatelessWidget {
+  final DocumentCorner point;
+  final Size previewSize;
+  final ValueChanged<DragUpdateDetails> onDragUpdate;
+
+  const _DraggableCornerHandle({
+    required this.point,
+    required this.previewSize,
+    required this.onDragUpdate,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final double left = (point.x * previewSize.width) - 20;
+    final double top = (point.y * previewSize.height) - 20;
+
+    return Positioned(
+      left: left,
+      top: top,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onPanUpdate: onDragUpdate,
+        child: Container(
+          width: 40,
+          height: 40,
+          alignment: Alignment.center,
+          child: Container(
+            width: 18,
+            height: 18,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white,
+              border: Border.all(
+                color: const Color(0xFF27E1C1),
+                width: 3,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Paints the detected document border over the preview image.
+///
+/// This is a visual guide only. The actual crop is performed by the
+/// native / Python processing layer using the same boundary points.
+class _DocumentBoundsPainter extends CustomPainter {
+  final DocumentBounds bounds;
+
+  const _DocumentBoundsPainter({
+    required this.bounds,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Offset topLeft =
+    Offset(bounds.topLeft.x * size.width, bounds.topLeft.y * size.height);
+    final Offset topRight =
+    Offset(bounds.topRight.x * size.width, bounds.topRight.y * size.height);
+    final Offset bottomRight = Offset(
+      bounds.bottomRight.x * size.width,
+      bounds.bottomRight.y * size.height,
+    );
+    final Offset bottomLeft = Offset(
+      bounds.bottomLeft.x * size.width,
+      bounds.bottomLeft.y * size.height,
+    );
+
+    final Paint borderPaint = Paint()
+      ..color = const Color(0xFF27E1C1)
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke;
+
+    final Paint handlePaint = Paint()
+      ..color = const Color(0xFFFFFFFF)
+      ..style = PaintingStyle.fill;
+
+    final Path borderPath = Path()
+      ..moveTo(topLeft.dx, topLeft.dy)
+      ..lineTo(topRight.dx, topRight.dy)
+      ..lineTo(bottomRight.dx, bottomRight.dy)
+      ..lineTo(bottomLeft.dx, bottomLeft.dy)
+      ..close();
+
+    canvas.drawPath(borderPath, borderPaint);
+
+    for (final point in [topLeft, topRight, bottomRight, bottomLeft]) {
+      canvas.drawCircle(point, 8, handlePaint);
+      canvas.drawCircle(
+        point,
+        10,
+        Paint()
+          ..color = const Color(0xFF27E1C1)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DocumentBoundsPainter oldDelegate) {
+    return oldDelegate.bounds != bounds;
   }
 }
 
