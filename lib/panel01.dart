@@ -656,7 +656,8 @@ class _SettingsTabView extends StatefulWidget {
   State<_SettingsTabView> createState() => _SettingsTabViewState();
 }
 
-class _SettingsTabViewState extends State<_SettingsTabView> {
+class _SettingsTabViewState extends State<_SettingsTabView>
+    with WidgetsBindingObserver {
   _SettingsPanel? _openPanel;
 
   bool _autoSaveEnabled = true;
@@ -666,20 +667,174 @@ class _SettingsTabViewState extends State<_SettingsTabView> {
   /// -------------------------------------
   /// PERMISSION STATES
   /// -------------------------------------
-  /// Default all to false first, then update once user grants them.
   bool _cameraPermission = false;
+
+  /// Uses gallery/media image permission.
+  /// Variable name kept as `_storagePermission` so UI labels still match.
   bool _storagePermission = false;
+
   bool _notificationPermission = false;
   bool _accessibilityEnabled = false;
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadPermissionStates();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// Refresh permission states after returning from settings.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _loadPermissionStates();
+    }
+  }
+
   void _togglePanel(_SettingsPanel panel) {
     setState(() {
-      if (_openPanel == panel) {
-        _openPanel = null;
-      } else {
-        _openPanel = panel;
-      }
+      _openPanel = _openPanel == panel ? null : panel;
     });
+  }
+
+  /// Load current permission states from the device.
+  Future<void> _loadPermissionStates() async {
+    final cameraStatus = await Permission.camera.status;
+    final photosStatus = await Permission.photos.status;
+    final notificationStatus = await Permission.notification.status;
+    final accessibilityStatus =
+    await AccessibilityServiceHelper.isAccessibilityEnabled();
+
+    if (!mounted) return;
+
+    setState(() {
+      _cameraPermission = cameraStatus.isGranted;
+      _storagePermission = photosStatus.isGranted;
+      _notificationPermission = notificationStatus.isGranted;
+      _accessibilityEnabled = accessibilityStatus;
+    });
+  }
+
+  Future<void> _requestCameraPermission() async {
+    final status = await Permission.camera.request();
+
+    if (!mounted) return;
+
+    setState(() {
+      _cameraPermission = status.isGranted;
+    });
+
+    if (status.isPermanentlyDenied) {
+      await openAppSettings();
+    }
+  }
+
+  /// Gallery / photo access permission.
+  Future<void> _requestStoragePermission() async {
+    final status = await Permission.photos.request();
+
+    if (!mounted) return;
+
+    setState(() {
+      _storagePermission = status.isGranted;
+    });
+
+    if (status.isPermanentlyDenied) {
+      await openAppSettings();
+    }
+  }
+
+  Future<void> _requestNotificationPermission() async {
+    final status = await Permission.notification.request();
+
+    if (!mounted) return;
+
+    setState(() {
+      _notificationPermission = status.isGranted;
+    });
+
+    if (status.isPermanentlyDenied) {
+      await openAppSettings();
+    }
+  }
+
+  /// Open app settings when user tries to turn OFF a permission.
+  Future<void> _openPermissionSettings({
+    required String permissionName,
+  }) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('$permissionName Permission'),
+          content: Text(
+            '$permissionName permission cannot usually be disabled directly from inside the app. '
+                'You will be redirected to App Settings to change it manually.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                await openAppSettings();
+              },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Accessibility is not a standard runtime permission.
+  Future<void> _openAccessibilityPrompt() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Enable Accessibility'),
+          content: const Text(
+            'Accessibility access cannot be granted from a normal permission popup. '
+                'You will be redirected to device settings where you can enable it manually.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(context);
+
+                await AccessibilityServiceHelper.openAccessibilitySettings();
+                await Future.delayed(const Duration(milliseconds: 500));
+
+                if (!mounted) return;
+
+                final enabled =
+                await AccessibilityServiceHelper.isAccessibilityEnabled();
+
+                if (!mounted) return;
+
+                setState(() {
+                  _accessibilityEnabled = enabled;
+                });
+              },
+              child: const Text('Open Settings'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -797,7 +952,15 @@ class _SettingsTabViewState extends State<_SettingsTabView> {
             children: [
               SwitchListTile(
                 value: _cameraPermission,
-                onChanged: (_) => _requestCameraPermission(),
+                onChanged: (value) async {
+                  if (value) {
+                    await _requestCameraPermission();
+                  } else {
+                    await _openPermissionSettings(
+                      permissionName: 'Camera',
+                    );
+                  }
+                },
                 contentPadding: EdgeInsets.zero,
                 title: const Text(
                   'Camera Access Permission',
@@ -810,20 +973,36 @@ class _SettingsTabViewState extends State<_SettingsTabView> {
               ),
               SwitchListTile(
                 value: _storagePermission,
-                onChanged: (_) => _requestStoragePermission(),
+                onChanged: (value) async {
+                  if (value) {
+                    await _requestStoragePermission();
+                  } else {
+                    await _openPermissionSettings(
+                      permissionName: 'Gallery / Photos',
+                    );
+                  }
+                },
                 contentPadding: EdgeInsets.zero,
                 title: const Text(
                   'Storage Access Permission',
                   style: TextStyle(color: Colors.white),
                 ),
                 subtitle: const Text(
-                  'Required for saving and loading transposed files.',
+                  'Required for gallery photo access and local output access.',
                   style: TextStyle(color: Color(0xFFA9B6C8)),
                 ),
               ),
               SwitchListTile(
                 value: _notificationPermission,
-                onChanged: (_) => _requestNotificationPermission(),
+                onChanged: (value) async {
+                  if (value) {
+                    await _requestNotificationPermission();
+                  } else {
+                    await _openPermissionSettings(
+                      permissionName: 'Notification',
+                    );
+                  }
+                },
                 contentPadding: EdgeInsets.zero,
                 title: const Text(
                   'Notification Permission',
@@ -891,113 +1070,6 @@ class _SettingsTabViewState extends State<_SettingsTabView> {
           ),
         ),
       ],
-    );
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _loadPermissionStates();
-  }
-
-  /// Load current permission states from the device.
-  Future<void> _loadPermissionStates() async {
-    final cameraStatus = await Permission.camera.status;
-    final storageStatus = await Permission.storage.status;
-    final notificationStatus = await Permission.notification.status;
-    final accessibilityStatus =
-    await AccessibilityServiceHelper.isAccessibilityEnabled();
-
-    if (!mounted) return;
-
-    setState(() {
-      _cameraPermission = cameraStatus.isGranted;
-      _storagePermission = storageStatus.isGranted;
-      _notificationPermission = notificationStatus.isGranted;
-      _accessibilityEnabled = accessibilityStatus;
-    });
-  }
-
-  Future<void> _requestCameraPermission() async {
-    final status = await Permission.camera.request();
-
-    if (!mounted) return;
-    setState(() {
-      _cameraPermission = status.isGranted;
-    });
-
-    if (status.isPermanentlyDenied) {
-      await openAppSettings();
-    }
-  }
-
-  Future<void> _requestStoragePermission() async {
-    final status = await Permission.storage.request();
-
-    if (!mounted) return;
-    setState(() {
-      _storagePermission = status.isGranted;
-    });
-
-    if (status.isPermanentlyDenied) {
-      await openAppSettings();
-    }
-  }
-
-  Future<void> _requestNotificationPermission() async {
-    final status = await Permission.notification.request();
-
-    if (!mounted) return;
-    setState(() {
-      _notificationPermission = status.isGranted;
-    });
-
-    if (status.isPermanentlyDenied) {
-      await openAppSettings();
-    }
-  }
-
-  /// Accessibility is not a standard runtime permission.
-  /// Best practice is to redirect the user to device/app settings.
-  Future<void> _openAccessibilityPrompt() async {
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Enable Accessibility'),
-          content: const Text(
-            'Accessibility access cannot be granted from a normal permission popup. '
-                'You will be redirected to device settings where you can enable it manually.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                Navigator.pop(context);
-
-                await AccessibilityServiceHelper.openAccessibilitySettings();
-                await Future.delayed(const Duration(milliseconds: 500));
-
-                if (!mounted) return;
-
-                final enabled =
-                await AccessibilityServiceHelper.isAccessibilityEnabled();
-
-                if (!mounted) return;
-
-                setState(() {
-                  _accessibilityEnabled = enabled;
-                });
-
-              },
-              child: const Text('Open Settings'),
-            ),
-          ],
-        );
-      },
     );
   }
 }

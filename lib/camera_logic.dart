@@ -1,9 +1,9 @@
 import 'dart:io';
-
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 /// A full camera workflow page used by Panel 02.
 ///
@@ -96,6 +96,39 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     }
   }
 
+  /// Checks and requests gallery/storage-related permission before opening
+  /// the image picker.
+  ///
+  /// Notes:
+  /// - On newer Android versions, the system photo picker may allow selecting
+  ///   a specific image without broad storage access.
+  /// - This explicit check is still kept so the camera page follows the same
+  ///   permission-aware behavior as the Settings section.
+  Future<bool> _ensureGalleryPermission() async {
+    PermissionStatus status = await Permission.photos.status;
+
+    if (status.isGranted) {
+      return true;
+    }
+
+    status = await Permission.photos.request();
+
+    if (status.isGranted) {
+      return true;
+    }
+
+    if (status.isPermanentlyDenied) {
+      _showSnackBar(
+        'Gallery permission is permanently denied. Please enable it in app settings.',
+      );
+      await openAppSettings();
+      return false;
+    }
+
+    _showSnackBar('Gallery permission was not granted.');
+    return false;
+  }
+
   /// Captures a still image from the active camera preview.
   ///
   /// After capture, the preview bottom sheet is shown so the user can:
@@ -139,6 +172,10 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
   /// The chosen image is sent to the same preview flow as a captured image.
   Future<void> _pickImageFromGallery() async {
     try {
+      final bool hasPermission = await _ensureGalleryPermission();
+
+      if (!hasPermission) return;
+
       final XFile? pickedFile = await _imagePicker.pickImage(
         source: ImageSource.gallery,
       );
