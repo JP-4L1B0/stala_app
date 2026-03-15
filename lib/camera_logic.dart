@@ -6,21 +6,17 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-/// A full camera workflow page used by Panel 02.
+import 'processing_page.dart';
+
+/// Main camera workflow page for the STALA capture flow.
 ///
 /// Responsibilities:
-/// - Opens the device back camera
-/// - Displays a live camera preview
-/// - Uses auto-focus and auto-exposure
-/// - Lets the user capture an image
-/// - Lets the user pick an image from gallery
-/// - Shows a preview bottom sheet after capture or gallery pick
-/// - Exposes an image path ready for native / Chaquopy / Python processing
-///
-/// Notes:
-/// - Zoom and camera flip are intentionally removed
-/// - Auto focus and auto brightness are handled by the camera plugin modes
-/// - The "Accept" action is already bridged to a MethodChannel placeholder
+/// - initialize and display the back camera
+/// - capture an image or select one from gallery
+/// - show a crop preview sheet
+/// - allow manual crop corner adjustment
+/// - auto-detect and crop document bounds through the native bridge
+/// - forward the final cropped image to the processing page
 class CameraLogicPage extends StatefulWidget {
   const CameraLogicPage({super.key});
 
@@ -28,9 +24,10 @@ class CameraLogicPage extends StatefulWidget {
   State<CameraLogicPage> createState() => _CameraLogicPageState();
 }
 
-/// Stores one normalized corner point.
+/// A single normalized crop corner.
 ///
-/// Values are normalized from 0.0 to 1.0 relative to image width and height.
+/// Values are stored from 0.0 to 1.0 relative to the image space
+/// so they are easy to pass across UI and native processing layers.
 class DocumentCorner {
   final double x;
   final double y;
@@ -65,13 +62,16 @@ class DocumentCorner {
   }
 }
 
-/// Holds the detected document boundary corners.
+/// Holds the four document crop corners.
 ///
 /// Expected order:
 /// - topLeft
 /// - topRight
 /// - bottomRight
 /// - bottomLeft
+///
+/// This structure is shared between the UI crop overlay and the
+/// native/Python crop pipeline.
 class DocumentBounds {
   final DocumentCorner topLeft;
   final DocumentCorner topRight;
@@ -103,7 +103,7 @@ class DocumentBounds {
     };
   }
 
-  /// Fallback bounds used when no OpenCV result is available yet.
+  /// Fallback crop rectangle used when automatic detection is not available.
   factory DocumentBounds.defaultInset() {
     return const DocumentBounds(
       topLeft: DocumentCorner(x: 0.08, y: 0.12),
@@ -129,7 +129,11 @@ class DocumentBounds {
 }
 
 class _CameraLogicPageState extends State<CameraLogicPage> {
-  /// Native bridge prepared for Android-side processing, such as Chaquopy.
+  /// Bridge used for native Android / Chaquopy / Python document operations.
+  ///
+  /// Current intended methods:
+  /// - detectDocumentBounds
+  /// - cropDocumentImage
   static const MethodChannel _pythonChannel =
   MethodChannel('stala/python_bridge');
 
@@ -147,10 +151,10 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     _initializeCamera();
   }
 
-  /// Loads the available cameras, selects the back camera,
-  /// and starts the live preview controller.
+  /// Initializes the best available back camera and prepares the preview.
   ///
-  /// Auto focus and auto exposure are enabled after initialization.
+  /// Auto focus and auto exposure are enabled after setup to keep the
+  /// capture experience simple and mostly automatic.
   Future<void> _initializeCamera() async {
     try {
       _availableCameras = await availableCameras();
@@ -159,7 +163,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
         throw Exception('No available camera was found on this device.');
       }
 
-      final CameraDescription backCamera = _availableCameras.firstWhere(
+      final backCamera = _availableCameras.firstWhere(
             (camera) => camera.lensDirection == CameraLensDirection.back,
         orElse: () => _availableCameras.first,
       );
@@ -172,8 +176,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       );
 
       await controller.initialize();
-
-      /// Set camera behavior to automatic for focus and exposure.
       await controller.setFocusMode(FocusMode.auto);
       await controller.setExposureMode(ExposureMode.auto);
 
@@ -197,24 +199,20 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     }
   }
 
-  /// Checks and requests gallery/storage-related permission before opening
-  /// the image picker.
+  /// Requests access to photos before opening gallery.
   ///
-  /// Notes:
-  /// - On newer Android versions, the system photo picker may allow selecting
-  ///   a specific image without broad storage access.
-  /// - This explicit check is still kept so the camera page follows the same
-  ///   permission-aware behavior as the Settings section.
+  /// Limited access is also accepted because it is sufficient
+  /// for user-selected images on modern Android/iOS flows.
   Future<bool> _ensureGalleryPermission() async {
     PermissionStatus status = await Permission.photos.status;
 
-    if (status.isGranted) {
+    if (status.isGranted || status.isLimited) {
       return true;
     }
 
     status = await Permission.photos.request();
 
-    if (status.isGranted) {
+    if (status.isGranted || status.isLimited) {
       return true;
     }
 
@@ -230,11 +228,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     return false;
   }
 
-  /// Captures a still image from the active camera preview.
-  ///
-  /// After capture, the preview bottom sheet is shown so the user can:
-  /// - retry and discard the image
-  /// - accept the image for downstream processing
+  /// Captures a photo using the active camera preview and opens the crop sheet.
   Future<void> _captureImage() async {
     final controller = _cameraController;
 
@@ -249,7 +243,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
         _isCapturingImage = true;
       });
 
-      final XFile capturedFile = await controller.takePicture();
+      final capturedFile = await controller.takePicture();
 
       if (!mounted) return;
 
@@ -268,16 +262,14 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     }
   }
 
-  /// Opens the gallery and lets the user select an image instead of capturing one.
-  ///
-  /// The chosen image is sent to the same preview flow as a captured image.
+  /// Opens the gallery picker and sends the selected image
+  /// into the same preview-and-crop flow as camera capture.
   Future<void> _pickImageFromGallery() async {
     try {
-      final bool hasPermission = await _ensureGalleryPermission();
-
+      final hasPermission = await _ensureGalleryPermission();
       if (!hasPermission) return;
 
-      final XFile? pickedFile = await _imagePicker.pickImage(
+      final pickedFile = await _imagePicker.pickImage(
         source: ImageSource.gallery,
       );
 
@@ -292,13 +284,13 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     }
   }
 
-  /// Requests document boundary detection from the native / Python layer.
+  /// Asks the native layer to detect document bounds on the selected image.
   ///
-  /// The returned points are expected to be normalized relative to image size.
-  /// If detection fails, a safe default rectangle is returned instead.
+  /// If detection fails or is not implemented yet, a safe default crop box
+  /// is returned so the UI still remains usable.
   Future<DocumentBounds> _detectDocumentBounds(String imagePath) async {
     try {
-      final dynamic result = await _pythonChannel.invokeMethod(
+      final result = await _pythonChannel.invokeMethod(
         'detectDocumentBounds',
         {'imagePath': imagePath},
       );
@@ -313,29 +305,22 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     return DocumentBounds.defaultInset();
   }
 
-  /// Reruns OpenCV boundary detection and restores the detected corners.
-  ///
-  /// This is used by the Reset action in the preview footer.
+  /// Re-runs boundary detection and returns fresh crop points.
   Future<DocumentBounds> _resetDocumentBounds(String imagePath) async {
-    final DocumentBounds bounds = await _detectDocumentBounds(imagePath);
-    return bounds;
+    return _detectDocumentBounds(imagePath);
   }
 
-  /// Crops the document using the currently selected boundary corners.
+  /// Sends the current crop bounds to the native layer and requests
+  /// a real cropped image file.
   ///
-  /// The native / Python layer should:
-  /// - map normalized points back to image pixel coordinates
-  /// - apply perspective correction if needed
-  /// - save the cropped output
-  /// - return the new cropped image path
-  ///
-  /// If cropping fails, the original image path is returned as fallback.
+  /// If cropping is unavailable, the original image path is returned
+  /// so downstream navigation still works.
   Future<String> _cropDocumentImage({
     required String imagePath,
     required DocumentBounds bounds,
   }) async {
     try {
-      final dynamic result = await _pythonChannel.invokeMethod(
+      final result = await _pythonChannel.invokeMethod(
         'cropDocumentImage',
         {
           'imagePath': imagePath,
@@ -353,16 +338,10 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     return imagePath;
   }
 
-  /// Keeps a normalized point inside the valid preview area.
-  double _clampNormalized(double value) {
-    return value.clamp(0.0, 1.0);
-  }
-
-  /// Applies movement limits so document corners cannot cross each other
-  /// or invert the crop shape.
+  /// Updates one dragged crop corner while preventing the shape
+  /// from crossing over itself.
   ///
-  /// A small gap is enforced between opposite sides so the quadrilateral
-  /// remains valid for cropping and perspective correction.
+  /// A minimum gap is preserved so the resulting quadrilateral stays valid.
   DocumentBounds _updateDraggedCorner({
     required DocumentBounds bounds,
     required String cornerKey,
@@ -376,59 +355,40 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
     switch (cornerKey) {
       case 'topLeft':
-        final double newX = (bounds.topLeft.x + dx).clamp(
-          0.0,
-          bounds.topRight.x - minGap,
-        );
-        final double newY = (bounds.topLeft.y + dy).clamp(
-          0.0,
-          bounds.bottomLeft.y - minGap,
-        );
-
         return bounds.copyWith(
-          topLeft: bounds.topLeft.copyWith(x: newX, y: newY),
+          topLeft: bounds.topLeft.copyWith(
+            x: (bounds.topLeft.x + dx).clamp(0.0, bounds.topRight.x - minGap),
+            y: (bounds.topLeft.y + dy).clamp(0.0, bounds.bottomLeft.y - minGap),
+          ),
         );
 
       case 'topRight':
-        final double newX = (bounds.topRight.x + dx).clamp(
-          bounds.topLeft.x + minGap,
-          1.0,
-        );
-        final double newY = (bounds.topRight.y + dy).clamp(
-          0.0,
-          bounds.bottomRight.y - minGap,
-        );
-
         return bounds.copyWith(
-          topRight: bounds.topRight.copyWith(x: newX, y: newY),
+          topRight: bounds.topRight.copyWith(
+            x: (bounds.topRight.x + dx).clamp(bounds.topLeft.x + minGap, 1.0),
+            y: (bounds.topRight.y + dy)
+                .clamp(0.0, bounds.bottomRight.y - minGap),
+          ),
         );
 
       case 'bottomRight':
-        final double newX = (bounds.bottomRight.x + dx).clamp(
-          bounds.bottomLeft.x + minGap,
-          1.0,
-        );
-        final double newY = (bounds.bottomRight.y + dy).clamp(
-          bounds.topRight.y + minGap,
-          1.0,
-        );
-
         return bounds.copyWith(
-          bottomRight: bounds.bottomRight.copyWith(x: newX, y: newY),
+          bottomRight: bounds.bottomRight.copyWith(
+            x: (bounds.bottomRight.x + dx)
+                .clamp(bounds.bottomLeft.x + minGap, 1.0),
+            y: (bounds.bottomRight.y + dy)
+                .clamp(bounds.topRight.y + minGap, 1.0),
+          ),
         );
 
       case 'bottomLeft':
-        final double newX = (bounds.bottomLeft.x + dx).clamp(
-          0.0,
-          bounds.bottomRight.x - minGap,
-        );
-        final double newY = (bounds.bottomLeft.y + dy).clamp(
-          bounds.topLeft.y + minGap,
-          1.0,
-        );
-
         return bounds.copyWith(
-          bottomLeft: bounds.bottomLeft.copyWith(x: newX, y: newY),
+          bottomLeft: bounds.bottomLeft.copyWith(
+            x: (bounds.bottomLeft.x + dx)
+                .clamp(0.0, bounds.bottomRight.x - minGap),
+            y: (bounds.bottomLeft.y + dy)
+                .clamp(bounds.topLeft.y + minGap, 1.0),
+          ),
         );
 
       default:
@@ -436,46 +396,58 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     }
   }
 
-  /// Shows the selected or captured image inside a bottom-sheet preview panel.
+  /// Navigates to the processing page using the finalized image path.
+  Future<void> _openProcessingPage(String imagePath) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProcessingPage(imagePath: imagePath),
+      ),
+    );
+  }
+
+  /// Shows the image preview bottom sheet.
   ///
-  /// Footer actions:
-  /// - Retry: closes the sheet and returns to camera
-  /// - Reset: reruns OpenCV detection and restores detected corners
-  /// - Continue: crops the current document region, then sends it to processing
+  /// Available actions:
+  /// - Retry: discard preview and return to capture page
+  /// - Auto Crop: re-detect document bounds
+  /// - Continue: crop image and proceed to processing page
   Future<void> _showImagePreviewSheet({
     required String imagePath,
     required String sourceLabel,
   }) async {
-    final DocumentBounds initialBounds =
-    await _detectDocumentBounds(imagePath);
+    final initialBounds = await _detectDocumentBounds(imagePath);
 
     if (!mounted) return;
 
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF081222),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (context) {
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
         DocumentBounds currentBounds = initialBounds;
         bool isProcessing = false;
 
         return StatefulBuilder(
           builder: (context, setModalState) {
-            return SafeArea(
-              top: false,
-              child: SizedBox(
-                height: MediaQuery.of(context).size.height * 0.80,
+            return FractionallySizedBox(
+              heightFactor: 0.83,
+              child: Container(
+                decoration: const BoxDecoration(
+                  color: Color(0xFF081222),
+                  borderRadius: BorderRadius.vertical(
+                    top: Radius.circular(28),
+                  ),
+                ),
                 child: Column(
                   children: [
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
 
-                    /// Drag handle for the modal sheet.
+                    /// Small top handle to indicate draggable bottom sheet.
                     Container(
-                      width: 42,
-                      height: 4,
+                      width: 46,
+                      height: 5,
                       decoration: BoxDecoration(
                         color: const Color(0xFF566487),
                         borderRadius: BorderRadius.circular(999),
@@ -484,6 +456,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
                     const SizedBox(height: 16),
 
+                    /// Sheet header.
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       child: Row(
@@ -493,7 +466,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                               'Image Preview',
                               style: TextStyle(
                                 color: Colors.white,
-                                fontSize: 18,
+                                fontSize: 20,
                                 fontWeight: FontWeight.w600,
                                 fontFamily: 'Poppins',
                               ),
@@ -514,18 +487,17 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
                     const SizedBox(height: 16),
 
-                    /// Main preview container.
+                    /// Main preview area with crop overlay and draggable handles.
                     Expanded(
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: ClipRRect(
-                          borderRadius: BorderRadius.circular(20),
+                          borderRadius: BorderRadius.circular(22),
                           child: Container(
-                            width: double.infinity,
                             color: const Color(0xFF05101D),
                             child: LayoutBuilder(
                               builder: (context, constraints) {
-                                final Size previewSize = Size(
+                                final previewSize = Size(
                                   constraints.maxWidth,
                                   constraints.maxHeight,
                                 );
@@ -538,7 +510,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                       fit: BoxFit.contain,
                                     ),
 
-                                    /// Visual highlighted document border.
                                     IgnorePointer(
                                       child: CustomPaint(
                                         painter: _DocumentBoundsPainter(
@@ -547,7 +518,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                       ),
                                     ),
 
-                                    /// Draggable corner handles.
                                     _DraggableCornerHandle(
                                       point: currentBounds.topLeft,
                                       previewSize: previewSize,
@@ -605,9 +575,11 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                       },
                                     ),
 
+                                    /// Processing blocker used while auto-cropping
+                                    /// or generating the cropped output.
                                     if (isProcessing)
                                       Container(
-                                        color: const Color(0x55000000),
+                                        color: const Color(0x66000000),
                                         child: const Center(
                                           child: CircularProgressIndicator(
                                             color: Color(0xFFFF8F69),
@@ -625,66 +597,73 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
                     const SizedBox(height: 16),
 
-                    /// Footer with retry, reset, and continue actions.
+                    /// Footer actions for preview flow.
                     Container(
-                      padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 18),
                       decoration: const BoxDecoration(
                         color: Color(0xFF091425),
                         borderRadius: BorderRadius.vertical(
-                          top: Radius.circular(20),
+                          top: Radius.circular(22),
                         ),
                       ),
                       child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
-                          _PreviewFooterAction(
-                            icon: Icons.refresh_rounded,
-                            label: 'Retry',
-                            color: const Color(0xFFA0AFC4),
-                            onTap: () {
-                              Navigator.pop(context);
-                            },
+                          Expanded(
+                            child: _PreviewFooterAction(
+                              icon: Icons.refresh_rounded,
+                              label: 'Retry',
+                              color: const Color(0xFFA0AFC4),
+                              onTap: () {
+                                Navigator.pop(sheetContext);
+                              },
+                            ),
                           ),
-                          _PreviewFooterAction(
-                            icon: Icons.crop_free_rounded,
-                            label: 'Auto Crop',
-                            color: const Color(0xFFFFA36A),
-                            onTap: () async {
-                              setModalState(() {
-                                isProcessing = true;
-                              });
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _PreviewFooterAction(
+                              icon: Icons.crop_free_rounded,
+                              label: 'Auto Crop',
+                              color: const Color(0xFFFFA36A),
+                              onTap: () async {
+                                setModalState(() {
+                                  isProcessing = true;
+                                });
 
-                              final DocumentBounds detectedBounds =
-                              await _resetDocumentBounds(imagePath);
+                                final detectedBounds =
+                                await _resetDocumentBounds(imagePath);
 
-                              if (!mounted) return;
+                                if (!mounted) return;
 
-                              setModalState(() {
-                                currentBounds = detectedBounds;
-                                isProcessing = false;
-                              });
-                            },
+                                setModalState(() {
+                                  currentBounds = detectedBounds;
+                                  isProcessing = false;
+                                });
+                              },
+                            ),
                           ),
-                          _PreviewFooterAction(
-                            icon: Icons.check_circle_rounded,
-                            label: 'Continue',
-                            color: const Color(0xFFFF8F69),
-                            onTap: () async {
-                              setModalState(() {
-                                isProcessing = true;
-                              });
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _PreviewFooterAction(
+                              icon: Icons.check_circle_rounded,
+                              label: 'Continue',
+                              color: const Color(0xFFFF8F69),
+                              isPrimary: true,
+                              onTap: () async {
+                                setModalState(() {
+                                  isProcessing = true;
+                                });
 
-                              final String croppedImagePath =
-                              await _cropDocumentImage(
-                                imagePath: imagePath,
-                                bounds: currentBounds,
-                              );
+                                final croppedImagePath = await _cropDocumentImage(
+                                  imagePath: imagePath,
+                                  bounds: currentBounds,
+                                );
 
-                              if (!mounted) return;
+                                if (!mounted) return;
 
-                              Navigator.pop(context);
-                              await _acceptImage(croppedImagePath);
-                            },
+                                Navigator.pop(sheetContext);
+                                await _openProcessingPage(croppedImagePath);
+                              },
+                            ),
                           ),
                         ],
                       ),
@@ -699,34 +678,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     );
   }
 
-  /// Sends the accepted image path to Android native code.
-  ///
-  /// This is already prepared for future Chaquopy integration.
-  /// For now, if the native bridge is not yet connected,
-  /// the page still behaves safely and reports that readiness.
-  Future<void> _acceptImage(String imagePath) async {
-    try {
-      final result = await _pythonChannel.invokeMethod(
-        'processImage',
-        {'imagePath': imagePath},
-      );
-
-      if (!mounted) return;
-
-      _showSnackBar('Image accepted. Result: $result');
-    } on MissingPluginException {
-      if (!mounted) return;
-
-      _showSnackBar(
-        'Image accepted. Python bridge is not connected yet, '
-            'but the page is ready for integration.',
-      );
-    } catch (error) {
-      _showSnackBar('Failed to send image to Python bridge: $error');
-    }
-  }
-
-  /// Displays a styled message near the bottom of the screen.
+  /// Shows a short message for camera and gallery flow feedback.
   void _showSnackBar(String message) {
     if (!mounted) return;
 
@@ -761,12 +713,12 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
             ? const _CameraUnavailableView()
             : Stack(
           children: [
-            /// Live camera preview.
+            /// Live camera feed.
             Positioned.fill(
               child: CameraPreview(controller),
             ),
 
-            /// Soft top-bottom dark overlay to preserve the design style.
+            /// Soft dark overlay to improve contrast of controls.
             Positioned.fill(
               child: IgnorePointer(
                 child: Container(
@@ -785,7 +737,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
               ),
             ),
 
-            /// Grid lines for composition guidance.
+            /// Rule-of-thirds grid for capture framing.
             Positioned.fill(
               child: IgnorePointer(
                 child: CustomPaint(
@@ -794,7 +746,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
               ),
             ),
 
-            /// Top controls.
+            /// Top navigation and settings actions.
             Positioned(
               top: 14,
               left: 20,
@@ -818,10 +770,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
               ),
             ),
 
-            /// Bottom controls:
-            /// - Gallery button on the left
-            /// - Shutter button at the center
-            /// - Empty spacing on the right for symmetry
+            /// Bottom capture controls.
             Positioned(
               left: 22,
               right: 22,
@@ -842,11 +791,11 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
               ),
             ),
 
-            /// A loading blocker while an image is being captured.
+            /// Fullscreen blocker while taking a picture.
             if (_isCapturingImage)
               Positioned.fill(
                 child: Container(
-                  color: const Color(0x55000000),
+                  color: const Color(0x66000000),
                   child: const Center(
                     child: CircularProgressIndicator(
                       color: Color(0xFFFF8F69),
@@ -861,7 +810,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
   }
 }
 
-/// Fallback UI shown when the camera cannot be used.
+/// Fallback content shown when camera initialization fails.
 class _CameraUnavailableView extends StatelessWidget {
   const _CameraUnavailableView();
 
@@ -880,7 +829,7 @@ class _CameraUnavailableView extends StatelessWidget {
   }
 }
 
-/// Circular button used in the top overlay controls.
+/// Small circular action button used in the camera top bar.
 class _TopCircleButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
@@ -912,7 +861,7 @@ class _TopCircleButton extends StatelessWidget {
   }
 }
 
-/// Small square action button used for gallery access.
+/// Square gallery shortcut button shown at the bottom left.
 class _BottomSquareButton extends StatelessWidget {
   final IconData icon;
   final Color backgroundColor;
@@ -945,11 +894,13 @@ class _BottomSquareButton extends StatelessWidget {
   }
 }
 
-/// Center shutter button used to capture an image.
+/// Main circular shutter button used for camera capture.
 class _ShutterButton extends StatelessWidget {
   final VoidCallback onTap;
 
-  const _ShutterButton({required this.onTap});
+  const _ShutterButton({
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -980,7 +931,7 @@ class _ShutterButton extends StatelessWidget {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               border: Border.all(
-                color: Color(0xFFDADADA),
+                color: const Color(0xFFDADADA),
                 width: 2,
               ),
             ),
@@ -991,56 +942,70 @@ class _ShutterButton extends StatelessWidget {
   }
 }
 
-/// Footer action button used inside the preview sheet.
+/// Footer button used in the preview sheet.
+///
+/// `isPrimary` is used to visually emphasize the final continue action.
 class _PreviewFooterAction extends StatelessWidget {
   final IconData icon;
   final String label;
   final Color color;
   final VoidCallback onTap;
+  final bool isPrimary;
 
   const _PreviewFooterAction({
     required this.icon,
     required this.label,
     required this.color,
     required this.onTap,
+    this.isPrimary = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-        decoration: BoxDecoration(
-          color: const Color(0xFF081222),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: const Color(0xFF1A2940)),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, color: color, size: 22),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: TextStyle(
-                color: color,
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                fontFamily: 'Poppins',
-              ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Ink(
+          height: 56,
+          decoration: BoxDecoration(
+            color: isPrimary
+                ? const Color(0xFF111F35)
+                : const Color(0xFF081222),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: isPrimary
+                  ? const Color(0x33FF8F69)
+                  : const Color(0xFF1A2940),
             ),
-          ],
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: color, size: 20),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'Poppins',
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-/// Draggable corner handle placed over the detected document bounds.
-///
-/// The handle position is based on normalized coordinates and can be dragged
-/// to manually refine the crop area if OpenCV detection is inaccurate.
+/// Interactive crop handle anchored to one normalized corner point.
 class _DraggableCornerHandle extends StatelessWidget {
   final DocumentCorner point;
   final Size previewSize;
@@ -1054,8 +1019,8 @@ class _DraggableCornerHandle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final double left = (point.x * previewSize.width) - 20;
-    final double top = (point.y * previewSize.height) - 20;
+    final left = (point.x * previewSize.width) - 20;
+    final top = (point.y * previewSize.height) - 20;
 
     return Positioned(
       left: left,
@@ -1085,10 +1050,7 @@ class _DraggableCornerHandle extends StatelessWidget {
   }
 }
 
-/// Paints the detected document border over the preview image.
-///
-/// This is a visual guide only. The actual crop is performed by the
-/// native / Python processing layer using the same boundary points.
+/// Draws the crop quadrilateral and its corner markers over the preview image.
 class _DocumentBoundsPainter extends CustomPainter {
   final DocumentBounds bounds;
 
@@ -1098,29 +1060,34 @@ class _DocumentBoundsPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final Offset topLeft =
+    final topLeft =
     Offset(bounds.topLeft.x * size.width, bounds.topLeft.y * size.height);
-    final Offset topRight =
+    final topRight =
     Offset(bounds.topRight.x * size.width, bounds.topRight.y * size.height);
-    final Offset bottomRight = Offset(
+    final bottomRight = Offset(
       bounds.bottomRight.x * size.width,
       bounds.bottomRight.y * size.height,
     );
-    final Offset bottomLeft = Offset(
+    final bottomLeft = Offset(
       bounds.bottomLeft.x * size.width,
       bounds.bottomLeft.y * size.height,
     );
 
-    final Paint borderPaint = Paint()
+    final borderPaint = Paint()
       ..color = const Color(0xFF27E1C1)
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke;
 
-    final Paint handlePaint = Paint()
-      ..color = const Color(0xFFFFFFFF)
+    final handleFillPaint = Paint()
+      ..color = Colors.white
       ..style = PaintingStyle.fill;
 
-    final Path borderPath = Path()
+    final handleStrokePaint = Paint()
+      ..color = const Color(0xFF27E1C1)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+
+    final borderPath = Path()
       ..moveTo(topLeft.dx, topLeft.dy)
       ..lineTo(topRight.dx, topRight.dy)
       ..lineTo(bottomRight.dx, bottomRight.dy)
@@ -1130,15 +1097,8 @@ class _DocumentBoundsPainter extends CustomPainter {
     canvas.drawPath(borderPath, borderPaint);
 
     for (final point in [topLeft, topRight, bottomRight, bottomLeft]) {
-      canvas.drawCircle(point, 8, handlePaint);
-      canvas.drawCircle(
-        point,
-        10,
-        Paint()
-          ..color = const Color(0xFF27E1C1)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2,
-      );
+      canvas.drawCircle(point, 8, handleFillPaint);
+      canvas.drawCircle(point, 10, handleStrokePaint);
     }
   }
 
@@ -1148,7 +1108,7 @@ class _DocumentBoundsPainter extends CustomPainter {
   }
 }
 
-/// Paints a simple rule-of-thirds camera grid over the preview.
+/// Paints a basic rule-of-thirds grid on the live camera preview.
 class _CameraGridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -1156,10 +1116,10 @@ class _CameraGridPainter extends CustomPainter {
       ..color = const Color(0x33B4C0D0)
       ..strokeWidth = 0.8;
 
-    final double col1 = size.width / 3;
-    final double col2 = col1 * 2;
-    final double row1 = size.height / 3;
-    final double row2 = row1 * 2;
+    final col1 = size.width / 3;
+    final col2 = col1 * 2;
+    final row1 = size.height / 3;
+    final row2 = row1 * 2;
 
     canvas.drawLine(Offset(col1, 0), Offset(col1, size.height), paint);
     canvas.drawLine(Offset(col2, 0), Offset(col2, size.height), paint);
