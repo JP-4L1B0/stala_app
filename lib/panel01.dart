@@ -26,29 +26,6 @@ class AccessibilityServiceHelper {
   }
 }
 
-void main() {
-  runApp(const StalaApp());
-}
-
-/// Root application widget.
-class StalaApp extends StatelessWidget {
-  const StalaApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'STALA - Panel 01',
-      theme: ThemeData(
-        useMaterial3: true,
-        fontFamily: 'Roboto',
-        scaffoldBackgroundColor: const Color(0xFF071326),
-      ),
-      home: const MainPanel01Page(),
-    );
-  }
-}
-
 /// Defines the available bottom navigation tabs.
 enum PanelTab {
   search,
@@ -208,13 +185,13 @@ class _PanelHeader extends StatelessWidget {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: const Color(0xFFFF8A2B),
+              color: const Color(0xFF1C2940),
               borderRadius: BorderRadius.circular(8),
             ),
-            child: const Icon(
-              Icons.camera_alt_outlined,
-              size: 16,
-              color: Colors.white,
+            child: Image.asset(
+              'assets/images/stala_logo_icon.png',
+              width: 16,
+              height: 16,
             ),
           ),
           const SizedBox(width: 10),
@@ -368,7 +345,7 @@ class _HomeTabViewState extends State<_HomeTabView> {
   List<SavedItemData> get _visibleItems {
     return _showAll
         ? _temporaryPlaceholderItems
-        : _temporaryPlaceholderItems.take(5).toList();
+        : _temporaryPlaceholderItems.take(4).toList();
   }
 
   static String _generatePlaceholderDate(int index) {
@@ -662,7 +639,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
 
   bool _autoSaveEnabled = true;
   bool _autoSaveToCloud = false;
-  String _selectedSaveFormat = 'zip';
+  String _selectedSaveFormat = 'stala';
 
   /// -------------------------------------
   /// PERMISSION STATES
@@ -902,12 +879,8 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                           child: Text('zip'),
                         ),
                         DropdownMenuItem(
-                          value: 'pdf',
-                          child: Text('pdf'),
-                        ),
-                        DropdownMenuItem(
-                          value: 'excel',
-                          child: Text('excel'),
+                          value: 'stala',
+                          child: Text('stala'),
                         ),
                       ],
                       onChanged: (value) {
@@ -1113,7 +1086,7 @@ class _SectionHeader extends StatelessWidget {
           width: 18,
           height: 3,
           decoration: BoxDecoration(
-            color: const Color(0xFFFF8A2B),
+            color: const Color(0xFF20304A),
             borderRadius: BorderRadius.circular(99),
           ),
         ),

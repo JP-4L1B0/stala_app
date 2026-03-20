@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'panel01.dart';
+import 'pages/splash_page.dart';
 
 void main() {
   runApp(const STALAApp());
@@ -13,7 +13,7 @@ class STALAApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'STALA',
-      home: const StalaApp(),
+      home: const SplashPage(),
     );
   }
 }
