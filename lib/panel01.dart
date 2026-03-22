@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/services.dart';
+
 import 'camera_panel.dart';
+import 'core/theme/app_colors.dart';
+import 'core/theme/app_text_styles.dart';
+import 'data/recent_items_repository.dart';
+import 'models/saved_item_data.dart';
 
 class AccessibilityServiceHelper {
   static const MethodChannel _channel =
@@ -113,9 +118,9 @@ class _MainPanel01PageState extends State<MainPanel01Page>
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
               colors: [
-                Color(0xFF0B162B),
-                Color(0xFF081222),
-                Color(0xFF05101D),
+                AppColors.backgroundSecondary,
+                AppColors.background,
+                AppColors.surface,
               ],
             ),
           ),
@@ -185,7 +190,7 @@ class _PanelHeader extends StatelessWidget {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: const Color(0xFF1C2940),
+              color: AppColors.card,
               borderRadius: BorderRadius.circular(8),
             ),
             child: Image.asset(
@@ -195,26 +200,22 @@ class _PanelHeader extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   'STALA',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
+                  style: AppTextStyles.cardTitle.copyWith(
                     letterSpacing: 0.2,
                   ),
                 ),
-                SizedBox(height: 2),
+                const SizedBox(height: 2),
                 Text(
                   'Your memories, secured',
-                  style: TextStyle(
-                    color: Color(0xFFA0AFC4),
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textSecondary,
                     fontSize: 10,
-                    fontWeight: FontWeight.w400,
                   ),
                 ),
               ],
@@ -225,14 +226,14 @@ class _PanelHeader extends StatelessWidget {
             height: 34,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: const Color(0xFF1C2940),
+              color: AppColors.card,
               border: Border.all(
                 color: Colors.white.withOpacity(0.08),
               ),
             ),
             child: const Icon(
               Icons.person_outline,
-              color: Color(0xFFB8C4D6),
+              color: AppColors.textSecondary,
               size: 18,
             ),
           ),
@@ -330,17 +331,8 @@ class _HomeTabView extends StatefulWidget {
 class _HomeTabViewState extends State<_HomeTabView> {
   bool _showAll = false;
 
-  /// TEMPORARY PLACEHOLDER DATA
-  ///
-  /// Remove this once the actual save system is ready.
-  late final List<SavedItemData> _temporaryPlaceholderItems = List.generate(
-    10,
-        (index) => SavedItemData(
-      fileTitle: 'Unnamed_${(index + 1).toString().padLeft(2, '0')}',
-      dateCreated: _generatePlaceholderDate(index),
-      modifiedText: _generateModifiedText(index),
-    ),
-  );
+  late final List<SavedItemData> _temporaryPlaceholderItems =
+  RecentItemsRepository.getTemporaryRecentItems();
 
   List<SavedItemData> get _visibleItems {
     return _showAll
@@ -348,43 +340,43 @@ class _HomeTabViewState extends State<_HomeTabView> {
         : _temporaryPlaceholderItems.take(4).toList();
   }
 
-  static String _generatePlaceholderDate(int index) {
-    final now = DateTime.now().subtract(Duration(days: index));
-    final day = now.day.toString().padLeft(2, '0');
-    final month = now.month.toString().padLeft(2, '0');
-    final year = now.year.toString();
-    return '$day/$month/$year';
-  }
-
-  static String _generateModifiedText(int index) {
-    if (index < 5) {
-      return '${(index + 1) * 7} min ago';
-    }
-    return '${index - 3} h ago';
-  }
-
   void _handleRename(int index) {
     final controller = TextEditingController(
-      text: _temporaryPlaceholderItems[index].fileTitle,
+      text: _temporaryPlaceholderItems[index].title,
     );
 
     showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text('Rename File'),
+          backgroundColor: AppColors.card,
+          title: Text(
+            'Rename File',
+            style: AppTextStyles.cardTitle,
+          ),
           content: TextField(
             controller: controller,
-            decoration: const InputDecoration(
+            style: AppTextStyles.body,
+            decoration: InputDecoration(
               hintText: 'Enter new title',
+              hintStyle: AppTextStyles.bodySecondary,
             ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
+              child: Text(
+                'Cancel',
+                style: AppTextStyles.button.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
             ),
             ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: AppColors.textPrimary,
+              ),
               onPressed: () {
                 final updatedTitle = controller.text.trim();
 
@@ -392,14 +384,17 @@ class _HomeTabViewState extends State<_HomeTabView> {
                   setState(() {
                     _temporaryPlaceholderItems[index] =
                         _temporaryPlaceholderItems[index].copyWith(
-                          fileTitle: updatedTitle,
+                          title: updatedTitle,
                         );
                   });
                 }
 
                 Navigator.pop(context);
               },
-              child: const Text('Save'),
+              child: Text(
+                'Save',
+                style: AppTextStyles.button,
+              ),
             ),
           ],
         );
@@ -441,32 +436,6 @@ class _HomeTabViewState extends State<_HomeTabView> {
   }
 }
 
-/// Data model for saved/transposed sheet items.
-/// Future-ready for local or cloud-based real saved data.
-class SavedItemData {
-  final String fileTitle;
-  final String dateCreated;
-  final String modifiedText;
-
-  const SavedItemData({
-    required this.fileTitle,
-    required this.dateCreated,
-    required this.modifiedText,
-  });
-
-  SavedItemData copyWith({
-    String? fileTitle,
-    String? dateCreated,
-    String? modifiedText,
-  }) {
-    return SavedItemData(
-      fileTitle: fileTitle ?? this.fileTitle,
-      dateCreated: dateCreated ?? this.dateCreated,
-      modifiedText: modifiedText ?? this.modifiedText,
-    );
-  }
-}
-
 /// Card widget for each saved file item in Home tab.
 class SavedListCard extends StatelessWidget {
   final SavedItemData data;
@@ -483,30 +452,27 @@ class SavedListCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
       decoration: BoxDecoration(
-        color: const Color(0xFF566487),
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          /// Large left icon/text
           Container(
             width: 90,
             alignment: Alignment.center,
-            child: const Text(
-              'Saved',
+            child: Text(
+              data.fileType.replaceAll('.', '').toUpperCase(),
               textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 28,
-                fontWeight: FontWeight.w600,
+              style: AppTextStyles.sectionTitle.copyWith(
+                fontSize: 24,
                 letterSpacing: 1,
+                color: AppColors.accent,
               ),
             ),
           ),
           const SizedBox(width: 16),
-
-          /// Right details column
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -516,16 +482,17 @@ class SavedListCard extends StatelessWidget {
                     Expanded(
                       child: RichText(
                         text: TextSpan(
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 15,
-                            height: 1.4,
-                          ),
+                          style: AppTextStyles.body.copyWith(height: 1.4),
                           children: [
-                            const TextSpan(text: 'Title: '),
                             TextSpan(
-                              text: data.fileTitle,
-                              style: const TextStyle(
+                              text: 'Title: ',
+                              style: AppTextStyles.body.copyWith(
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
+                            TextSpan(
+                              text: data.title,
+                              style: AppTextStyles.body.copyWith(
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
@@ -543,12 +510,11 @@ class SavedListCard extends StatelessWidget {
                         ),
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
-                      child: const Text(
+                      child: Text(
                         'Edit',
-                        style: TextStyle(
-                          fontSize: 13,
+                        style: AppTextStyles.caption.copyWith(
                           fontStyle: FontStyle.italic,
-                          color: Colors.white,
+                          color: AppColors.accent,
                         ),
                       ),
                     ),
@@ -556,21 +522,13 @@ class SavedListCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Date created: ${data.dateCreated}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    height: 1.35,
-                  ),
+                  'Date created: ${data.createdAt}',
+                  style: AppTextStyles.body,
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Modified: ${data.modifiedText}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    height: 1.35,
-                  ),
+                  'Modified: ${data.subtitle}',
+                  style: AppTextStyles.bodySecondary,
                 ),
               ],
             ),
@@ -1417,7 +1375,7 @@ class _PanelFooter extends StatelessWidget {
                     margin: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: const Color(0xFFFF8F69),
+                      color: AppColors.accent,
                       border: Border.all(color: Colors.white.withOpacity(0.18)),
                     ),
                     child: const Icon(
