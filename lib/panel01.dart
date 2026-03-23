@@ -212,7 +212,7 @@ class _PanelHeader extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'Your memories, secured',
+                  'Read Notes. Play Strings',
                   style: AppTextStyles.caption.copyWith(
                     color: AppColors.textSecondary,
                     fontSize: 10,
@@ -624,6 +624,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
     super.dispose();
   }
 
+
   /// Refresh permission states after returning from settings.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -703,26 +704,43 @@ class _SettingsTabViewState extends State<_SettingsTabView>
   Future<void> _openPermissionSettings({
     required String permissionName,
   }) async {
-    await showDialog<void>(
+    await showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: Text('$permissionName Permission'),
+          backgroundColor: AppColors.card,
+          title: Text(
+            '$permissionName Permission',
+            style: AppTextStyles.cardTitle,
+          ),
           content: Text(
             '$permissionName permission cannot usually be disabled directly from inside the app. '
                 'You will be redirected to App Settings to change it manually.',
+            style: AppTextStyles.bodySecondary,
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
+              child: Text(
+                'Cancel',
+                style: AppTextStyles.button.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
             ),
             ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: AppColors.textPrimary,
+              ),
               onPressed: () async {
                 Navigator.pop(context);
                 await openAppSettings();
               },
-              child: const Text('Open Settings'),
+              child: Text(
+                'Open Settings',
+                style: AppTextStyles.button,
+              ),
             ),
           ],
         );
@@ -732,39 +750,53 @@ class _SettingsTabViewState extends State<_SettingsTabView>
 
   /// Accessibility is not a standard runtime permission.
   Future<void> _openAccessibilityPrompt() async {
-    await showDialog<void>(
+    await showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text('Enable Accessibility'),
-          content: const Text(
+          backgroundColor: AppColors.card,
+          title: Text(
+            'Enable Accessibility',
+            style: AppTextStyles.cardTitle,
+          ),
+          content: Text(
             'Accessibility access cannot be granted from a normal permission popup. '
                 'You will be redirected to device settings where you can enable it manually.',
+            style: AppTextStyles.bodySecondary,
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
+              child: Text(
+                'Cancel',
+                style: AppTextStyles.button.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
             ),
             ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: AppColors.textPrimary,
+              ),
               onPressed: () async {
                 Navigator.pop(context);
-
                 await AccessibilityServiceHelper.openAccessibilitySettings();
                 await Future.delayed(const Duration(milliseconds: 500));
 
                 if (!mounted) return;
-
                 final enabled =
                 await AccessibilityServiceHelper.isAccessibilityEnabled();
 
                 if (!mounted) return;
-
                 setState(() {
                   _accessibilityEnabled = enabled;
                 });
               },
-              child: const Text('Open Settings'),
+              child: Text(
+                'Open Settings',
+                style: AppTextStyles.button,
+              ),
             ),
           ],
         );
@@ -801,36 +833,34 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                   });
                 },
                 contentPadding: EdgeInsets.zero,
-                title: const Text(
+                activeColor: AppColors.accent,
+                title: Text(
                   'Enable Auto-save',
-                  style: TextStyle(color: Colors.white),
+                  style: AppTextStyles.body,
                 ),
               ),
               const SizedBox(height: 4),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  const Expanded(
+                  Expanded(
                     child: Text(
                       'Saved content format',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                      ),
+                      style: AppTextStyles.body,
                     ),
                   ),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF20304A),
+                      color: AppColors.backgroundSecondary,
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: DropdownButton<String>(
                       value: _selectedSaveFormat,
-                      dropdownColor: const Color(0xFF20304A),
+                      dropdownColor: AppColors.backgroundSecondary,
                       underline: const SizedBox(),
-                      iconEnabledColor: Colors.white,
-                      style: const TextStyle(color: Colors.white),
+                      iconEnabledColor: AppColors.textPrimary,
+                      style: AppTextStyles.body,
                       items: const [
                         DropdownMenuItem(
                           value: 'zip',
@@ -861,15 +891,15 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                   });
                 },
                 contentPadding: EdgeInsets.zero,
-                title: const Text(
+                activeColor: AppColors.accent,
+                title: Text(
                   'Enable Auto-save to Cloud',
-                  style: TextStyle(color: Colors.white),
+                  style: AppTextStyles.body,
                 ),
               ),
             ],
           ),
         ),
-
         const SizedBox(height: 10),
 
         /// Permissions
@@ -887,19 +917,18 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                   if (value) {
                     await _requestCameraPermission();
                   } else {
-                    await _openPermissionSettings(
-                      permissionName: 'Camera',
-                    );
+                    await _openPermissionSettings(permissionName: 'Camera');
                   }
                 },
                 contentPadding: EdgeInsets.zero,
-                title: const Text(
+                activeColor: AppColors.accent,
+                title: Text(
                   'Camera Access Permission',
-                  style: TextStyle(color: Colors.white),
+                  style: AppTextStyles.body,
                 ),
-                subtitle: const Text(
+                subtitle: Text(
                   'Required for capturing music sheet images.',
-                  style: TextStyle(color: Color(0xFFA9B6C8)),
+                  style: AppTextStyles.bodySecondary,
                 ),
               ),
               SwitchListTile(
@@ -914,13 +943,14 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                   }
                 },
                 contentPadding: EdgeInsets.zero,
-                title: const Text(
+                activeColor: AppColors.accent,
+                title: Text(
                   'Storage Access Permission',
-                  style: TextStyle(color: Colors.white),
+                  style: AppTextStyles.body,
                 ),
-                subtitle: const Text(
+                subtitle: Text(
                   'Required for gallery photo access and local output access.',
-                  style: TextStyle(color: Color(0xFFA9B6C8)),
+                  style: AppTextStyles.bodySecondary,
                 ),
               ),
               SwitchListTile(
@@ -935,37 +965,42 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                   }
                 },
                 contentPadding: EdgeInsets.zero,
-                title: const Text(
+                activeColor: AppColors.accent,
+                title: Text(
                   'Notification Permission',
-                  style: TextStyle(color: Colors.white),
+                  style: AppTextStyles.body,
                 ),
-                subtitle: const Text(
+                subtitle: Text(
                   'Required for save status and reminder notifications.',
-                  style: TextStyle(color: Color(0xFFA9B6C8)),
+                  style: AppTextStyles.bodySecondary,
                 ),
               ),
               const SizedBox(height: 8),
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                title: const Text(
+                title: Text(
                   'Accessibility Access',
-                  style: TextStyle(color: Colors.white),
+                  style: AppTextStyles.body,
                 ),
                 subtitle: Text(
                   _accessibilityEnabled
                       ? 'Accessibility service is enabled.'
                       : 'Open device settings to manually enable accessibility support.',
-                  style: const TextStyle(color: Color(0xFFA9B6C8)),
+                  style: AppTextStyles.bodySecondary,
                 ),
                 trailing: TextButton(
                   onPressed: _openAccessibilityPrompt,
-                  child: Text(_accessibilityEnabled ? 'Enabled' : 'Grant'),
+                  child: Text(
+                    _accessibilityEnabled ? 'Enabled' : 'Grant',
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.accent,
+                    ),
+                  ),
                 ),
               ),
             ],
           ),
         ),
-
         const SizedBox(height: 10),
 
         /// Information
@@ -978,9 +1013,6 @@ class _SettingsTabViewState extends State<_SettingsTabView>
           child: const Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              /// CHANGE APP VERSION HERE
-              /// Example:
-              /// const String appVersion = 'stala-version-1';
               _InfoDetailRow(
                 label: 'Version',
                 value: 'stala-version-1',
@@ -1033,18 +1065,14 @@ class _SectionHeader extends StatelessWidget {
       children: [
         Text(
           title,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 22,
-            fontWeight: FontWeight.w600,
-          ),
+          style: AppTextStyles.sectionTitle.copyWith(fontSize: 22),
         ),
         const SizedBox(width: 10),
         Container(
           width: 18,
           height: 3,
           decoration: BoxDecoration(
-            color: const Color(0xFF20304A),
+            color: AppColors.backgroundSecondary,
             borderRadius: BorderRadius.circular(99),
           ),
         ),
@@ -1053,9 +1081,8 @@ class _SectionHeader extends StatelessWidget {
           onTap: onActionTap,
           child: Text(
             actionText,
-            style: const TextStyle(
-              color: Color(0xFFFFB264),
-              fontSize: 12,
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.accent,
               fontWeight: FontWeight.w500,
             ),
           ),
@@ -1085,7 +1112,7 @@ class _InfoCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF16243B),
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Colors.white.withOpacity(0.05)),
       ),
@@ -1096,10 +1123,13 @@ class _InfoCard extends StatelessWidget {
             width: 42,
             height: 42,
             decoration: BoxDecoration(
-              color: const Color(0xFF20304A),
+              color: AppColors.backgroundSecondary,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(icon, color: const Color(0xFFFF8A2B)),
+            child: Icon(
+              icon,
+              color: AppColors.accent,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -1108,17 +1138,12 @@ class _InfoCard extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: AppTextStyles.cardTitle.copyWith(fontSize: 15),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   subtitle,
-                  style: const TextStyle(
-                    color: Color(0xFFA9B6C8),
+                  style: AppTextStyles.bodySecondary.copyWith(
                     fontSize: 12,
                     height: 1.4,
                   ),
@@ -1160,7 +1185,7 @@ class _ExpandableSettingsCard extends StatelessWidget {
       curve: Curves.easeInOut,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF16243B),
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Colors.white.withOpacity(0.05)),
       ),
@@ -1176,10 +1201,13 @@ class _ExpandableSettingsCard extends StatelessWidget {
                   width: 42,
                   height: 42,
                   decoration: BoxDecoration(
-                    color: const Color(0xFF20304A),
+                    color: AppColors.backgroundSecondary,
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Icon(icon, color: const Color(0xFFFF8A2B)),
+                  child: Icon(
+                    icon,
+                    color: AppColors.accent,
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -1188,17 +1216,12 @@ class _ExpandableSettingsCard extends StatelessWidget {
                     children: [
                       Text(
                         title,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
+                        style: AppTextStyles.cardTitle.copyWith(fontSize: 15),
                       ),
                       const SizedBox(height: 4),
                       Text(
                         subtitle,
-                        style: const TextStyle(
-                          color: Color(0xFFA9B6C8),
+                        style: AppTextStyles.bodySecondary.copyWith(
                           fontSize: 12,
                           height: 1.4,
                         ),
@@ -1212,21 +1235,20 @@ class _ExpandableSettingsCard extends StatelessWidget {
                   duration: const Duration(milliseconds: 220),
                   child: const Icon(
                     Icons.keyboard_arrow_down_rounded,
-                    color: Colors.white70,
+                    color: AppColors.textSecondary,
                     size: 28,
                   ),
                 ),
               ],
             ),
           ),
-
           if (isExpanded) ...[
             const SizedBox(height: 14),
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: const Color(0xFF20304A),
+                color: AppColors.backgroundSecondary,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: child,
@@ -1254,19 +1276,20 @@ class _InfoDetailRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return RichText(
       text: TextSpan(
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          height: 1.5,
-        ),
+        style: AppTextStyles.body.copyWith(height: 1.5),
         children: [
           TextSpan(
             text: '$label: ',
-            style: const TextStyle(
+            style: AppTextStyles.body.copyWith(
               fontWeight: FontWeight.w700,
             ),
           ),
-          TextSpan(text: value),
+          TextSpan(
+            text: value,
+            style: AppTextStyles.bodySecondary.copyWith(
+              color: AppColors.textPrimary,
+            ),
+          ),
         ],
       ),
     );
@@ -1311,8 +1334,10 @@ class _PanelFooter extends StatelessWidget {
                 height: 68,
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF091425),
-                  border: Border.all(color: Colors.white.withOpacity(0.04)),
+                  color: AppColors.backgroundSecondary,
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.04),
+                  ),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -1347,7 +1372,7 @@ class _PanelFooter extends StatelessWidget {
               builder: (context, child) {
                 return Positioned(
                   top: cameraFloatAnimation.value,
-                  left: MediaQuery.of(context).size.width * 0.29, // Horizontal position of floating camera button (adjust X-axis here)
+                  left: MediaQuery.of(context).size.width * 0.29,
                   child: child!,
                 );
               },
@@ -1359,13 +1384,16 @@ class _PanelFooter extends StatelessWidget {
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     gradient: const LinearGradient(
-                      colors: [Color(0xFFFFA36A), Color(0xFFFF6F4E)],
+                      colors: [
+                        Color(0xFFFFA36A),
+                        Color(0xFFFF6F4E),
+                      ],
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                     ),
                     boxShadow: [
                       BoxShadow(
-                        color: const Color(0xFFFF7E57).withOpacity(0.35),
+                        color: AppColors.accentSoft.withOpacity(0.35),
                         blurRadius: 18,
                         offset: const Offset(0, 8),
                       ),
@@ -1376,11 +1404,13 @@ class _PanelFooter extends StatelessWidget {
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: AppColors.accent,
-                      border: Border.all(color: Colors.white.withOpacity(0.18)),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.18),
+                      ),
                     ),
                     child: const Icon(
                       Icons.camera_alt_outlined,
-                      color: Colors.white,
+                      color: AppColors.textPrimary,
                       size: 28,
                     ),
                   ),
@@ -1410,8 +1440,8 @@ class _NavItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final activeColor = const Color(0xFFFF9A69);
-    final inactiveColor = const Color(0xFFB4C0D0);
+    final activeColor = AppColors.accent;
+    final inactiveColor = AppColors.textSecondary;
 
     return InkWell(
       onTap: onTap,
@@ -1429,10 +1459,11 @@ class _NavItem extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               label,
-              style: TextStyle(
+              style: AppTextStyles.caption.copyWith(
                 color: isSelected ? activeColor : inactiveColor,
                 fontSize: 10.5,
-                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                fontWeight:
+                isSelected ? FontWeight.w600 : FontWeight.w400,
               ),
             ),
           ],
@@ -1441,4 +1472,3 @@ class _NavItem extends StatelessWidget {
     );
   }
 }
-
