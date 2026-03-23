@@ -2,6 +2,9 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'core/theme/app_colors.dart';
+import 'core/theme/app_text_styles.dart';
+
 /// Processing screen shown after the image crop is confirmed.
 ///
 /// Responsibilities:
@@ -189,9 +192,12 @@ class _ProcessingPageState extends State<ProcessingPage> {
   /// Placeholder for the next navigation step after processing completes.
   void _showNextStepMessage() {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        backgroundColor: Color(0xFF091425),
-        content: Text('Result page navigation goes here.'),
+      SnackBar(
+        backgroundColor: AppColors.backgroundSecondary,
+        content: Text(
+          'Result page navigation goes here.',
+          style: AppTextStyles.body,
+        ),
       ),
     );
   }
@@ -199,7 +205,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF081222),
+      backgroundColor: AppColors.background,
       body: SafeArea(
         child: Container(
           decoration: const BoxDecoration(
@@ -207,9 +213,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
               colors: [
-                Color(0xFF0B162B),
-                Color(0xFF081222),
-                Color(0xFF05101D),
+                AppColors.backgroundSecondary,
+                AppColors.background,
+                AppColors.surface,
               ],
             ),
           ),
@@ -240,14 +246,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
                         hasFailed: _hasProcessingFailed,
                       ),
                       const SizedBox(height: 16),
-                      const Text(
+                      Text(
                         'Pipeline Stages',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w600,
-                          fontFamily: 'Poppins',
-                        ),
+                        style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
                       ),
                       const SizedBox(height: 12),
 
@@ -260,7 +261,6 @@ class _ProcessingPageState extends State<ProcessingPage> {
                           itemBuilder: (context, index) {
                             final stage = _stages[index];
                             return _ProcessingStageCard(
-                              indexLabel: '${index + 1}',
                               stage: stage,
                               isActive: index == _activeStageIndex &&
                                   !_isProcessingFinished &&
@@ -309,15 +309,10 @@ class _ProcessingHeader extends StatelessWidget {
             onTap: onBackTap,
           ),
           const SizedBox(width: 12),
-          const Expanded(
+          Expanded(
             child: Text(
               'Processing',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 20,
-                fontWeight: FontWeight.w600,
-                fontFamily: 'Poppins',
-              ),
+              style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
             ),
           ),
         ],
@@ -352,12 +347,18 @@ class _ProcessingSummaryCard extends StatelessWidget {
     required this.hasFailed,
   });
 
+  Color _progressColor() {
+    if (hasFailed) return AppColors.accentSoft;
+    if (isFinished) return AppColors.success;
+    return AppColors.accent;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: const Color(0xFF091425),
+        color: AppColors.backgroundSecondary,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
           color: Colors.white.withOpacity(0.05),
@@ -371,7 +372,7 @@ class _ProcessingSummaryCard extends StatelessWidget {
             child: Container(
               width: 82,
               height: 100,
-              color: const Color(0xFF16243B),
+              color: AppColors.card,
               child: Image.file(
                 File(imagePath),
                 fit: BoxFit.cover,
@@ -379,7 +380,7 @@ class _ProcessingSummaryCard extends StatelessWidget {
                   return const Center(
                     child: Icon(
                       Icons.image_outlined,
-                      color: Color(0xFFA0AFC4),
+                      color: AppColors.textSecondary,
                     ),
                   );
                 },
@@ -403,29 +404,22 @@ class _ProcessingSummaryCard extends StatelessWidget {
                       ? Icons.check_circle_outline_rounded
                       : Icons.sync_rounded,
                   accentColor: hasFailed
-                      ? const Color(0xFFFF7E57)
+                      ? AppColors.accentSoft
                       : isFinished
-                      ? const Color(0xFF4DD0A9)
-                      : const Color(0xFFFFA36A),
+                      ? AppColors.success
+                      : AppColors.warning,
                 ),
                 const SizedBox(height: 10),
                 Text(
                   title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'Poppins',
-                  ),
+                  style: AppTextStyles.cardTitle.copyWith(fontSize: 18),
                 ),
                 const SizedBox(height: 6),
                 Text(
                   subtitle,
-                  style: const TextStyle(
-                    color: Color(0xFFA0AFC4),
+                  style: AppTextStyles.bodySecondary.copyWith(
                     fontSize: 13,
                     height: 1.45,
-                    fontFamily: 'Inter',
                   ),
                 ),
                 const SizedBox(height: 14),
@@ -434,21 +428,17 @@ class _ProcessingSummaryCard extends StatelessWidget {
                   child: LinearProgressIndicator(
                     value: progressValue,
                     minHeight: 8,
-                    backgroundColor: const Color(0xFF20304A),
+                    backgroundColor: AppColors.border,
                     valueColor: AlwaysStoppedAnimation<Color>(
-                      hasFailed
-                          ? const Color(0xFFFF7E57)
-                          : const Color(0xFFFF8F69),
+                      _progressColor(),
                     ),
                   ),
                 ),
                 const SizedBox(height: 8),
                 Text(
                   '$completedCount of $totalCount stages completed',
-                  style: const TextStyle(
-                    color: Color(0xFFB4C0D0),
-                    fontSize: 12,
-                    fontFamily: 'Inter',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textSecondary,
                   ),
                 ),
               ],
@@ -468,12 +458,10 @@ class _ProcessingSummaryCard extends StatelessWidget {
 /// - title and explanation
 /// - current status marker
 class _ProcessingStageCard extends StatelessWidget {
-  final String indexLabel;
   final ProcessingStageItem stage;
   final bool isActive;
 
   const _ProcessingStageCard({
-    required this.indexLabel,
     required this.stage,
     required this.isActive,
   });
@@ -481,13 +469,13 @@ class _ProcessingStageCard extends StatelessWidget {
   Color _statusColor() {
     switch (stage.status) {
       case ProcessingStageStatus.pending:
-        return const Color(0xFF566487);
+        return AppColors.textMuted;
       case ProcessingStageStatus.active:
-        return const Color(0xFFFFA36A);
+        return AppColors.warning;
       case ProcessingStageStatus.completed:
-        return const Color(0xFF4DD0A9);
+        return AppColors.success;
       case ProcessingStageStatus.failed:
-        return const Color(0xFFFF7E57);
+        return AppColors.accentSoft;
     }
   }
 
@@ -525,7 +513,7 @@ class _ProcessingStageCard extends StatelessWidget {
       duration: const Duration(milliseconds: 220),
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: isActive ? const Color(0xFF16243B) : const Color(0xFF101C31),
+        color: isActive ? AppColors.card : const Color(0xFF101C31),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: isActive
@@ -546,32 +534,10 @@ class _ProcessingStageCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            width: 38,
-            height: 38,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: const Color(0xFF20304A),
-              border: Border.all(
-                color: Colors.white.withOpacity(0.05),
-              ),
-            ),
-            child: Text(
-              indexLabel,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                fontFamily: 'Inter',
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Container(
             width: 46,
             height: 46,
             decoration: BoxDecoration(
-              color: const Color(0xFF20304A),
+              color: AppColors.border,
               borderRadius: BorderRadius.circular(14),
             ),
             child: Icon(
@@ -586,21 +552,14 @@ class _ProcessingStageCard extends StatelessWidget {
               children: [
                 Text(
                   stage.title,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'Poppins',
-                  ),
+                  style: AppTextStyles.cardTitle.copyWith(fontSize: 15),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   stage.subtitle,
-                  style: const TextStyle(
-                    color: Color(0xFFA0AFC4),
+                  style: AppTextStyles.bodySecondary.copyWith(
                     fontSize: 12.5,
                     height: 1.45,
-                    fontFamily: 'Inter',
                   ),
                 ),
               ],
@@ -617,11 +576,9 @@ class _ProcessingStageCard extends StatelessWidget {
               const SizedBox(height: 6),
               Text(
                 _statusLabel(),
-                style: TextStyle(
+                style: AppTextStyles.caption.copyWith(
                   color: statusColor,
-                  fontSize: 11,
                   fontWeight: FontWeight.w600,
-                  fontFamily: 'Inter',
                 ),
               ),
             ],
@@ -656,7 +613,7 @@ class _ProcessingFooter extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
       decoration: BoxDecoration(
-        color: const Color(0xFF091425),
+        color: AppColors.backgroundSecondary,
         border: Border(
           top: BorderSide(
             color: Colors.white.withOpacity(0.04),
@@ -671,16 +628,16 @@ class _ProcessingFooter extends StatelessWidget {
               icon: Icons.refresh_rounded,
               label: 'Retry',
               onTap: onRetry,
-              backgroundColor: const Color(0xFF16243B),
-              foregroundColor: const Color(0xFFFFA36A),
+              backgroundColor: AppColors.card,
+              foregroundColor: AppColors.warning,
             )
                 : isFinished
                 ? _FooterActionButton(
               icon: Icons.arrow_forward_rounded,
               label: 'Continue',
               onTap: onContinue,
-              backgroundColor: const Color(0xFFFF8F69),
-              foregroundColor: Colors.white,
+              backgroundColor: AppColors.accent,
+              foregroundColor: AppColors.textPrimary,
             )
                 : const _FooterInfoLabel(
               icon: Icons.hourglass_top_rounded,
@@ -712,7 +669,7 @@ class _HeaderCircleButton extends StatelessWidget {
         shape: BoxShape.circle,
         color: const Color(0x220B162B),
         border: Border.all(
-          color: const Color(0xFF22314B),
+          color: AppColors.border,
         ),
       ),
       child: IconButton(
@@ -720,7 +677,7 @@ class _HeaderCircleButton extends StatelessWidget {
         icon: Icon(
           icon,
           size: 19,
-          color: const Color(0xFFB4C0D0),
+          color: AppColors.textSecondary,
         ),
       ),
     );
@@ -744,7 +701,7 @@ class _StatusPill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFF16243B),
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(999),
         border: Border.all(
           color: Colors.white.withOpacity(0.04),
@@ -761,11 +718,9 @@ class _StatusPill extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             label,
-            style: TextStyle(
+            style: AppTextStyles.caption.copyWith(
               color: accentColor,
-              fontSize: 12,
               fontWeight: FontWeight.w600,
-              fontFamily: 'Inter',
             ),
           ),
         ],
@@ -814,11 +769,8 @@ class _FooterActionButton extends StatelessWidget {
               const SizedBox(width: 8),
               Text(
                 label,
-                style: TextStyle(
+                style: AppTextStyles.button.copyWith(
                   color: foregroundColor,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  fontFamily: 'Poppins',
                 ),
               ),
             ],
@@ -844,7 +796,7 @@ class _FooterInfoLabel extends StatelessWidget {
     return Container(
       height: 54,
       decoration: BoxDecoration(
-        color: const Color(0xFF16243B),
+        color: AppColors.card,
         borderRadius: BorderRadius.circular(16),
       ),
       alignment: Alignment.center,
@@ -853,17 +805,15 @@ class _FooterInfoLabel extends StatelessWidget {
         children: [
           Icon(
             icon,
-            color: const Color(0xFFA0AFC4),
+            color: AppColors.textSecondary,
             size: 19,
           ),
           const SizedBox(width: 8),
           Text(
             label,
-            style: const TextStyle(
-              color: Color(0xFFA0AFC4),
+            style: AppTextStyles.bodySecondary.copyWith(
               fontSize: 14,
               fontWeight: FontWeight.w500,
-              fontFamily: 'Inter',
             ),
           ),
         ],

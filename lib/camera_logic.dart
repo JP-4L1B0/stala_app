@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'core/theme/app_colors.dart';
+import 'core/theme/app_text_styles.dart';
 import 'processing_page.dart';
 
 /// Main camera workflow page for the STALA capture flow.
@@ -420,7 +422,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
     if (!mounted) return;
 
-    await showModalBottomSheet<void>(
+    await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
@@ -435,7 +437,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
               heightFactor: 0.83,
               child: Container(
                 decoration: const BoxDecoration(
-                  color: Color(0xFF081222),
+                  color: AppColors.background,
                   borderRadius: BorderRadius.vertical(
                     top: Radius.circular(28),
                   ),
@@ -449,7 +451,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                       width: 46,
                       height: 5,
                       decoration: BoxDecoration(
-                        color: const Color(0xFF566487),
+                        color: AppColors.textMuted,
                         borderRadius: BorderRadius.circular(999),
                       ),
                     ),
@@ -461,24 +463,19 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       child: Row(
                         children: [
-                          const Expanded(
+                          Expanded(
                             child: Text(
                               'Image Preview',
-                              style: TextStyle(
-                                color: Colors.white,
+                              style: AppTextStyles.sectionTitle.copyWith(
                                 fontSize: 20,
-                                fontWeight: FontWeight.w600,
-                                fontFamily: 'Poppins',
                               ),
                             ),
                           ),
                           Text(
                             sourceLabel,
-                            style: const TextStyle(
-                              color: Color(0xFFA0AFC4),
+                            style: AppTextStyles.bodySecondary.copyWith(
                               fontSize: 13,
                               fontWeight: FontWeight.w500,
-                              fontFamily: 'Inter',
                             ),
                           ),
                         ],
@@ -494,7 +491,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(22),
                           child: Container(
-                            color: const Color(0xFF05101D),
+                            color: AppColors.surface,
                             child: LayoutBuilder(
                               builder: (context, constraints) {
                                 final previewSize = Size(
@@ -509,7 +506,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                       File(imagePath),
                                       fit: BoxFit.contain,
                                     ),
-
                                     IgnorePointer(
                                       child: CustomPaint(
                                         painter: _DocumentBoundsPainter(
@@ -517,7 +513,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                         ),
                                       ),
                                     ),
-
                                     _DraggableCornerHandle(
                                       point: currentBounds.topLeft,
                                       previewSize: previewSize,
@@ -582,7 +577,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                         color: const Color(0x66000000),
                                         child: const Center(
                                           child: CircularProgressIndicator(
-                                            color: Color(0xFFFF8F69),
+                                            color: AppColors.accent,
                                           ),
                                         ),
                                       ),
@@ -601,7 +596,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                     Container(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 18),
                       decoration: const BoxDecoration(
-                        color: Color(0xFF091425),
+                        color: AppColors.backgroundSecondary,
                         borderRadius: BorderRadius.vertical(
                           top: Radius.circular(22),
                         ),
@@ -612,7 +607,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                             child: _PreviewFooterAction(
                               icon: Icons.refresh_rounded,
                               label: 'Retry',
-                              color: const Color(0xFFA0AFC4),
+                              color: AppColors.textSecondary,
                               onTap: () {
                                 Navigator.pop(sheetContext);
                               },
@@ -623,7 +618,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                             child: _PreviewFooterAction(
                               icon: Icons.crop_free_rounded,
                               label: 'Auto Crop',
-                              color: const Color(0xFFFFA36A),
+                              color: AppColors.warning,
                               onTap: () async {
                                 setModalState(() {
                                   isProcessing = true;
@@ -646,7 +641,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                             child: _PreviewFooterAction(
                               icon: Icons.check_circle_rounded,
                               label: 'Continue',
-                              color: const Color(0xFFFF8F69),
+                              color: AppColors.accent,
                               isPrimary: true,
                               onTap: () async {
                                 setModalState(() {
@@ -678,14 +673,18 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     );
   }
 
+
   /// Shows a short message for camera and gallery flow feedback.
   void _showSnackBar(String message) {
     if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        backgroundColor: const Color(0xFF091425),
-        content: Text(message),
+        backgroundColor: AppColors.backgroundSecondary,
+        content: Text(
+          message,
+          style: AppTextStyles.body,
+        ),
       ),
     );
   }
@@ -701,12 +700,12 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     final controller = _cameraController;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF081222),
+      backgroundColor: AppColors.background,
       body: SafeArea(
         child: _isInitializingCamera
             ? const Center(
           child: CircularProgressIndicator(
-            color: Color(0xFFFF8F69),
+            color: AppColors.accent,
           ),
         )
             : controller == null || !controller.value.isInitialized
@@ -780,7 +779,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                 children: [
                   _BottomSquareButton(
                     icon: Icons.photo_library_outlined,
-                    backgroundColor: const Color(0xFFFF7E57),
+                    backgroundColor: AppColors.accentSoft,
                     onTap: _pickImageFromGallery,
                   ),
                   _ShutterButton(
@@ -798,7 +797,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                   color: const Color(0x66000000),
                   child: const Center(
                     child: CircularProgressIndicator(
-                      color: Color(0xFFFF8F69),
+                      color: AppColors.accent,
                     ),
                   ),
                 ),
@@ -816,14 +815,10 @@ class _CameraUnavailableView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Text(
         'Camera unavailable',
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: 16,
-          fontFamily: 'Inter',
-        ),
+        style: AppTextStyles.body.copyWith(fontSize: 16),
       ),
     );
   }
@@ -847,14 +842,16 @@ class _TopCircleButton extends StatelessWidget {
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: const Color(0x220B162B),
-        border: Border.all(color: const Color(0xFF22314B)),
+        border: Border.all(
+          color: AppColors.border,
+        ),
       ),
       child: IconButton(
         onPressed: onTap,
         icon: Icon(
           icon,
           size: 20,
-          color: const Color(0xFFB4C0D0),
+          color: AppColors.textSecondary,
         ),
       ),
     );
@@ -886,7 +883,7 @@ class _BottomSquareButton extends StatelessWidget {
         ),
         child: Icon(
           icon,
-          color: Colors.white,
+          color: AppColors.textPrimary,
           size: 24,
         ),
       ),
@@ -911,9 +908,9 @@ class _ShutterButton extends StatelessWidget {
         height: 82,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: Colors.white,
+          color: AppColors.textPrimary,
           border: Border.all(
-            color: const Color(0xFFB4C0D0),
+            color: AppColors.textSecondary,
             width: 4,
           ),
           boxShadow: const [
@@ -970,30 +967,29 @@ class _PreviewFooterAction extends StatelessWidget {
         child: Ink(
           height: 56,
           decoration: BoxDecoration(
-            color: isPrimary
-                ? const Color(0xFF111F35)
-                : const Color(0xFF081222),
+            color: isPrimary ? AppColors.card : AppColors.background,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: isPrimary
                   ? const Color(0x33FF8F69)
-                  : const Color(0xFF1A2940),
+                  : AppColors.border,
             ),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, color: color, size: 20),
+              Icon(
+                icon,
+                color: color,
+                size: 20,
+              ),
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
                   label,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+                  style: AppTextStyles.button.copyWith(
                     color: color,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'Poppins',
                   ),
                 ),
               ),
@@ -1037,9 +1033,9 @@ class _DraggableCornerHandle extends StatelessWidget {
             height: 18,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: Colors.white,
+              color: AppColors.textPrimary,
               border: Border.all(
-                color: const Color(0xFF27E1C1),
+                color: AppColors.success,
                 width: 3,
               ),
             ),
@@ -1074,16 +1070,16 @@ class _DocumentBoundsPainter extends CustomPainter {
     );
 
     final borderPaint = Paint()
-      ..color = const Color(0xFF27E1C1)
+      ..color = AppColors.success
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke;
 
     final handleFillPaint = Paint()
-      ..color = Colors.white
+      ..color = AppColors.textPrimary
       ..style = PaintingStyle.fill;
 
     final handleStrokePaint = Paint()
-      ..color = const Color(0xFF27E1C1)
+      ..color = AppColors.success
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
 
@@ -1113,7 +1109,7 @@ class _CameraGridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = const Color(0x33B4C0D0)
+      ..color = AppColors.textSecondary.withOpacity(0.20)
       ..strokeWidth = 0.8;
 
     final col1 = size.width / 3;
