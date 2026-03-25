@@ -323,11 +323,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     );
   }
 
-  /// Re-runs boundary detection and returns fresh crop points.
-  Future<DocumentBounds> _resetDocumentBounds(String imagePath) async {
-    return _detectDocumentBounds(imagePath);
-  }
-
   bool _isValidBounds(DocumentBounds bounds) {
     double widthTop = (bounds.topRight.x - bounds.topLeft.x).abs();
     double widthBottom = (bounds.bottomRight.x - bounds.bottomLeft.x).abs();
@@ -689,6 +684,11 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                               color: AppColors.accent,
                               isPrimary: true,
                               onTap: () async {
+                                if (!_isValidBounds(currentBounds)) {
+                                  _showSnackBar('Crop area is too small or invalid.');
+                                  return;
+                                }
+
                                 setModalState(() {
                                   isProcessing = true;
                                 });
@@ -698,13 +698,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                   bounds: currentBounds,
                                 );
 
-                                if (!_isValidBounds(currentBounds)) {
-                                  setModalState(() {
-                                    isProcessing = false;
-                                  });
-                                  _showSnackBar('Crop area is too small or invalid.');
-                                  return;
-                                }
+                                if (!mounted) return;
 
                                 Navigator.pop(sheetContext);
                                 await _openProcessingPage(croppedImagePath);
