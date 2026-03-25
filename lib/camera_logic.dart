@@ -288,9 +288,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
   /// Asks the native layer to detect document bounds on the selected image.
   ///
-  /// If detection fails or is not implemented yet, a safe default crop box
-  /// is returned so the UI still remains usable.
-  Future<DocumentBounds> _detectDocumentBounds(String imagePath) async {
+  /// Unlike the old version, this does not silently pretend success.
+  /// If no document is detected, the UI can stop auto-crop cleanly.
+  Future<DocumentDetectionResult> _detectDocumentBounds(String imagePath) async {
     try {
       final result = await _pythonChannel.invokeMethod(
         'detectDocumentBounds',
@@ -298,18 +298,48 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       );
 
       if (result is Map) {
-        return DocumentBounds.fromMap(result);
+        final hasDocument = result['hasDocument'] == true;
+        final confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
+        final reason = result['reason']?.toString();
+
+        if (hasDocument && result['bounds'] is Map) {
+          return DocumentDetectionResult.success(
+            bounds: DocumentBounds.fromMap(result['bounds']),
+            confidence: confidence,
+          );
+        }
+
+        return DocumentDetectionResult.failure(
+          confidence: confidence,
+          reason: reason ?? 'No visible document detected.',
+        );
       }
     } catch (_) {
-      //
+      // Keep failure quiet here; the UI will handle the message.
     }
 
-    return DocumentBounds.defaultInset();
+    return DocumentDetectionResult.failure(
+      reason: 'Automatic crop is unavailable.',
+    );
   }
 
   /// Re-runs boundary detection and returns fresh crop points.
   Future<DocumentBounds> _resetDocumentBounds(String imagePath) async {
     return _detectDocumentBounds(imagePath);
+  }
+
+  bool _isValidBounds(DocumentBounds bounds) {
+    double widthTop = (bounds.topRight.x - bounds.topLeft.x).abs();
+    double widthBottom = (bounds.bottomRight.x - bounds.bottomLeft.x).abs();
+    double heightLeft = (bounds.bottomLeft.y - bounds.topLeft.y).abs();
+    double heightRight = (bounds.bottomRight.y - bounds.topRight.y).abs();
+
+    const minSize = 0.08;
+
+    return widthTop >= minSize &&
+        widthBottom >= minSize &&
+        heightLeft >= minSize &&
+        heightRight >= minSize;
   }
 
   /// Sends the current crop bounds to the native layer and requests
@@ -418,7 +448,11 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     required String imagePath,
     required String sourceLabel,
   }) async {
-    final initialBounds = await _detectDocumentBounds(imagePath);
+    final detectionResult = await _detectDocumentBounds(imagePath);
+    final initialBounds =
+    detectionResult.hasDocument && detectionResult.bounds != null
+        ? detectionResult.bounds!
+        : DocumentBounds.defaultInset();
 
     if (!mounted) return;
 
@@ -624,15 +658,26 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                   isProcessing = true;
                                 });
 
-                                final detectedBounds =
-                                await _resetDocumentBounds(imagePath);
+                                final detection = await _detectDocumentBounds(imagePath);
 
                                 if (!mounted) return;
 
                                 setModalState(() {
-                                  currentBounds = detectedBounds;
                                   isProcessing = false;
                                 });
+
+                                if (detection.hasDocument && detection.bounds != null) {
+                                  setModalState(() {
+                                    currentBounds = detection.bounds!;
+                                  });
+
+                                  _showSnackBar('Document detected.');
+                                  return;
+                                }
+
+                                _showSnackBar(
+                                  detection.reason ?? 'No visible document detected. Adjust manually or retake the image.',
+                                );
                               },
                             ),
                           ),
@@ -653,7 +698,13 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                   bounds: currentBounds,
                                 );
 
-                                if (!mounted) return;
+                                if (!_isValidBounds(currentBounds)) {
+                                  setModalState(() {
+                                    isProcessing = false;
+                                  });
+                                  _showSnackBar('Crop area is too small or invalid.');
+                                  return;
+                                }
 
                                 Navigator.pop(sheetContext);
                                 await _openProcessingPage(croppedImagePath);
@@ -1125,4 +1176,44 @@ class _CameraGridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+/// Result returned by document auto-detection.
+///
+/// This tells the UI whether a document was found and, if so,
+/// what bounds should be used for the crop overlay.
+class DocumentDetectionResult {
+  final bool hasDocument;
+  final double confidence;
+  final DocumentBounds? bounds;
+  final String? reason;
+
+  const DocumentDetectionResult({
+    required this.hasDocument,
+    required this.confidence,
+    this.bounds,
+    this.reason,
+  });
+
+  factory DocumentDetectionResult.success({
+    required DocumentBounds bounds,
+    double confidence = 1.0,
+  }) {
+    return DocumentDetectionResult(
+      hasDocument: true,
+      confidence: confidence,
+      bounds: bounds,
+    );
+  }
+
+  factory DocumentDetectionResult.failure({
+    double confidence = 0.0,
+    String? reason,
+  }) {
+    return DocumentDetectionResult(
+      hasDocument: false,
+      confidence: confidence,
+      reason: reason,
+    );
+  }
 }
