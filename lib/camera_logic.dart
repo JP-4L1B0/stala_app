@@ -314,9 +314,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
           reason: reason ?? 'No visible document detected.',
         );
       }
-    } catch (_) {
-      // Keep failure quiet here; the UI will handle the message.
-    }
+    } catch (_) {}
 
     return DocumentDetectionResult.failure(
       reason: 'Automatic crop is unavailable.',

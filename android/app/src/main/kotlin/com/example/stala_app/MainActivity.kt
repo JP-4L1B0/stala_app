@@ -58,28 +58,44 @@ class MainActivity : FlutterActivity() {
             return
         }
 
-        // Temporary placeholder response.
-        // Replace this later with OpenCV or Chaquopy logic.
-        result.success(
-            mapOf(
-                "hasDocument" to false,
-                "confidence" to 0.0,
-                "reason" to "Auto-crop detection is not implemented yet."
+        try {
+            val detection = DocumentProcessor.detectDocumentBounds(imagePath)
+            result.success(detection)
+        } catch (e: Exception) {
+            result.success(
+                mapOf(
+                    "hasDocument" to false,
+                    "confidence" to 0.0,
+                    "reason" to "Detection failed: ${e.message ?: "Unknown error"}"
+                )
             )
-        )
+        }
     }
 
     private fun handleCropDocumentImage(call: MethodCall, result: MethodChannel.Result) {
         val imagePath = call.argument<String>("imagePath")
+        val bounds = call.argument<Map<String, Any?>>("bounds")
 
         if (imagePath.isNullOrBlank()) {
             result.success("")
             return
         }
 
-        // Temporary fallback:
-        // return original path until real crop logic is added.
-        result.success(imagePath)
+        if (bounds == null) {
+            result.success(imagePath)
+            return
+        }
+
+        try {
+            val croppedPath = DocumentProcessor.cropDocumentImage(
+                imagePath = imagePath,
+                bounds = bounds
+            )
+
+            result.success(croppedPath ?: imagePath)
+        } catch (e: Exception) {
+            result.success(imagePath)
+        }
     }
 
     private fun isMyAccessibilityServiceEnabled(): Boolean {
