@@ -157,6 +157,14 @@ object DocumentProcessor {
         val minY = (ys.filterNotNull().minOrNull() ?: 0f).coerceIn(0f, 1f)
         val maxY = (ys.filterNotNull().maxOrNull() ?: 1f).coerceIn(0f, 1f)
 
+        // A quick normalized size check before trying to crop
+        val normalizedWidth = maxX - minX
+        val normalizedHeight = maxY - minY
+
+        if (normalizedWidth < 0.08f || normalizedHeight < 0.08f) {
+            return recycleAndNull(bitmap)
+        }
+
         val left = (minX * width).toInt().coerceIn(0, width - 1)
         val top = (minY * height).toInt().coerceIn(0, height - 1)
         val right = (maxX * width).toInt().coerceIn(left + 1, width)
