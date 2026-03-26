@@ -6,6 +6,7 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
 import kotlin.math.min
+import android.util.Log
 
 /**
  * Handles document boundary detection and crop output for the STALA capture flow.
@@ -61,10 +62,24 @@ object DocumentProcessor {
         val top = findTopEdge(scaledBitmap)
         val bottom = findBottomEdge(scaledBitmap)
 
+        if (left == null || right == null || top == null || bottom == null) {
+            scaledBitmap.recycle()
+            return failure("No clear document detected.")
+        }
+
+        // Debugging line #1
+        Log.d("DocumentProcessor", "left=$left right=$right top=$top bottom=$bottom")
+
         val normalizedLeft = left.toDouble() / scaledBitmap.width.toDouble()
         val normalizedRight = right.toDouble() / scaledBitmap.width.toDouble()
         val normalizedTop = top.toDouble() / scaledBitmap.height.toDouble()
         val normalizedBottom = bottom.toDouble() / scaledBitmap.height.toDouble()
+
+        // Debugging line #2
+        Log.d(
+            "DocumentProcessor",
+            "normalizedLeft=$normalizedLeft normalizedRight=$normalizedRight normalizedTop=$normalizedTop normalizedBottom=$normalizedBottom"
+        )
 
         val detectedWidth = normalizedRight - normalizedLeft
         val detectedHeight = normalizedBottom - normalizedTop
@@ -210,9 +225,8 @@ object DocumentProcessor {
         return null
     }
 
-    private fun findLeftEdge(bitmap: Bitmap): Int {
+    private fun findLeftEdge(bitmap: Bitmap): Int? {
         val width = bitmap.width
-        val height = bitmap.height
         val startX = (width * 0.05).toInt()
         val endX = (width * 0.45).toInt()
 
@@ -223,10 +237,10 @@ object DocumentProcessor {
             }
         }
 
-        return (width * 0.08).toInt()
+        return null
     }
 
-    private fun findRightEdge(bitmap: Bitmap): Int {
+    private fun findRightEdge(bitmap: Bitmap): Int? {
         val width = bitmap.width
         val startX = (width * 0.95).toInt()
         val endX = (width * 0.55).toInt()
@@ -238,10 +252,10 @@ object DocumentProcessor {
             }
         }
 
-        return (width * 0.92).toInt()
+        return null
     }
 
-    private fun findTopEdge(bitmap: Bitmap): Int {
+    private fun findTopEdge(bitmap: Bitmap): Int? {
         val height = bitmap.height
         val startY = (height * 0.05).toInt()
         val endY = (height * 0.45).toInt()
@@ -253,10 +267,10 @@ object DocumentProcessor {
             }
         }
 
-        return (height * 0.12).toInt()
+        return null
     }
 
-    private fun findBottomEdge(bitmap: Bitmap): Int {
+    private fun findBottomEdge(bitmap: Bitmap): Int? {
         val height = bitmap.height
         val startY = (height * 0.95).toInt()
         val endY = (height * 0.55).toInt()
@@ -268,7 +282,7 @@ object DocumentProcessor {
             }
         }
 
-        return (height * 0.90).toInt()
+        return null
     }
 
     private fun columnDarkRatio(bitmap: Bitmap, x: Int): Double {
