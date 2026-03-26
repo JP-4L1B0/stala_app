@@ -11,12 +11,13 @@ import kotlin.math.min
  * Handles document boundary detection and crop output for the STALA capture flow.
  *
  * Current version:
- * - Returns a simple centered document candidate when the image is large enough
- * - Returns explicit failure when no usable image is found
+ * - Downscales the image for faster scanning
+ * - Estimates document borders through row/column darkness checks
+ * - Returns explicit failure when no clear document region is found
  * - Crops using the normalized bounds received from Flutter
  *
  * Later upgrade path:
- * - Replace detectDocumentBounds with OpenCV contour detection
+ * - Replace border scanning with OpenCV contour detection
  * - Replace rectangular crop with perspective warp
  */
 object DocumentProcessor {
