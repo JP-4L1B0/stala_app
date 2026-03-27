@@ -442,12 +442,19 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     required String sourceLabel,
   }) async {
     final detectionResult = await _detectDocumentBounds(imagePath);
+
     final initialBounds =
     detectionResult.hasDocument && detectionResult.bounds != null
         ? detectionResult.bounds!
         : DocumentBounds.defaultInset();
 
-    if (!mounted) return;
+    if (!detectionResult.hasDocument) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showSnackBar(
+          detectionResult.reason ?? 'No clear document detected. Adjust manually or retake.',
+        );
+      });
+    }
 
     await showModalBottomSheet(
       context: context,
@@ -664,12 +671,12 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                     currentBounds = detection.bounds!;
                                   });
 
-                                  _showSnackBar('Document detected.');
+                                  _showSnackBar('Auto-crop updated.');
                                   return;
                                 }
 
                                 _showSnackBar(
-                                  detection.reason ?? 'No visible document detected. Adjust manually or retake the image.',
+                                  detection.reason ?? 'No clear document detected. Keeping current crop.',
                                 );
                               },
                             ),
