@@ -147,6 +147,10 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
   bool _isInitializingCamera = true;
   bool _isCapturingImage = false;
 
+  bool _isHdEnabled = true;
+  FlashMode _selectedFlashMode = FlashMode.off;
+
+
   @override
   void initState() {
     super.initState();
@@ -158,7 +162,18 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
   /// Auto focus and auto exposure are enabled after setup to keep the
   /// capture experience simple and mostly automatic.
   Future<void> _initializeCamera() async {
+    final oldController = _cameraController;
+
     try {
+      if (mounted) {
+        setState(() {
+          _isInitializingCamera = true;
+          _cameraController = null;
+        });
+      }
+
+      await oldController?.dispose();
+
       _availableCameras = await availableCameras();
 
       if (_availableCameras.isEmpty) {
@@ -172,7 +187,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
       final controller = CameraController(
         backCamera,
-        ResolutionPreset.high,
+        _isHdEnabled ? ResolutionPreset.high : ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.jpeg,
       );
@@ -180,6 +195,12 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       await controller.initialize();
       await controller.setFocusMode(FocusMode.auto);
       await controller.setExposureMode(ExposureMode.auto);
+
+      try {
+        await controller.setFlashMode(_selectedFlashMode);
+      } catch (_) {
+        //
+      }
 
       if (!mounted) {
         await controller.dispose();
@@ -194,11 +215,221 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       if (!mounted) return;
 
       setState(() {
+        _cameraController = null;
         _isInitializingCamera = false;
       });
 
       _showSnackBar('Failed to initialize camera: $error');
     }
+  }
+
+  Future<void> _setFlashMode(FlashMode mode) async {
+    final controller = _cameraController;
+
+    if (controller == null || !controller.value.isInitialized) return;
+
+    try {
+      await controller.setFlashMode(mode);
+
+      if (!mounted) return;
+
+      setState(() {
+        _selectedFlashMode = mode;
+      });
+    } catch (error) {
+      _showSnackBar('Failed to change flash mode: $error');
+    }
+  }
+
+  Future<void> _toggleHd(bool enabled) async {
+    if (_isHdEnabled == enabled) return;
+
+    setState(() {
+      _isHdEnabled = enabled;
+    });
+
+    await _initializeCamera();
+  }
+
+  String _flashModeLabel(FlashMode mode) {
+    switch (mode) {
+      case FlashMode.off:
+        return 'OFF';
+      case FlashMode.auto:
+        return 'AUTO';
+      case FlashMode.always:
+        return 'ON';
+      case FlashMode.torch:
+        return 'TORCH';
+    }
+  }
+
+  Future<void> _showCameraSettingsSheet() async {
+    await showModalBottomSheet(
+      context: context,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Container(
+              decoration: const BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(28),
+                ),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 46,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: AppColors.textMuted,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Text(
+                      'Camera Settings',
+                      style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
+                    ),
+                    const SizedBox(height: 18),
+
+                    /// HD Toggle
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.backgroundSecondary,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.hd_rounded,
+                            color: AppColors.accent,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'HD Capture',
+                                  style: AppTextStyles.cardTitle.copyWith(
+                                    fontSize: 15,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  _isHdEnabled
+                                      ? 'High resolution is enabled.'
+                                      : 'Medium resolution is enabled.',
+                                  style: AppTextStyles.bodySecondary.copyWith(
+                                    fontSize: 12.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Switch(
+                            value: _isHdEnabled,
+                            onChanged: (value) async {
+                              Navigator.pop(sheetContext);
+                              await _toggleHd(value);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 14),
+
+                    /// Flash Mode
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: AppColors.backgroundSecondary,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Flash Mode',
+                            style: AppTextStyles.cardTitle.copyWith(
+                              fontSize: 15,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Current: ${_flashModeLabel(_selectedFlashMode)}',
+                            style: AppTextStyles.bodySecondary.copyWith(
+                              fontSize: 12.5,
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _FlashModeButton(
+                                  label: 'OFF',
+                                  isSelected:
+                                  _selectedFlashMode == FlashMode.off,
+                                  onTap: () async {
+                                    Navigator.pop(sheetContext);
+                                    await _setFlashMode(FlashMode.off);
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _FlashModeButton(
+                                  label: 'AUTO',
+                                  isSelected:
+                                  _selectedFlashMode == FlashMode.auto,
+                                  onTap: () async {
+                                    Navigator.pop(sheetContext);
+                                    await _setFlashMode(FlashMode.auto);
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _FlashModeButton(
+                                  label: 'ON',
+                                  isSelected:
+                                  _selectedFlashMode == FlashMode.always,
+                                  onTap: () async {
+                                    Navigator.pop(sheetContext);
+                                    await _setFlashMode(FlashMode.always);
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   /// Requests access to photos before opening gallery.
@@ -423,12 +654,33 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
   /// Navigates to the processing page using the finalized image path.
   Future<void> _openProcessingPage(String imagePath) async {
+    final oldController = _cameraController;
+
+    if (mounted) {
+      setState(() {
+        _cameraController = null;
+        _isInitializingCamera = true;
+      });
+    }
+
+    try {
+      await oldController?.dispose();
+    } catch (_) {
+      //
+    }
+
+    if (!mounted) return;
+
     await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => ProcessingPage(imagePath: imagePath),
       ),
     );
+
+    if (!mounted) return;
+
+    await _initializeCamera();
   }
 
   /// Shows the image preview bottom sheet.
@@ -464,6 +716,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       builder: (sheetContext) {
         DocumentBounds currentBounds = initialBounds;
         bool isProcessing = false;
+        int cropOverlayVersion = 0;
+        bool hasShownInitialDetectionMessage = false;
 
         return StatefulBuilder(
           builder: (context, setModalState) {
@@ -669,6 +923,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                 if (detection.hasDocument && detection.bounds != null) {
                                   setModalState(() {
                                     currentBounds = detection.bounds!;
+                                    cropOverlayVersion++;
                                   });
 
                                   _showSnackBar('Auto-crop updated.');
@@ -809,11 +1064,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                   ),
                   _TopCircleButton(
                     icon: Icons.settings_outlined,
-                    onTap: () {
-                      _showSnackBar(
-                        'Settings button is reserved for future camera options.',
-                      );
-                    },
+                    onTap: _showCameraSettingsSheet,
                   ),
                 ],
               ),
@@ -1044,6 +1295,51 @@ class _PreviewFooterAction extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FlashModeButton extends StatelessWidget {
+  final String label;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _FlashModeButton({
+    required this.label,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Ink(
+          height: 46,
+          decoration: BoxDecoration(
+            color: isSelected ? AppColors.card : AppColors.background,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: isSelected
+                  ? AppColors.accent
+                  : AppColors.border,
+            ),
+          ),
+          child: Center(
+            child: Text(
+              label,
+              style: AppTextStyles.button.copyWith(
+                color: isSelected
+                    ? AppColors.accent
+                    : AppColors.textSecondary,
+              ),
+            ),
           ),
         ),
       ),

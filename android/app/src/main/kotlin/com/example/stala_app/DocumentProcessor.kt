@@ -6,6 +6,9 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
 import android.util.Log
+import androidx.core.graphics.scale
+import androidx.core.graphics.get
+import androidx.core.graphics.createBitmap
 
 /**
  * Handles document boundary detection and crop output for the STALA capture flow.
@@ -62,15 +65,18 @@ object DocumentProcessor {
 
         val targetWidth = 400
         val scale = targetWidth.toFloat() / width.toFloat()
-        val scaledWidth = targetWidth
         val scaledHeight = (height * scale).toInt().coerceAtLeast(1)
 
-        val scaledBitmap = Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
+        val scaledBitmap = bitmap.scale(targetWidth, scaledHeight)
         bitmap.recycle()
 
-        Log.d("DocumentProcessor", "scaledWidth=$scaledWidth scaledHeight=$scaledHeight")
+        Log.d("DocumentProcessor", "scaledWidth=$targetWidth scaledHeight=$scaledHeight")
 
-        val detectedBounds = findBrightDocumentBounds(scaledBitmap)
+        val detectedBounds =
+            findContourDocumentBounds(scaledBitmap)
+                ?: findBrightDocumentBounds(scaledBitmap)
+        Log.d("DocumentProcessor", "detectedBounds=${detectedBounds?.contentToString()}")
+
         if (detectedBounds == null) {
             Log.d("DocumentProcessor", "findBrightDocumentBounds returned null")
             scaledBitmap.recycle()
@@ -89,10 +95,74 @@ object DocumentProcessor {
 
         Log.d("DocumentProcessor", "left=$left right=$right top=$top bottom=$bottom")
 
-        val normalizedLeft = left.toDouble() / scaledBitmap.width.toDouble()
-        val normalizedRight = right.toDouble() / scaledBitmap.width.toDouble()
-        val normalizedTop = top.toDouble() / scaledBitmap.height.toDouble()
-        val normalizedBottom = bottom.toDouble() / scaledBitmap.height.toDouble()
+        val topLeftCorner = findCornerPoint(
+            bitmap = scaledBitmap,
+            startX = left,
+            endX = (left + right) / 2,
+            startY = top,
+            endY = (top + bottom) / 2,
+            preferLeft = true,
+            preferTop = true,
+        )
+
+        val topRightCorner = findCornerPoint(
+            bitmap = scaledBitmap,
+            startX = (left + right) / 2,
+            endX = right,
+            startY = top,
+            endY = (top + bottom) / 2,
+            preferLeft = false,
+            preferTop = true,
+        )
+
+        val bottomRightCorner = findCornerPoint(
+            bitmap = scaledBitmap,
+            startX = (left + right) / 2,
+            endX = right,
+            startY = (top + bottom) / 2,
+            endY = bottom,
+            preferLeft = false,
+            preferTop = false,
+        )
+
+        val bottomLeftCorner = findCornerPoint(
+            bitmap = scaledBitmap,
+            startX = left,
+            endX = (left + right) / 2,
+            startY = (top + bottom) / 2,
+            endY = bottom,
+            preferLeft = true,
+            preferTop = false,
+        )
+
+        val normalizedTopLeftX = topLeftCorner.first.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedTopLeftY = topLeftCorner.second.toDouble() / scaledBitmap.height.toDouble()
+
+        val normalizedTopRightX = topRightCorner.first.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedTopRightY = topRightCorner.second.toDouble() / scaledBitmap.height.toDouble()
+
+        val normalizedBottomRightX = bottomRightCorner.first.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedBottomRightY = bottomRightCorner.second.toDouble() / scaledBitmap.height.toDouble()
+
+        val normalizedBottomLeftX = bottomLeftCorner.first.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedBottomLeftY = bottomLeftCorner.second.toDouble() / scaledBitmap.height.toDouble()
+
+        val normalizedLeft = minOf(
+            normalizedTopLeftX,
+            normalizedBottomLeftX
+        )
+        val normalizedRight = maxOf(
+            normalizedTopRightX,
+            normalizedBottomRightX
+        )
+        val normalizedTop = minOf(
+            normalizedTopLeftY,
+            normalizedTopRightY
+        )
+        val normalizedBottom = maxOf(
+            normalizedBottomLeftY,
+            normalizedBottomRightY
+        )
 
         Log.d(
             "DocumentProcessor",
@@ -120,10 +190,13 @@ object DocumentProcessor {
                     normalizedLeft < normalizedRight &&
                     normalizedTop < normalizedBottom
 
-        centerX in 0.30..0.70 &&
-                centerY in 0.30..0.70
+        val isCornerShapeValid =
+            normalizedTopLeftX < normalizedTopRightX &&
+                    normalizedBottomLeftX < normalizedBottomRightX &&
+                    normalizedTopLeftY < normalizedBottomLeftY &&
+                    normalizedTopRightY < normalizedBottomRightY
 
-        if (!isValid) {
+        if (!isValid || !isCornerShapeValid) {
             scaledBitmap.recycle()
             return failure("No clear document detected.")
         }
@@ -136,10 +209,10 @@ object DocumentProcessor {
         )
 
         val flutterBounds = mapOf(
-            "topLeft" to mapOf("x" to normalizedLeft, "y" to normalizedTop),
-            "topRight" to mapOf("x" to normalizedRight, "y" to normalizedTop),
-            "bottomRight" to mapOf("x" to normalizedRight, "y" to normalizedBottom),
-            "bottomLeft" to mapOf("x" to normalizedLeft, "y" to normalizedBottom)
+            "topLeft" to mapOf("x" to normalizedTopLeftX, "y" to normalizedTopLeftY),
+            "topRight" to mapOf("x" to normalizedTopRightX, "y" to normalizedTopRightY),
+            "bottomRight" to mapOf("x" to normalizedBottomRightX, "y" to normalizedBottomRightY),
+            "bottomLeft" to mapOf("x" to normalizedBottomLeftX, "y" to normalizedBottomLeftY)
         )
 
         scaledBitmap.recycle()
@@ -169,59 +242,65 @@ object DocumentProcessor {
 
         val bitmap = BitmapFactory.decodeFile(imagePath) ?: return null
 
-        val width = bitmap.width
-        val height = bitmap.height
+        val width = bitmap.width.toFloat()
+        val height = bitmap.height.toFloat()
 
         val topLeft = bounds["topLeft"] as? Map<*, *> ?: return recycleAndNull(bitmap)
         val topRight = bounds["topRight"] as? Map<*, *> ?: return recycleAndNull(bitmap)
         val bottomRight = bounds["bottomRight"] as? Map<*, *> ?: return recycleAndNull(bitmap)
         val bottomLeft = bounds["bottomLeft"] as? Map<*, *> ?: return recycleAndNull(bitmap)
 
-        val xs = listOf(
-            (topLeft["x"] as? Number)?.toFloat(),
-            (topRight["x"] as? Number)?.toFloat(),
-            (bottomRight["x"] as? Number)?.toFloat(),
-            (bottomLeft["x"] as? Number)?.toFloat()
-        )
+        val tlx = ((topLeft["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * width
+        val tly = ((topLeft["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * height
 
-        val ys = listOf(
-            (topLeft["y"] as? Number)?.toFloat(),
-            (topRight["y"] as? Number)?.toFloat(),
-            (bottomRight["y"] as? Number)?.toFloat(),
-            (bottomLeft["y"] as? Number)?.toFloat()
-        )
+        val trx = ((topRight["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * width
+        val tryy = ((topRight["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * height
 
-        if (xs.any { it == null } || ys.any { it == null }) {
+        val brx = ((bottomRight["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * width
+        val bry = ((bottomRight["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * height
+
+        val blx = ((bottomLeft["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * width
+        val bly = ((bottomLeft["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * height
+
+        val topWidth = distance(tlx, tly, trx, tryy)
+        val bottomWidth = distance(blx, bly, brx, bry)
+        val leftHeight = distance(tlx, tly, blx, bly)
+        val rightHeight = distance(trx, tryy, brx, bry)
+
+        val outputWidth = maxOf(1, max(topWidth, bottomWidth).toInt())
+        val outputHeight = maxOf(1, max(leftHeight, rightHeight).toInt())
+
+        // Safety check
+        if (outputWidth < 50 || outputHeight < 50) {
             return recycleAndNull(bitmap)
         }
 
-        val minX = (xs.filterNotNull().minOrNull() ?: 0f).coerceIn(0f, 1f)
-        val maxX = (xs.filterNotNull().maxOrNull() ?: 1f).coerceIn(0f, 1f)
-        val minY = (ys.filterNotNull().minOrNull() ?: 0f).coerceIn(0f, 1f)
-        val maxY = (ys.filterNotNull().maxOrNull() ?: 1f).coerceIn(0f, 1f)
+        val src = floatArrayOf(
+            tlx, tly,   // top-left
+            trx, tryy,  // top-right
+            brx, bry,   // bottom-right
+            blx, bly    // bottom-left
+        )
 
-        // A quick normalized size check before trying to crop
-        val normalizedWidth = maxX - minX
-        val normalizedHeight = maxY - minY
+        val dst = floatArrayOf(
+            0f, 0f,
+            outputWidth.toFloat(), 0f,
+            outputWidth.toFloat(), outputHeight.toFloat(),
+            0f, outputHeight.toFloat()
+        )
 
-        if (normalizedWidth < 0.08f || normalizedHeight < 0.08f) {
-            return recycleAndNull(bitmap)
-        }
+        val matrix = android.graphics.Matrix()
+        val success = matrix.setPolyToPoly(src, 0, dst, 0, 4)
 
-        val left = (minX * width).toInt().coerceIn(0, width - 1)
-        val top = (minY * height).toInt().coerceIn(0, height - 1)
-        val right = (maxX * width).toInt().coerceIn(left + 1, width)
-        val bottom = (maxY * height).toInt().coerceIn(top + 1, height)
-
-        val cropWidth = max(1, right - left)
-        val cropHeight = max(1, bottom - top)
-
-        val croppedBitmap = try {
-            Bitmap.createBitmap(bitmap, left, top, cropWidth, cropHeight)
-        } catch (_: Exception) {
+        if (!success) {
             bitmap.recycle()
             return null
         }
+
+        val outputBitmap = createBitmap(outputWidth, outputHeight)
+
+        val canvas = android.graphics.Canvas(outputBitmap)
+        canvas.drawBitmap(bitmap, matrix, null)
 
         val outputFile = File(
             sourceFile.parentFile,
@@ -229,12 +308,12 @@ object DocumentProcessor {
         )
 
         FileOutputStream(outputFile).use { out ->
-            croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+            outputBitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
             out.flush()
         }
 
         bitmap.recycle()
-        croppedBitmap.recycle()
+        outputBitmap.recycle()
 
         return outputFile.absolutePath
     }
@@ -276,7 +355,7 @@ object DocumentProcessor {
 
         for (y in marginY until (height - marginY) step 2) {
             for (x in marginX until (width - marginX) step 2) {
-                val pixel = bitmap.getPixel(x, y)
+                val pixel = bitmap[x, y]
                 val lum = luminance(pixel)
 
                 if (lum > BRIGHTNESS_THRESHOLD) {
@@ -310,6 +389,47 @@ object DocumentProcessor {
         return intArrayOf(minX, minY, maxX, maxY)
     }
 
+    private fun findContourDocumentBounds(bitmap: Bitmap): IntArray? {
+        val width = bitmap.width
+        val height = bitmap.height
+
+        val marginX = (width * 0.08).toInt()
+        val marginY = (height * 0.08).toInt()
+
+        var minX = width
+        var minY = height
+        var maxX = -1
+        var maxY = -1
+
+        var edgeCount = 0
+
+        for (y in marginY until height - marginY - 2 step 2) {
+            for (x in marginX until width - marginX - 2 step 2) {
+                val center = luminance(bitmap[x, y])
+                val right = luminance(bitmap[x + 2, y])
+                val bottom = luminance(bitmap[x, y + 2])
+
+                val horizontalDiff = kotlin.math.abs(center - right)
+                val verticalDiff = kotlin.math.abs(center - bottom)
+
+                if (horizontalDiff > 45 || verticalDiff > 45) {
+                    if (x < minX) minX = x
+                    if (y < minY) minY = y
+                    if (x > maxX) maxX = x
+                    if (y > maxY) maxY = y
+                    edgeCount++
+                }
+            }
+        }
+
+        Log.d("DocumentProcessor", "contour edgeCount=$edgeCount")
+
+        if (edgeCount < 600) return null
+        if (maxX <= minX || maxY <= minY) return null
+
+        return intArrayOf(minX, minY, maxX, maxY)
+    }
+
     private fun localBrightScore(bitmap: Bitmap, centerX: Int, centerY: Int): Int {
         var score = 0
         val width = bitmap.width
@@ -319,7 +439,7 @@ object DocumentProcessor {
             for (dx in -2..2) {
                 val x = (centerX + dx).coerceIn(0, width - 1)
                 val y = (centerY + dy).coerceIn(0, height - 1)
-                val lum = luminance(bitmap.getPixel(x, y))
+                val lum = luminance(bitmap[x, y])
                 if (lum > BRIGHTNESS_THRESHOLD) score++
             }
         }
@@ -426,7 +546,7 @@ object DocumentProcessor {
         var total = 0
 
         for (y in top..bottom step 2) {
-            val lum = luminance(bitmap.getPixel(x, y))
+            val lum = luminance(bitmap[x, y])
             if (lum > BRIGHTNESS_THRESHOLD) bright++
             total++
         }
@@ -439,11 +559,69 @@ object DocumentProcessor {
         var total = 0
 
         for (x in left..right step 2) {
-            val lum = luminance(bitmap.getPixel(x, y))
+            val lum = luminance(bitmap[x, y])
             if (lum > BRIGHTNESS_THRESHOLD) bright++
             total++
         }
 
         return if (total == 0) 0.0 else bright.toDouble() / total.toDouble()
+    }
+
+    private fun findCornerPoint(
+        bitmap: Bitmap,
+        startX: Int,
+        endX: Int,
+        startY: Int,
+        endY: Int,
+        preferLeft: Boolean,
+        preferTop: Boolean,
+    ): Pair<Int, Int> {
+        var bestX = startX
+        var bestY = startY
+        var bestScore = Double.NEGATIVE_INFINITY
+
+        for (y in startY until endY step 2) {
+            for (x in startX until endX step 2) {
+                val score = cornerScore(bitmap, x, y)
+
+                val horizontalBias = if (preferLeft) -x.toDouble() else x.toDouble()
+                val verticalBias = if (preferTop) -y.toDouble() else y.toDouble()
+
+                val weightedScore = score + (horizontalBias * 0.01) + (verticalBias * 0.01)
+
+                if (weightedScore > bestScore) {
+                    bestScore = weightedScore
+                    bestX = x
+                    bestY = y
+                }
+            }
+        }
+
+        return Pair(bestX, bestY)
+    }
+
+    private fun cornerScore(bitmap: Bitmap, x: Int, y: Int): Double {
+        val width = bitmap.width
+        val height = bitmap.height
+
+        val center = luminance(bitmap[x.coerceIn(0, width - 1), y.coerceIn(0, height - 1)])
+        val right = luminance(bitmap[(x + 2).coerceIn(0, width - 1), y.coerceIn(0, height - 1)])
+        val bottom = luminance(bitmap[x.coerceIn(0, width - 1), (y + 2).coerceIn(0, height - 1)])
+        val diag = luminance(bitmap[(x + 2).coerceIn(0, width - 1), (y + 2).coerceIn(0, height - 1)])
+
+        val edgeStrength =
+            kotlin.math.abs(center - right) +
+                    kotlin.math.abs(center - bottom) +
+                    kotlin.math.abs(center - diag)
+
+        val brightness = center.toDouble()
+
+        return edgeStrength + (brightness * 0.35)
+    }
+
+    private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float {
+        val dx = x2 - x1
+        val dy = y2 - y1
+        return kotlin.math.sqrt(dx * dx + dy * dy)
     }
 }

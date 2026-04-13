@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_text_styles.dart';
@@ -62,17 +63,22 @@ class ProcessingStageItem {
 }
 
 class _ProcessingPageState extends State<ProcessingPage> {
+  static const MethodChannel _processingChannel =
+  MethodChannel('stala/python_bridge');
+
   late List<ProcessingStageItem> _stages;
   int _activeStageIndex = -1;
   bool _isProcessingFinished = false;
   bool _hasProcessingFailed = false;
   String _statusMessage = 'Preparing image for processing...';
 
+  Map<String, dynamic>? _processingResult;
+
   @override
   void initState() {
     super.initState();
     _stages = _buildInitialStages();
-    _startMockProcessingPipeline();
+    _startProcessingPipeline();
   }
 
   /// Creates the initial ordered pipeline list.
@@ -122,43 +128,113 @@ class _ProcessingPageState extends State<ProcessingPage> {
   /// - staff segmentation
   /// - note translation
   /// - result generation
-  Future<void> _startMockProcessingPipeline() async {
+  Future<void> _startProcessingPipeline() async {
+    print('DEBUG: _startProcessingPipeline started');
     try {
-      for (int index = 0; index < _stages.length; index++) {
-        if (!mounted) return;
+      if (!mounted) return;
 
+      setState(() {
+        print('DEBUG: activating stage 0');
+        _activeStageIndex = 0;
+        _statusMessage = 'Preparing image for processing...';
+        _stages[0] = _stages[0].copyWith(
+          status: ProcessingStageStatus.active,
+        );
+      });
+
+      await Future.delayed(const Duration(milliseconds: 400));
+
+      if (!mounted) return;
+
+      setState(() {
+        _stages[0] = _stages[0].copyWith(
+          status: ProcessingStageStatus.completed,
+        );
+        _activeStageIndex = 1;
+        _statusMessage = 'Running detection model...';
+        _stages[1] = _stages[1].copyWith(
+          status: ProcessingStageStatus.active,
+        );
+      });
+
+      print('DEBUG: calling processImage');
+
+      final dynamic result = await _processingChannel.invokeMethod(
+        'processImage',
+        {'imagePath': widget.imagePath},
+      );
+
+      print('DEBUG: processImage returned');
+
+      if (!mounted) return;
+
+      final response = Map<String, dynamic>.from(result as Map);
+      _processingResult = response;
+
+      final status = response['status']?.toString() ?? 'error';
+      final message = response['message']?.toString();
+      final errors = (response['errors'] as List?)?.cast<dynamic>() ?? const [];
+
+      if (status == 'success') {
         setState(() {
-          _activeStageIndex = index;
-          _statusMessage = _stages[index].subtitle;
-          _stages[index] = _stages[index].copyWith(
-            status: ProcessingStageStatus.active,
-          );
-        });
-
-        await Future.delayed(const Duration(seconds: 2));
-
-        if (!mounted) return;
-
-        setState(() {
-          _stages[index] = _stages[index].copyWith(
+          _stages[1] = _stages[1].copyWith(
             status: ProcessingStageStatus.completed,
           );
+
+          _activeStageIndex = 2;
+          _statusMessage = 'Preparing downstream pipeline structure...';
+          _stages[2] = _stages[2].copyWith(
+            status: ProcessingStageStatus.completed,
+          );
+
+          _activeStageIndex = 3;
+          _stages[3] = _stages[3].copyWith(
+            status: ProcessingStageStatus.completed,
+          );
+
+          _activeStageIndex = 4;
+          _stages[4] = _stages[4].copyWith(
+            status: ProcessingStageStatus.completed,
+          );
+
+          _isProcessingFinished = true;
+          _statusMessage = message ?? 'Processing complete. Result is ready.';
+        });
+      } else {
+        setState(() {
+          _stages[1] = _stages[1].copyWith(
+            status: ProcessingStageStatus.failed,
+          );
+          _hasProcessingFailed = true;
+          _statusMessage = errors.isNotEmpty
+              ? errors.first.toString()
+              : (message ?? 'Processing failed. Please try again.');
         });
       }
-
+    } on PlatformException catch (error) {
       if (!mounted) return;
 
       setState(() {
-        _activeStageIndex = _stages.length - 1;
-        _isProcessingFinished = true;
-        _statusMessage = 'Processing complete. Result is ready.';
-      });
-    } catch (_) {
-      if (!mounted) return;
-
-      setState(() {
+        if (_activeStageIndex >= 0 && _activeStageIndex < _stages.length) {
+          _stages[_activeStageIndex] = _stages[_activeStageIndex].copyWith(
+            status: ProcessingStageStatus.failed,
+          );
+        }
         _hasProcessingFailed = true;
-        _statusMessage = 'Processing failed. Please try again.';
+        _statusMessage =
+        'Bridge error: ${error.message ?? error.code}';
+      });
+    } catch (error) {
+      if (!mounted) return;
+
+      setState(() {
+        if (_activeStageIndex >= 0 && _activeStageIndex < _stages.length) {
+          _stages[_activeStageIndex] = _stages[_activeStageIndex].copyWith(
+            status: ProcessingStageStatus.failed,
+          );
+        }
+        _hasProcessingFailed = true;
+        _statusMessage = 'Processing failed: $error';
       });
     }
   }
@@ -171,9 +247,10 @@ class _ProcessingPageState extends State<ProcessingPage> {
       _hasProcessingFailed = false;
       _statusMessage = 'Preparing image for processing...';
       _stages = _buildInitialStages();
+      _processingResult = null;
     });
 
-    await _startMockProcessingPipeline();
+    await _startProcessingPipeline();
   }
 
   /// Number of completed stages already finished in the current run.
@@ -189,13 +266,18 @@ class _ProcessingPageState extends State<ProcessingPage> {
     return _completedStageCount / _stages.length;
   }
 
-  /// Placeholder for the next navigation step after processing completes.
+  /// This helps verify that the response from native side is really being received.
   void _showNextStepMessage() {
+    final detectionCount =
+        (_processingResult?['detections'] as List?)?.length ?? 0;
+    final modelVersion =
+        _processingResult?['modelVersion']?.toString() ?? 'unknown';
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         backgroundColor: AppColors.backgroundSecondary,
         content: Text(
-          'Result page navigation goes here.',
+          'Processing finished. Detections: $detectionCount • Model: $modelVersion',
           style: AppTextStyles.body,
         ),
       ),

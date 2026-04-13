@@ -39,6 +39,7 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "detectDocumentBounds" -> handleDetectDocumentBounds(call, result)
                 "cropDocumentImage" -> handleCropDocumentImage(call, result)
+                "processImage" -> handleProcessImage(call, result)
                 else -> result.notImplemented()
             }
         }
@@ -95,6 +96,76 @@ class MainActivity : FlutterActivity() {
             result.success(croppedPath ?: imagePath)
         } catch (e: Exception) {
             result.success(imagePath)
+        }
+    }
+
+    private fun handleProcessImage(call: MethodCall, result: MethodChannel.Result) {
+        val imagePath = call.argument<String>("imagePath")
+
+        if (imagePath.isNullOrBlank()) {
+            result.success(
+                mapOf(
+                    "status" to "error",
+                    "message" to "Image path is missing.",
+                    "modelVersion" to "unavailable",
+                    "inputImagePath" to "",
+                    "preprocessedImagePath" to "",
+                    "detectionImagePath" to "",
+                    "detections" to emptyList<Map<String, Any?>>(),
+                    "staffMap" to emptyList<Any>(),
+                    "translationResult" to emptyList<Any>(),
+                    "tablature" to emptyList<Any>(),
+                    "errors" to listOf("Image path is missing.")
+                )
+            )
+            return
+        }
+
+        try {
+            // Temporary dummy response for bridge testing.
+            // Replace this later with real Python / Chaquopy pipeline call.
+            val response = mapOf(
+                "status" to "success",
+                "message" to "Dummy processing completed.",
+                "modelVersion" to "notehead_dummy_v1",
+                "inputImagePath" to imagePath,
+                "preprocessedImagePath" to imagePath,
+                "detectionImagePath" to imagePath,
+                "detections" to listOf(
+                    mapOf(
+                        "className" to "notehead",
+                        "confidence" to 0.93,
+                        "bbox" to listOf(120, 180, 156, 214)
+                    ),
+                    mapOf(
+                        "className" to "notehead",
+                        "confidence" to 0.88,
+                        "bbox" to listOf(220, 260, 252, 292)
+                    )
+                ),
+                "staffMap" to emptyList<Any>(),
+                "translationResult" to emptyList<Any>(),
+                "tablature" to emptyList<Any>(),
+                "errors" to emptyList<String>()
+            )
+
+            result.success(response)
+        } catch (e: Exception) {
+            result.success(
+                mapOf(
+                    "status" to "error",
+                    "message" to "Processing failed: ${e.message ?: "Unknown error"}",
+                    "modelVersion" to "unavailable",
+                    "inputImagePath" to imagePath,
+                    "preprocessedImagePath" to "",
+                    "detectionImagePath" to "",
+                    "detections" to emptyList<Map<String, Any?>>(),
+                    "staffMap" to emptyList<Any>(),
+                    "translationResult" to emptyList<Any>(),
+                    "tablature" to emptyList<Any>(),
+                    "errors" to listOf("Processing failed: ${e.message ?: "Unknown error"}")
+                )
+            )
         }
     }
 
