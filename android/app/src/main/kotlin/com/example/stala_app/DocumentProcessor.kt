@@ -299,6 +299,28 @@ object DocumentProcessor {
 
         val outputBitmap = createBitmap(outputWidth, outputHeight)
 
+        val finalBitmap =
+            if (outputBitmap.width > outputBitmap.height) {
+                val matrix = android.graphics.Matrix().apply {
+                    postRotate(90f)
+                }
+
+                val rotatedBitmap = Bitmap.createBitmap(
+                    outputBitmap,
+                    0,
+                    0,
+                    outputBitmap.width,
+                    outputBitmap.height,
+                    matrix,
+                    true
+                )
+
+                outputBitmap.recycle()
+                rotatedBitmap
+            } else {
+                outputBitmap
+            }
+
         val canvas = android.graphics.Canvas(outputBitmap)
         canvas.drawBitmap(bitmap, matrix, null)
 
@@ -307,13 +329,38 @@ object DocumentProcessor {
             "cropped_${System.currentTimeMillis()}.jpg"
         )
 
+        Log.d(
+            "STALA_CROP",
+            "cropDocumentImage: pre-rotation output=${outputWidth}x${outputHeight}"
+        )
+
+        Log.d(
+            "STALA_CROP",
+            "cropDocumentImage: final bitmap=${finalBitmap.width}x${finalBitmap.height}"
+        )
+
         FileOutputStream(outputFile).use { out ->
-            outputBitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+            finalBitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
             out.flush()
         }
 
         bitmap.recycle()
-        outputBitmap.recycle()
+        finalBitmap.recycle()
+
+        Log.d(
+            "STALA_CROP",
+            "cropDocumentImage: outputWidth=$outputWidth outputHeight=$outputHeight"
+        )
+
+        Log.d(
+            "STALA_CROP",
+            "cropDocumentImage: outputPath=${outputFile.absolutePath}"
+        )
+
+        Log.d(
+            "STALA_CROP",
+            "cropDocumentImage: fileExists=${outputFile.exists()} size=${outputFile.length()}"
+        )
 
         return outputFile.absolutePath
     }

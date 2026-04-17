@@ -39,6 +39,11 @@ android {
     }
 }
 
+dependencies {
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.3")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+}
+
 flutter {
     source = "../.."
 }

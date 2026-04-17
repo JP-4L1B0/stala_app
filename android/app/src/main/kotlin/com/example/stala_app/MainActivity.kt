@@ -6,13 +6,18 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import android.util.Log
 
 class MainActivity : FlutterActivity() {
     private val accessibilityChannel = "stala_app/accessibility"
     private val pythonBridgeChannel = "stala/python_bridge"
 
+    private var onnxDetector: OnnxDetector? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        onnxDetector = OnnxDetector(this)
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -111,6 +116,8 @@ class MainActivity : FlutterActivity() {
                     "inputImagePath" to "",
                     "preprocessedImagePath" to "",
                     "detectionImagePath" to "",
+                    "imageWidth" to 0,
+                    "imageHeight" to 0,
                     "detections" to emptyList<Map<String, Any?>>(),
                     "staffMap" to emptyList<Any>(),
                     "translationResult" to emptyList<Any>(),
@@ -121,52 +128,49 @@ class MainActivity : FlutterActivity() {
             return
         }
 
-        try {
-            // Temporary dummy response for bridge testing.
-            // Replace this later with real Python / Chaquopy pipeline call.
-            val response = mapOf(
-                "status" to "success",
-                "message" to "Dummy processing completed.",
-                "modelVersion" to "notehead_dummy_v1",
-                "inputImagePath" to imagePath,
-                "preprocessedImagePath" to imagePath,
-                "detectionImagePath" to imagePath,
-                "detections" to listOf(
-                    mapOf(
-                        "className" to "notehead",
-                        "confidence" to 0.93,
-                        "bbox" to listOf(120, 180, 156, 214)
-                    ),
-                    mapOf(
-                        "className" to "notehead",
-                        "confidence" to 0.88,
-                        "bbox" to listOf(220, 260, 252, 292)
-                    )
-                ),
-                "staffMap" to emptyList<Any>(),
-                "translationResult" to emptyList<Any>(),
-                "tablature" to emptyList<Any>(),
-                "errors" to emptyList<String>()
-            )
+        Thread {
+            try {
+                android.util.Log.d("STALA_ONNX", "handleProcessImage called")
+                android.util.Log.d("STALA_ONNX", "imagePath=$imagePath")
 
-            result.success(response)
-        } catch (e: Exception) {
-            result.success(
-                mapOf(
-                    "status" to "error",
-                    "message" to "Processing failed: ${e.message ?: "Unknown error"}",
-                    "modelVersion" to "unavailable",
-                    "inputImagePath" to imagePath,
-                    "preprocessedImagePath" to "",
-                    "detectionImagePath" to "",
-                    "detections" to emptyList<Map<String, Any?>>(),
-                    "staffMap" to emptyList<Any>(),
-                    "translationResult" to emptyList<Any>(),
-                    "tablature" to emptyList<Any>(),
-                    "errors" to listOf("Processing failed: ${e.message ?: "Unknown error"}")
-                )
-            )
-        }
+                val detector = onnxDetector ?: OnnxDetector(this).also { onnxDetector = it }
+
+                android.util.Log.d("STALA_ONNX", "loading model")
+                detector.loadModel("models/stala_notehead_detector.onnx")
+
+                android.util.Log.d("STALA_ONNX", "running detectFromImagePath")
+                val response = detector.detectFromImagePath(imagePath)
+
+                android.util.Log.d("STALA_ONNX", "detection finished")
+                android.util.Log.d("STALA_ONNX", "response status=${response["status"]}")
+
+                runOnUiThread {
+                    result.success(response)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("STALA_ONNX", "ONNX processing failed", e)
+
+                runOnUiThread {
+                    result.success(
+                        mapOf(
+                            "status" to "error",
+                            "message" to "ONNX processing failed: ${e.message ?: "Unknown error"}",
+                            "modelVersion" to "unavailable",
+                            "inputImagePath" to imagePath,
+                            "preprocessedImagePath" to "",
+                            "detectionImagePath" to "",
+                            "imageWidth" to 0,
+                            "imageHeight" to 0,
+                            "detections" to emptyList<Map<String, Any?>>(),
+                            "staffMap" to emptyList<Any>(),
+                            "translationResult" to emptyList<Any>(),
+                            "tablature" to emptyList<Any>(),
+                            "errors" to listOf("ONNX processing failed: ${e.message ?: "Unknown error"}")
+                        )
+                    )
+                }
+            }
+        }.start()
     }
 
     private fun isMyAccessibilityServiceEnabled(): Boolean {

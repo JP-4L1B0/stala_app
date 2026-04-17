@@ -86,32 +86,32 @@ class _ProcessingPageState extends State<ProcessingPage> {
   /// These labels match the intended STALA workflow and can later
   /// be connected to real backend/model calls.
   List<ProcessingStageItem> _buildInitialStages() {
-    return const [
-      ProcessingStageItem(
+    return [
+      const ProcessingStageItem(
         title: 'Preprocessing Image',
         subtitle: 'Applying crop, cleanup, and enhancement.',
         icon: Icons.tune_rounded,
         status: ProcessingStageStatus.pending,
       ),
-      ProcessingStageItem(
+      const ProcessingStageItem(
         title: 'Detecting Symbols',
-        subtitle: 'Running Faster R-CNN multi-class detection.',
+        subtitle: 'Running Faster R-CNN single-class detection.',
         icon: Icons.center_focus_strong_rounded,
         status: ProcessingStageStatus.pending,
       ),
-      ProcessingStageItem(
+      const ProcessingStageItem(
         title: 'Segmenting Staff Lines',
         subtitle: 'Analyzing line and space structure for pitch mapping.',
         icon: Icons.horizontal_rule_rounded,
         status: ProcessingStageStatus.pending,
       ),
-      ProcessingStageItem(
+      const ProcessingStageItem(
         title: 'Translating Notes',
         subtitle: 'Combining detection and segmentation outputs.',
         icon: Icons.music_note_rounded,
         status: ProcessingStageStatus.pending,
       ),
-      ProcessingStageItem(
+      const ProcessingStageItem(
         title: 'Generating Results',
         subtitle: 'Preparing tablature and fretboard mapping.',
         icon: Icons.library_music_rounded,
@@ -159,12 +159,20 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
       print('DEBUG: calling processImage');
 
+      setState(() {
+        _statusMessage = 'About to call native processImage...';
+      });
+
       final dynamic result = await _processingChannel.invokeMethod(
         'processImage',
         {'imagePath': widget.imagePath},
       );
 
       print('DEBUG: processImage returned');
+
+      setState(() {
+        _statusMessage = 'Native processImage returned.';
+      });
 
       if (!mounted) return;
 
@@ -272,12 +280,16 @@ class _ProcessingPageState extends State<ProcessingPage> {
         (_processingResult?['detections'] as List?)?.length ?? 0;
     final modelVersion =
         _processingResult?['modelVersion']?.toString() ?? 'unknown';
+    final imageWidth =
+        (_processingResult?['imageWidth'] as num?)?.toInt() ?? 0;
+    final imageHeight =
+        (_processingResult?['imageHeight'] as num?)?.toInt() ?? 0;
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         backgroundColor: AppColors.backgroundSecondary,
         content: Text(
-          'Processing finished. Detections: $detectionCount • Model: $modelVersion',
+          'Processing finished. $imageWidth x $imageHeight • Detections: $detectionCount • Model: $modelVersion',
           style: AppTextStyles.body,
         ),
       ),
