@@ -5,6 +5,10 @@ import 'package:flutter/services.dart';
 
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_text_styles.dart';
+import 'dummy_page.dart';
+import 'services/staff_segmentation_service.dart';
+import 'models/translation_group_models.dart';
+import 'services/translation_grouping_service.dart';
 
 /// Processing screen shown after the image crop is confirmed.
 ///
@@ -71,6 +75,12 @@ class _ProcessingPageState extends State<ProcessingPage> {
   bool _isProcessingFinished = false;
   bool _hasProcessingFailed = false;
   String _statusMessage = 'Preparing image for processing...';
+
+  final StaffSegmentationService _segmentationService =
+  StaffSegmentationService();
+
+  final TranslationGroupingService _translationGroupingService =
+  TranslationGroupingService();
 
   Map<String, dynamic>? _processingResult;
 
@@ -188,26 +198,74 @@ class _ProcessingPageState extends State<ProcessingPage> {
           _stages[1] = _stages[1].copyWith(
             status: ProcessingStageStatus.completed,
           );
-
           _activeStageIndex = 2;
-          _statusMessage = 'Preparing downstream pipeline structure...';
+          _statusMessage = 'Running staff line segmentation...';
           _stages[2] = _stages[2].copyWith(
-            status: ProcessingStageStatus.completed,
+            status: ProcessingStageStatus.active,
           );
-
-          _activeStageIndex = 3;
-          _stages[3] = _stages[3].copyWith(
-            status: ProcessingStageStatus.completed,
-          );
-
-          _activeStageIndex = 4;
-          _stages[4] = _stages[4].copyWith(
-            status: ProcessingStageStatus.completed,
-          );
-
-          _isProcessingFinished = true;
-          _statusMessage = message ?? 'Processing complete. Result is ready.';
         });
+
+        final segmentationInputPath =
+            response['croppedImagePath'] ??
+                response['preprocessedImagePath'] ??
+                widget.imagePath;
+
+        final segmentationResult =
+        await _segmentationService.segmentStaffLines(
+          imagePath: segmentationInputPath,
+        );
+
+        print('DEBUG: segmentedImagePath = ${segmentationResult['segmentedImagePath']}');
+
+        if (segmentationResult['status'] == 'success') {
+          response['segmentedImagePath'] =
+          segmentationResult['segmentedImagePath'];
+          response['staffLineCount'] =
+          segmentationResult['staffLineCount'];
+          response['staffLines'] =
+          segmentationResult['staffLines'];
+          response['validatedStaffs'] =
+          segmentationResult['validatedStaffs'];
+
+          setState(() {
+            _stages[2] = _stages[2].copyWith(
+              status: ProcessingStageStatus.completed,
+            );
+            _activeStageIndex = 3;
+            _statusMessage = 'Building translation groups...';
+            _stages[3] = _stages[3].copyWith(
+              status: ProcessingStageStatus.active,
+            );
+          });
+
+          final classItems = _parseClassItems(response['detections']);
+          final translateGroups = _translationGroupingService.buildGroups(
+            classItems: classItems,
+            staffLines: (response['staffLines'] as List?) ?? const [],
+          );
+
+          response['translateGroups'] = translateGroups;
+          _processingResult = response;
+
+          setState(() {
+            _stages[3] = _stages[3].copyWith(
+              status: ProcessingStageStatus.completed,
+            );
+
+            _activeStageIndex = 4;
+            _statusMessage = 'Generation stage placeholder ready.';
+            _stages[4] = _stages[4].copyWith(
+              status: ProcessingStageStatus.completed,
+            );
+
+            _isProcessingFinished = true;
+            _statusMessage = message ?? 'Processing complete. Result is ready.';
+          });
+        } else {
+          final segmentationMessage =
+              segmentationResult['message']?.toString() ?? 'Unknown segmentation error';
+          throw Exception('Segmentation failed: $segmentationMessage');
+        }
       } else {
         setState(() {
           _stages[1] = _stages[1].copyWith(
@@ -276,24 +334,142 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
   /// This helps verify that the response from native side is really being received.
   void _showNextStepMessage() {
-    final detectionCount =
-        (_processingResult?['detections'] as List?)?.length ?? 0;
-    final modelVersion =
-        _processingResult?['modelVersion']?.toString() ?? 'unknown';
-    final imageWidth =
-        (_processingResult?['imageWidth'] as num?)?.toInt() ?? 0;
-    final imageHeight =
-        (_processingResult?['imageHeight'] as num?)?.toInt() ?? 0;
+    if (_processingResult == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: AppColors.backgroundSecondary,
+          content: Text(
+            'No processing result available yet.',
+            style: AppTextStyles.body,
+          ),
+        ),
+      );
+      return;
+    }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        backgroundColor: AppColors.backgroundSecondary,
-        content: Text(
-          'Processing finished. $imageWidth x $imageHeight • Detections: $detectionCount • Model: $modelVersion',
-          style: AppTextStyles.body,
+    final result = _processingResult!;
+
+    final croppedImagePath = _pickFirstNonEmptyString(result, const [
+      'croppedImagePath',
+      'preprocessedImagePath',
+      'processedImagePath',
+      'outputImagePath',
+    ]);
+
+    final detectedImagePath = _pickFirstNonEmptyString(result, const [
+      'detectedImagePath',
+      'annotatedImagePath',
+      'visualizedImagePath',
+      'detectionImagePath',
+    ]);
+
+    final segmentedImagePath = _pickFirstNonEmptyString(result, const [
+      'segmentedImagePath',
+    ]);
+
+    final detections = _parseDetectionPoints(result['detections']);
+    final classItems = _parseClassItems(result['detections']);
+    final translateGroups =
+        (result['translateGroups'] as List<StaffTranslateGroup>?) ?? const [];
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DummyPage(
+          croppedImagePath: croppedImagePath ?? widget.imagePath,
+          detectedImagePath:
+          detectedImagePath ?? croppedImagePath ?? widget.imagePath,
+          segmentedImagePath: segmentedImagePath,
+          detections: detections,
+          classItems: classItems,
+          translateGroups: translateGroups,
+          generateOutputs: const [],
         ),
       ),
     );
+  }
+
+  String? _pickFirstNonEmptyString(
+      Map<String, dynamic> source,
+      List<String> keys,
+      ) {
+    for (final key in keys) {
+      final value = source[key];
+      if (value is String && value.trim().isNotEmpty) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  List<DetectionPoint> _parseDetectionPoints(dynamic rawDetections) {
+    if (rawDetections is! List) return const [];
+
+    final List<DetectionPoint> points = [];
+
+    for (final item in rawDetections) {
+      if (item is! Map) continue;
+
+      final map = Map<String, dynamic>.from(
+        item.map((key, value) => MapEntry(key.toString(), value)),
+      );
+
+      final className =
+          map['className']?.toString() ??
+              map['labelName']?.toString() ??
+              map['label']?.toString() ??
+              'symbol';
+
+      final score = _toDouble(map['score'] ?? map['confidence']);
+
+      double? centerX;
+      double? centerY;
+
+      if (map['centerX'] != null && map['centerY'] != null) {
+        centerX = _toDouble(map['centerX']);
+        centerY = _toDouble(map['centerY']);
+      } else if (map['bbox'] is List && (map['bbox'] as List).length >= 4) {
+        final bbox = List.from(map['bbox']);
+        final x1 = _toDouble(bbox[0]);
+        final y1 = _toDouble(bbox[1]);
+        final x2 = _toDouble(bbox[2]);
+        final y2 = _toDouble(bbox[3]);
+
+        if (x1 != null && y1 != null && x2 != null && y2 != null) {
+          centerX = (x1 + x2) / 2.0;
+          centerY = (y1 + y2) / 2.0;
+        }
+      } else {
+        final left = _toDouble(map['left'] ?? map['x1'] ?? map['xmin']);
+        final top = _toDouble(map['top'] ?? map['y1'] ?? map['ymin']);
+        final right = _toDouble(map['right'] ?? map['x2'] ?? map['xmax']);
+        final bottom = _toDouble(map['bottom'] ?? map['y2'] ?? map['ymax']);
+
+        if (left != null && top != null && right != null && bottom != null) {
+          centerX = (left + right) / 2.0;
+          centerY = (top + bottom) / 2.0;
+        }
+      }
+
+      if (centerX == null || centerY == null) continue;
+
+      points.add(
+        DetectionPoint(
+          className: className,
+          centerX: centerX,
+          centerY: centerY,
+          score: score,
+        ),
+      );
+    }
+
+    return points;
+  }
+
+  double? _toDouble(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString());
   }
 
   @override
@@ -381,6 +557,83 @@ class _ProcessingPageState extends State<ProcessingPage> {
         ),
       ),
     );
+  }
+
+  List<SymbolClassItem> _parseClassItems(dynamic rawDetections) {
+    if (rawDetections is! List) return const [];
+
+    final List<SymbolClassItem> items = [];
+
+    for (final item in rawDetections) {
+      if (item is! Map) continue;
+
+      final map = Map<String, dynamic>.from(
+        item.map((key, value) => MapEntry(key.toString(), value)),
+      );
+
+      final className =
+          map['className']?.toString() ??
+              map['labelName']?.toString() ??
+              map['label']?.toString() ??
+              'unknown';
+
+      final score = _toDouble(map['score'] ?? map['confidence']);
+
+      double? centerX;
+      double? centerY;
+      List<double>? bbox;
+
+      if (map['bbox'] is List && (map['bbox'] as List).length >= 4) {
+        final rawBbox = List.from(map['bbox']);
+        final x1 = _toDouble(rawBbox[0]);
+        final y1 = _toDouble(rawBbox[1]);
+        final x2 = _toDouble(rawBbox[2]);
+        final y2 = _toDouble(rawBbox[3]);
+
+        if (x1 != null && y1 != null && x2 != null && y2 != null) {
+          bbox = [x1, y1, x2, y2];
+          centerX = (x1 + x2) / 2.0;
+          centerY = (y1 + y2) / 2.0;
+        }
+      }
+
+      centerX ??= _toDouble(map['centerX']);
+      centerY ??= _toDouble(map['centerY']);
+
+      if (centerX == null || centerY == null) continue;
+
+      items.add(
+        SymbolClassItem(
+          className: className,
+          x: centerX,
+          y: centerY,
+          score: score,
+          bbox: bbox,
+        ),
+      );
+    }
+
+    return _sortSymbolsTopLeftToBottomRight(items);
+  }
+
+  List<SymbolClassItem> _sortSymbolsTopLeftToBottomRight(
+      List<SymbolClassItem> items,
+      ) {
+    final sorted = List<SymbolClassItem>.from(items);
+
+    const double rowTolerance = 12.0;
+
+    sorted.sort((a, b) {
+      final yDiff = (a.y - b.y).abs();
+
+      if (yDiff <= rowTolerance) {
+        return a.x.compareTo(b.x);
+      }
+
+      return a.y.compareTo(b.y);
+    });
+
+    return sorted;
   }
 }
 
