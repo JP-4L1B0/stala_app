@@ -20,7 +20,7 @@ class OnnxDetector(private val context: Context) {
     companion object {
         const val MODEL_INPUT_WIDTH = 1024
         const val MODEL_INPUT_HEIGHT = 1024
-        const val DEFAULT_SCORE_THRESHOLD = 0.05f
+        const val DEFAULT_SCORE_THRESHOLD = 0.5f
         private const val TAG = "STALA_ONNX"
     }
 
