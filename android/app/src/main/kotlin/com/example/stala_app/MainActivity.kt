@@ -83,12 +83,12 @@ class MainActivity : FlutterActivity() {
         val bounds = call.argument<Map<String, Any?>>("bounds")
 
         if (imagePath.isNullOrBlank()) {
-            result.success("")
+            result.error("INVALID_PATH", "Image path is missing.", null)
             return
         }
 
         if (bounds == null) {
-            result.success(imagePath)
+            result.error("INVALID_BOUNDS", "Crop bounds are missing.", null)
             return
         }
 
@@ -98,9 +98,18 @@ class MainActivity : FlutterActivity() {
                 bounds = bounds
             )
 
-            result.success(croppedPath ?: imagePath)
+            if (croppedPath.isNullOrBlank()) {
+                result.error("CROP_FAILED", "Crop returned empty result.", null)
+                return
+            }
+
+            result.success(croppedPath)
         } catch (e: Exception) {
-            result.success(imagePath)
+            result.error(
+                "CROP_EXCEPTION",
+                e.message ?: "Unknown crop error",
+                null
+            )
         }
     }
 

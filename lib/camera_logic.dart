@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -149,7 +151,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
   bool _isHdEnabled = true;
   FlashMode _selectedFlashMode = FlashMode.off;
-
 
   @override
   void initState() {
@@ -553,24 +554,109 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
   }
 
   bool _isValidBounds(DocumentBounds bounds) {
-    double widthTop = (bounds.topRight.x - bounds.topLeft.x).abs();
-    double widthBottom = (bounds.bottomRight.x - bounds.bottomLeft.x).abs();
-    double heightLeft = (bounds.bottomLeft.y - bounds.topLeft.y).abs();
-    double heightRight = (bounds.bottomRight.y - bounds.topRight.y).abs();
-
     const minSize = 0.08;
+    const minArea = 0.04;
 
-    return widthTop >= minSize &&
-        widthBottom >= minSize &&
-        heightLeft >= minSize &&
-        heightRight >= minSize;
+    final tl = Offset(bounds.topLeft.x, bounds.topLeft.y);
+    final tr = Offset(bounds.topRight.x, bounds.topRight.y);
+    final br = Offset(bounds.bottomRight.x, bounds.bottomRight.y);
+    final bl = Offset(bounds.bottomLeft.x, bounds.bottomLeft.y);
+
+    double distance(Offset a, Offset b) => (a - b).distance;
+
+    final widthTop = distance(tl, tr);
+    final widthBottom = distance(bl, br);
+    final heightLeft = distance(tl, bl);
+    final heightRight = distance(tr, br);
+
+    if (widthTop < minSize ||
+        widthBottom < minSize ||
+        heightLeft < minSize ||
+        heightRight < minSize) {
+      return false;
+    }
+
+    final area = _polygonArea([tl, tr, br, bl]).abs();
+    if (area < minArea) {
+      return false;
+    }
+
+    return _isConvexQuadrilateral(bounds);
+  }
+
+  bool _isConvexQuadrilateral(DocumentBounds bounds) {
+    final points = <Offset>[
+      Offset(bounds.topLeft.x, bounds.topLeft.y),
+      Offset(bounds.topRight.x, bounds.topRight.y),
+      Offset(bounds.bottomRight.x, bounds.bottomRight.y),
+      Offset(bounds.bottomLeft.x, bounds.bottomLeft.y),
+    ];
+
+    for (int i = 0; i < points.length; i++) {
+      final a = points[i];
+      final b = points[(i + 1) % points.length];
+      final c = points[(i + 2) % points.length];
+      final cross = _cross(a, b, c);
+
+      if (cross.abs() < 0.002) {
+        return false;
+      }
+    }
+
+    bool hasPositive = false;
+    bool hasNegative = false;
+
+    for (int i = 0; i < points.length; i++) {
+      final a = points[i];
+      final b = points[(i + 1) % points.length];
+      final c = points[(i + 2) % points.length];
+      final cross = _cross(a, b, c);
+
+      if (cross > 0) hasPositive = true;
+      if (cross < 0) hasNegative = true;
+
+      if (hasPositive && hasNegative) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  double _cross(Offset a, Offset b, Offset c) {
+    final ab = b - a;
+    final bc = c - b;
+    return (ab.dx * bc.dy) - (ab.dy * bc.dx);
+  }
+
+  double _polygonArea(List<Offset> points) {
+    double sum = 0.0;
+
+    for (int i = 0; i < points.length; i++) {
+      final current = points[i];
+      final next = points[(i + 1) % points.length];
+      sum += (current.dx * next.dy) - (next.dx * current.dy);
+    }
+
+    return 0.5 * sum;
+  }
+
+  bool _sameBounds(DocumentBounds a, DocumentBounds b) {
+    return a.topLeft.x == b.topLeft.x &&
+        a.topLeft.y == b.topLeft.y &&
+        a.topRight.x == b.topRight.x &&
+        a.topRight.y == b.topRight.y &&
+        a.bottomRight.x == b.bottomRight.x &&
+        a.bottomRight.y == b.bottomRight.y &&
+        a.bottomLeft.x == b.bottomLeft.x &&
+        a.bottomLeft.y == b.bottomLeft.y;
   }
 
   /// Sends the current crop bounds to the native layer and requests
   /// a real cropped image file.
   ///
-  /// If cropping is unavailable, the original image path is returned
-  /// so downstream navigation still works.
+  /// This now throws on crop failure so the preview flow can stop
+  /// instead of silently forwarding the original image.
   Future<String> _cropDocumentImage({
     required String imagePath,
     required DocumentBounds bounds,
@@ -587,69 +673,223 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       if (result is String && result.isNotEmpty) {
         return result;
       }
-    } catch (_) {
-      //
-    }
 
-    return imagePath;
+      throw Exception('Crop returned an empty path.');
+    } on PlatformException catch (e) {
+      throw Exception(e.message ?? e.code);
+    }
   }
 
-  /// Updates one dragged crop corner while preventing the shape
-  /// from crossing over itself.
+  /// Updates one dragged crop corner while keeping the crop
+  /// as a usable quadrilateral.
   ///
-  /// A minimum gap is preserved so the resulting quadrilateral stays valid.
+  /// Invalid updates are rejected and the previous bounds are kept.
   DocumentBounds _updateDraggedCorner({
     required DocumentBounds bounds,
     required String cornerKey,
     required DragUpdateDetails details,
-    required Size previewSize,
+    required Rect imageRect,
   }) {
-    const double minGap = 0.06;
+    const double minGap = 0.03;
 
-    final double dx = details.delta.dx / previewSize.width;
-    final double dy = details.delta.dy / previewSize.height;
+    final dx = details.delta.dx / imageRect.width;
+    final dy = details.delta.dy / imageRect.height;
+
+    double clamp01(double value) => value.clamp(0.0, 1.0);
+
+    DocumentBounds candidate;
 
     switch (cornerKey) {
       case 'topLeft':
-        return bounds.copyWith(
+        candidate = bounds.copyWith(
           topLeft: bounds.topLeft.copyWith(
-            x: (bounds.topLeft.x + dx).clamp(0.0, bounds.topRight.x - minGap),
-            y: (bounds.topLeft.y + dy).clamp(0.0, bounds.bottomLeft.y - minGap),
+            x: clamp01(
+              (bounds.topLeft.x + dx).clamp(
+                0.0,
+                bounds.topRight.x - minGap,
+              ),
+            ),
+            y: clamp01(
+              (bounds.topLeft.y + dy).clamp(
+                0.0,
+                bounds.bottomLeft.y - minGap,
+              ),
+            ),
           ),
         );
+        break;
 
       case 'topRight':
-        return bounds.copyWith(
+        candidate = bounds.copyWith(
           topRight: bounds.topRight.copyWith(
-            x: (bounds.topRight.x + dx).clamp(bounds.topLeft.x + minGap, 1.0),
-            y: (bounds.topRight.y + dy)
-                .clamp(0.0, bounds.bottomRight.y - minGap),
+            x: clamp01(
+              (bounds.topRight.x + dx).clamp(
+                bounds.topLeft.x + minGap,
+                1.0,
+              ),
+            ),
+            y: clamp01(
+              (bounds.topRight.y + dy).clamp(
+                0.0,
+                bounds.bottomRight.y - minGap,
+              ),
+            ),
           ),
         );
+        break;
 
       case 'bottomRight':
-        return bounds.copyWith(
+        candidate = bounds.copyWith(
           bottomRight: bounds.bottomRight.copyWith(
-            x: (bounds.bottomRight.x + dx)
-                .clamp(bounds.bottomLeft.x + minGap, 1.0),
-            y: (bounds.bottomRight.y + dy)
-                .clamp(bounds.topRight.y + minGap, 1.0),
+            x: clamp01(
+              (bounds.bottomRight.x + dx).clamp(
+                bounds.bottomLeft.x + minGap,
+                1.0,
+              ),
+            ),
+            y: clamp01(
+              (bounds.bottomRight.y + dy).clamp(
+                bounds.topRight.y + minGap,
+                1.0,
+              ),
+            ),
           ),
         );
+        break;
 
       case 'bottomLeft':
-        return bounds.copyWith(
+        candidate = bounds.copyWith(
           bottomLeft: bounds.bottomLeft.copyWith(
-            x: (bounds.bottomLeft.x + dx)
-                .clamp(0.0, bounds.bottomRight.x - minGap),
-            y: (bounds.bottomLeft.y + dy)
-                .clamp(bounds.topLeft.y + minGap, 1.0),
+            x: clamp01(
+              (bounds.bottomLeft.x + dx).clamp(
+                0.0,
+                bounds.bottomRight.x - minGap,
+              ),
+            ),
+            y: clamp01(
+              (bounds.bottomLeft.y + dy).clamp(
+                bounds.topLeft.y + minGap,
+                1.0,
+              ),
+            ),
           ),
         );
+        break;
 
       default:
         return bounds;
     }
+
+    if (!_isConvexQuadrilateral(candidate)) {
+      return bounds;
+    }
+
+    final area = _polygonArea([
+      Offset(candidate.topLeft.x, candidate.topLeft.y),
+      Offset(candidate.topRight.x, candidate.topRight.y),
+      Offset(candidate.bottomRight.x, candidate.bottomRight.y),
+      Offset(candidate.bottomLeft.x, candidate.bottomLeft.y),
+    ]).abs();
+
+    if (area < 0.02) {
+      return bounds;
+    }
+
+    return candidate;
+  }
+
+  DocumentBounds _updateEdge({
+    required DocumentBounds bounds,
+    required String edge,
+    required DragUpdateDetails details,
+    required Rect imageRect,
+  }) {
+    const minGap = 0.03;
+
+    final dx = details.delta.dx / imageRect.width;
+    final dy = details.delta.dy / imageRect.height;
+
+    double clamp01(double v) => v.clamp(0.0, 1.0);
+
+    DocumentBounds candidate;
+
+    switch (edge) {
+      case 'top':
+        final newY = clamp01(
+          (bounds.topLeft.y + dy).clamp(
+            0.0,
+            min(bounds.bottomLeft.y, bounds.bottomRight.y) - minGap,
+          ),
+        );
+
+        candidate = bounds.copyWith(
+          topLeft: bounds.topLeft.copyWith(y: newY),
+          topRight: bounds.topRight.copyWith(y: newY),
+        );
+        break;
+
+      case 'bottom':
+        final newY = clamp01(
+          (bounds.bottomLeft.y + dy).clamp(
+            max(bounds.topLeft.y, bounds.topRight.y) + minGap,
+            1.0,
+          ),
+        );
+
+        candidate = bounds.copyWith(
+          bottomLeft: bounds.bottomLeft.copyWith(y: newY),
+          bottomRight: bounds.bottomRight.copyWith(y: newY),
+        );
+        break;
+
+      case 'left':
+        final newX = clamp01(
+          (bounds.topLeft.x + dx).clamp(
+            0.0,
+            min(bounds.topRight.x, bounds.bottomRight.x) - minGap,
+          ),
+        );
+
+        candidate = bounds.copyWith(
+          topLeft: bounds.topLeft.copyWith(x: newX),
+          bottomLeft: bounds.bottomLeft.copyWith(x: newX),
+        );
+        break;
+
+      case 'right':
+        final newX = clamp01(
+          (bounds.topRight.x + dx).clamp(
+            max(bounds.topLeft.x, bounds.bottomLeft.x) + minGap,
+            1.0,
+          ),
+        );
+
+        candidate = bounds.copyWith(
+          topRight: bounds.topRight.copyWith(x: newX),
+          bottomRight: bounds.bottomRight.copyWith(x: newX),
+        );
+        break;
+
+      default:
+        return bounds;
+    }
+
+    if (!_isConvexQuadrilateral(candidate)) {
+      return bounds;
+    }
+
+    final area = _polygonArea([
+      Offset(candidate.topLeft.x, candidate.topLeft.y),
+      Offset(candidate.topRight.x, candidate.topRight.y),
+      Offset(candidate.bottomRight.x, candidate.bottomRight.y),
+      Offset(candidate.bottomLeft.x, candidate.bottomLeft.y),
+    ]).abs();
+
+    if (area < 0.02) {
+      return bounds;
+    }
+
+    return candidate;
   }
 
   /// Navigates to the processing page using the finalized image path.
@@ -683,6 +923,49 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     await _initializeCamera();
   }
 
+  Future<ImageInfo> _loadImageInfo(File file) async {
+    final imageProvider = FileImage(file);
+    final completer = Completer<ImageInfo>();
+    final stream = imageProvider.resolve(const ImageConfiguration());
+
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+          (info, _) {
+        completer.complete(info);
+        stream.removeListener(listener);
+      },
+      onError: (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+        stream.removeListener(listener);
+      },
+    );
+
+    stream.addListener(listener);
+    return completer.future;
+  }
+
+  Rect _computeContainImageRect({
+    required Size imageSize,
+    required Size previewSize,
+  }) {
+    final fitted = applyBoxFit(
+      BoxFit.contain,
+      imageSize,
+      previewSize,
+    );
+
+    final renderSize = fitted.destination;
+    final dx = (previewSize.width - renderSize.width) / 2.0;
+    final dy = (previewSize.height - renderSize.height) / 2.0;
+
+    return Rect.fromLTWH(
+      dx,
+      dy,
+      renderSize.width,
+      renderSize.height,
+    );
+  }
+
   /// Shows the image preview bottom sheet.
   ///
   /// Available actions:
@@ -700,14 +983,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
         ? detectionResult.bounds!
         : DocumentBounds.defaultInset();
 
-    if (!detectionResult.hasDocument) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _showSnackBar(
-          detectionResult.reason ?? 'No clear document detected. Adjust manually or retake.',
-        );
-      });
-    }
-
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -716,11 +991,29 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       builder: (sheetContext) {
         DocumentBounds currentBounds = initialBounds;
         bool isProcessing = false;
-        int cropOverlayVersion = 0;
-        bool hasShownInitialDetectionMessage = false;
+        bool hasDetectedDocument = detectionResult.hasDocument;
+        String? detectionMessage = detectionResult.hasDocument
+            ? null
+            : (detectionResult.reason ?? 'No visible document detected.');
+        String? adjustmentMessage;
+        bool adjustmentBlocked = false;
 
         return StatefulBuilder(
           builder: (context, setModalState) {
+            final bool shapeIsValid = _isValidBounds(currentBounds);
+
+            final bool canContinue =
+                hasDetectedDocument && shapeIsValid && !adjustmentBlocked;
+
+            final String? cropValidationMessage = !hasDetectedDocument
+                ? (detectionMessage ?? 'No visible document detected.')
+                : (!shapeIsValid
+                ? 'Crop is not allowed. Please fix the document bounds or retry Auto Crop.'
+                : (adjustmentBlocked
+                ? (adjustmentMessage ??
+                'Adjustment not allowed. Keep the crop as a quadrilateral.')
+                : null));
+
             return FractionallySizedBox(
               heightFactor: 0.83,
               child: Container(
@@ -772,7 +1065,11 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
                     const SizedBox(height: 16),
 
-                    /// Main preview area with crop overlay and draggable handles.
+                    /// Main preview area with:
+                    /// - fitted image display
+                    /// - crop polygon overlay
+                    /// - colored corner handles for precise adjustment
+                    /// - subtle edge handles for quick border movement
                     Expanded(
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -787,89 +1084,275 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                   constraints.maxHeight,
                                 );
 
-                                return Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    Image.file(
-                                      File(imagePath),
-                                      fit: BoxFit.contain,
-                                    ),
-                                    IgnorePointer(
-                                      child: CustomPaint(
-                                        painter: _DocumentBoundsPainter(
-                                          bounds: currentBounds,
+                                return FutureBuilder<ImageInfo>(
+                                  future: _loadImageInfo(File(imagePath)),
+                                  builder: (context, snapshot) {
+                                    if (!snapshot.hasData) {
+                                      return const Center(
+                                        child: CircularProgressIndicator(
+                                          color: AppColors.accent,
                                         ),
-                                      ),
-                                    ),
-                                    _DraggableCornerHandle(
-                                      point: currentBounds.topLeft,
-                                      previewSize: previewSize,
-                                      onDragUpdate: (details) {
-                                        setModalState(() {
-                                          currentBounds = _updateDraggedCorner(
-                                            bounds: currentBounds,
-                                            cornerKey: 'topLeft',
-                                            details: details,
-                                            previewSize: previewSize,
-                                          );
-                                        });
-                                      },
-                                    ),
-                                    _DraggableCornerHandle(
-                                      point: currentBounds.topRight,
-                                      previewSize: previewSize,
-                                      onDragUpdate: (details) {
-                                        setModalState(() {
-                                          currentBounds = _updateDraggedCorner(
-                                            bounds: currentBounds,
-                                            cornerKey: 'topRight',
-                                            details: details,
-                                            previewSize: previewSize,
-                                          );
-                                        });
-                                      },
-                                    ),
-                                    _DraggableCornerHandle(
-                                      point: currentBounds.bottomRight,
-                                      previewSize: previewSize,
-                                      onDragUpdate: (details) {
-                                        setModalState(() {
-                                          currentBounds = _updateDraggedCorner(
-                                            bounds: currentBounds,
-                                            cornerKey: 'bottomRight',
-                                            details: details,
-                                            previewSize: previewSize,
-                                          );
-                                        });
-                                      },
-                                    ),
-                                    _DraggableCornerHandle(
-                                      point: currentBounds.bottomLeft,
-                                      previewSize: previewSize,
-                                      onDragUpdate: (details) {
-                                        setModalState(() {
-                                          currentBounds = _updateDraggedCorner(
-                                            bounds: currentBounds,
-                                            cornerKey: 'bottomLeft',
-                                            details: details,
-                                            previewSize: previewSize,
-                                          );
-                                        });
-                                      },
-                                    ),
+                                      );
+                                    }
 
-                                    /// Processing blocker used while auto-cropping
-                                    /// or generating the cropped output.
-                                    if (isProcessing)
-                                      Container(
-                                        color: const Color(0x66000000),
-                                        child: const Center(
-                                          child: CircularProgressIndicator(
-                                            color: AppColors.accent,
+                                    final imageInfo = snapshot.data!;
+                                    final imageSize = Size(
+                                      imageInfo.image.width.toDouble(),
+                                      imageInfo.image.height.toDouble(),
+                                    );
+
+                                    final imageRect = _computeContainImageRect(
+                                      imageSize: imageSize,
+                                      previewSize: previewSize,
+                                    );
+
+                                    Offset mapPoint(DocumentCorner point) {
+                                      return Offset(
+                                        imageRect.left + (point.x * imageRect.width),
+                                        imageRect.top + (point.y * imageRect.height),
+                                      );
+                                    }
+
+                                    final topLeftPoint = mapPoint(currentBounds.topLeft);
+                                    final topRightPoint = mapPoint(currentBounds.topRight);
+                                    final bottomRightPoint = mapPoint(currentBounds.bottomRight);
+                                    final bottomLeftPoint = mapPoint(currentBounds.bottomLeft);
+
+                                    return Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        Image.file(
+                                          File(imagePath),
+                                          fit: BoxFit.contain,
+                                        ),
+                                        IgnorePointer(
+                                          child: CustomPaint(
+                                            painter: _DocumentBoundsPainter(
+                                              bounds: currentBounds,
+                                              imageRect: imageRect,
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                  ],
+                                        _DraggableCornerHandle(
+                                          point: currentBounds.topLeft,
+                                          imageRect: imageRect,
+                                          handleColor: Colors.greenAccent,
+                                          onDragUpdate: (details) {
+                                            setModalState(() {
+                                              final previous = currentBounds;
+
+                                              final updated =
+                                              _updateDraggedCorner(
+                                                bounds: currentBounds,
+                                                cornerKey: 'topLeft',
+                                                details: details,
+                                                imageRect: imageRect,
+                                              );
+
+                                              final wasBlocked =
+                                              _sameBounds(updated, previous);
+
+                                              currentBounds = updated;
+                                              adjustmentBlocked = wasBlocked;
+                                              adjustmentMessage = wasBlocked
+                                                  ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
+                                                  : null;
+                                            });
+                                          },
+                                        ),
+                                        _DraggableCornerHandle(
+                                          point: currentBounds.topRight,
+                                          imageRect: imageRect,
+                                          handleColor: Colors.lightBlueAccent,
+                                          onDragUpdate: (details) {
+                                            setModalState(() {
+                                              final previous = currentBounds;
+
+                                              final updated =
+                                              _updateDraggedCorner(
+                                                bounds: currentBounds,
+                                                cornerKey: 'topRight',
+                                                details: details,
+                                                imageRect: imageRect,
+                                              );
+
+                                              final wasBlocked =
+                                              _sameBounds(updated, previous);
+
+                                              currentBounds = updated;
+                                              adjustmentBlocked = wasBlocked;
+                                              adjustmentMessage = wasBlocked
+                                                  ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
+                                                  : null;
+                                            });
+                                          },
+                                        ),
+                                        _DraggableCornerHandle(
+                                          point: currentBounds.bottomRight,
+                                          imageRect: imageRect,
+                                          handleColor: Colors.orangeAccent,
+                                          onDragUpdate: (details) {
+                                            setModalState(() {
+                                              final previous = currentBounds;
+
+                                              final updated =
+                                              _updateDraggedCorner(
+                                                bounds: currentBounds,
+                                                cornerKey: 'bottomRight',
+                                                details: details,
+                                                imageRect: imageRect,
+                                              );
+
+                                              final wasBlocked =
+                                              _sameBounds(updated, previous);
+
+                                              currentBounds = updated;
+                                              adjustmentBlocked = wasBlocked;
+                                              adjustmentMessage = wasBlocked
+                                                  ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
+                                                  : null;
+                                            });
+                                          },
+                                        ),
+                                        _DraggableCornerHandle(
+                                          point: currentBounds.bottomLeft,
+                                          imageRect: imageRect,
+                                          handleColor: Colors.purpleAccent,
+                                          onDragUpdate: (details) {
+                                            setModalState(() {
+                                              final previous = currentBounds;
+
+                                              final updated =
+                                              _updateDraggedCorner(
+                                                bounds: currentBounds,
+                                                cornerKey: 'bottomLeft',
+                                                details: details,
+                                                imageRect: imageRect,
+                                              );
+
+                                              final wasBlocked =
+                                              _sameBounds(updated, previous);
+
+                                              currentBounds = updated;
+                                              adjustmentBlocked = wasBlocked;
+                                              adjustmentMessage = wasBlocked
+                                                  ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
+                                                  : null;
+                                            });
+                                          },
+                                        ),
+                                        _EdgeHandle(
+                                          start: topLeftPoint,
+                                          end: topRightPoint,
+                                          highlight: cropValidationMessage != null,
+                                          onDragUpdate: (details) {
+                                            setModalState(() {
+                                              final previous = currentBounds;
+
+                                              final updated = _updateEdge(
+                                                bounds: currentBounds,
+                                                edge: 'top',
+                                                details: details,
+                                                imageRect: imageRect,
+                                              );
+
+                                              final wasBlocked = _sameBounds(updated, previous);
+
+                                              currentBounds = updated;
+                                              adjustmentBlocked = wasBlocked;
+                                              adjustmentMessage = wasBlocked
+                                                  ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
+                                                  : null;
+                                            });
+                                          },
+                                        ),
+                                        _EdgeHandle(
+                                          start: bottomLeftPoint,
+                                          end: bottomRightPoint,
+                                          highlight: cropValidationMessage != null,
+                                          onDragUpdate: (details) {
+                                            setModalState(() {
+                                              final previous = currentBounds;
+
+                                              final updated = _updateEdge(
+                                                bounds: currentBounds,
+                                                edge: 'bottom',
+                                                details: details,
+                                                imageRect: imageRect,
+                                              );
+
+                                              final wasBlocked = _sameBounds(updated, previous);
+
+                                              currentBounds = updated;
+                                              adjustmentBlocked = wasBlocked;
+                                              adjustmentMessage = wasBlocked
+                                                  ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
+                                                  : null;
+                                            });
+                                          },
+                                        ),
+                                        _EdgeHandle(
+                                          start: topLeftPoint,
+                                          end: bottomLeftPoint,
+                                          highlight: cropValidationMessage != null,
+                                          onDragUpdate: (details) {
+                                            setModalState(() {
+                                              final previous = currentBounds;
+
+                                              final updated = _updateEdge(
+                                                bounds: currentBounds,
+                                                edge: 'left',
+                                                details: details,
+                                                imageRect: imageRect,
+                                              );
+
+                                              final wasBlocked = _sameBounds(updated, previous);
+
+                                              currentBounds = updated;
+                                              adjustmentBlocked = wasBlocked;
+                                              adjustmentMessage = wasBlocked
+                                                  ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
+                                                  : null;
+                                            });
+                                          },
+                                        ),
+                                        _EdgeHandle(
+                                          start: topRightPoint,
+                                          end: bottomRightPoint,
+                                          highlight: cropValidationMessage != null,
+                                          onDragUpdate: (details) {
+                                            setModalState(() {
+                                              final previous = currentBounds;
+
+                                              final updated = _updateEdge(
+                                                bounds: currentBounds,
+                                                edge: 'right',
+                                                details: details,
+                                                imageRect: imageRect,
+                                              );
+
+                                              final wasBlocked = _sameBounds(updated, previous);
+
+                                              currentBounds = updated;
+                                              adjustmentBlocked = wasBlocked;
+                                              adjustmentMessage = wasBlocked
+                                                  ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
+                                                  : null;
+                                            });
+                                          },
+                                        ),
+                                        if (isProcessing)
+                                          Container(
+                                            color: const Color(0x66000000),
+                                            child: const Center(
+                                              child: CircularProgressIndicator(
+                                                color: AppColors.accent,
+                                              ),
+                                            ),
+                                          ),
+                                      ],
+                                    );
+                                  },
                                 );
                               },
                             ),
@@ -889,81 +1372,159 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                           top: Radius.circular(22),
                         ),
                       ),
-                      child: Row(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Expanded(
-                            child: _PreviewFooterAction(
-                              icon: Icons.refresh_rounded,
-                              label: 'Retry',
-                              color: AppColors.textSecondary,
-                              onTap: () {
-                                Navigator.pop(sheetContext);
-                              },
+                          if (cropValidationMessage != null) ...[
+                            Container(
+                              width: double.infinity,
+                              margin: const EdgeInsets.only(bottom: 12),
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: AppColors.background,
+                                borderRadius: BorderRadius.circular(14),
+                                border:
+                                Border.all(color: AppColors.accentSoft),
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Icon(
+                                    Icons.warning_amber_rounded,
+                                    color: AppColors.accentSoft,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      cropValidationMessage,
+                                      style:
+                                      AppTextStyles.bodySecondary.copyWith(
+                                        fontSize: 12.5,
+                                        color: AppColors.textPrimary,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _PreviewFooterAction(
-                              icon: Icons.crop_free_rounded,
-                              label: 'Auto Crop',
-                              color: AppColors.warning,
-                              onTap: () async {
-                                setModalState(() {
-                                  isProcessing = true;
-                                });
+                          ],
+                          Row(
+                            children: [
+                              Expanded(
+                                child: _PreviewFooterAction(
+                                  icon: Icons.refresh_rounded,
+                                  label: 'Retry',
+                                  color: AppColors.textSecondary,
+                                  onTap: () {
+                                    Navigator.pop(sheetContext);
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _PreviewFooterAction(
+                                  icon: Icons.crop_free_rounded,
+                                  label: 'Auto Crop',
+                                  color: AppColors.warning,
+                                  onTap: () async {
+                                    setModalState(() {
+                                      isProcessing = true;
+                                    });
 
-                                final detection = await _detectDocumentBounds(imagePath);
+                                    final detection =
+                                    await _detectDocumentBounds(imagePath);
 
-                                if (!mounted) return;
+                                    if (!mounted) return;
 
-                                setModalState(() {
-                                  isProcessing = false;
-                                });
+                                    setModalState(() {
+                                      isProcessing = false;
+                                      hasDetectedDocument =
+                                          detection.hasDocument;
+                                      detectionMessage = detection.hasDocument
+                                          ? null
+                                          : (detection.reason ??
+                                          'No clear document detected.');
 
-                                if (detection.hasDocument && detection.bounds != null) {
-                                  setModalState(() {
-                                    currentBounds = detection.bounds!;
-                                    cropOverlayVersion++;
-                                  });
+                                      if (detection.hasDocument &&
+                                          detection.bounds != null) {
+                                        currentBounds = detection.bounds!;
+                                        adjustmentBlocked = false;
+                                        adjustmentMessage = null;
+                                      }
+                                    });
 
-                                  _showSnackBar('Auto-crop updated.');
-                                  return;
-                                }
+                                    if (detection.hasDocument &&
+                                        detection.bounds != null) {
+                                      _showSnackBar('Auto-crop updated.');
+                                      return;
+                                    }
 
-                                _showSnackBar(
-                                  detection.reason ?? 'No clear document detected. Keeping current crop.',
-                                );
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _PreviewFooterAction(
-                              icon: Icons.check_circle_rounded,
-                              label: 'Continue',
-                              color: AppColors.accent,
-                              isPrimary: true,
-                              onTap: () async {
-                                if (!_isValidBounds(currentBounds)) {
-                                  _showSnackBar('Crop area is too small or invalid.');
-                                  return;
-                                }
+                                    _showSnackBar(
+                                      detection.reason ??
+                                          'No clear document detected. Processing remains blocked.',
+                                    );
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: _PreviewFooterAction(
+                                  icon: Icons.check_circle_rounded,
+                                  label: 'Continue',
+                                  color: canContinue
+                                      ? AppColors.accent
+                                      : AppColors.textMuted,
+                                  isEnabled: canContinue,
+                                  onTap: () async {
+                                    if (!hasDetectedDocument) {
+                                      _showSnackBar(
+                                        detectionMessage ??
+                                            'No visible document detected. Please retry or recapture.',
+                                      );
+                                      return;
+                                    }
 
-                                setModalState(() {
-                                  isProcessing = true;
-                                });
+                                    if (!_isValidBounds(currentBounds)) {
+                                      _showSnackBar(
+                                        'Crop is not allowed. Please fix the document bounds or retry Auto Crop.',
+                                      );
+                                      return;
+                                    }
 
-                                final croppedImagePath = await _cropDocumentImage(
-                                  imagePath: imagePath,
-                                  bounds: currentBounds,
-                                );
+                                    setModalState(() {
+                                      isProcessing = true;
+                                    });
 
-                                if (!mounted) return;
+                                    try {
+                                      final croppedImagePath =
+                                      await _cropDocumentImage(
+                                        imagePath: imagePath,
+                                        bounds: currentBounds,
+                                      );
 
-                                Navigator.pop(sheetContext);
-                                await _openProcessingPage(croppedImagePath);
-                              },
-                            ),
+                                      if (!mounted) return;
+
+                                      setModalState(() {
+                                        adjustmentBlocked = false;
+                                        adjustmentMessage = null;
+                                      });
+
+                                      Navigator.pop(sheetContext);
+                                      await _openProcessingPage(croppedImagePath);
+                                    } catch (error) {
+                                      if (!mounted) return;
+
+                                      setModalState(() {
+                                        isProcessing = false;
+                                      });
+
+                                      _showSnackBar('Cropping failed: $error');
+                                    }
+                                  },
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -977,7 +1538,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       },
     );
   }
-
 
   /// Shows a short message for camera and gallery flow feedback.
   void _showSnackBar(String message) {
@@ -1249,6 +1809,7 @@ class _PreviewFooterAction extends StatelessWidget {
   final Color color;
   final VoidCallback onTap;
   final bool isPrimary;
+  final bool isEnabled;
 
   const _PreviewFooterAction({
     required this.icon,
@@ -1256,24 +1817,34 @@ class _PreviewFooterAction extends StatelessWidget {
     required this.color,
     required this.onTap,
     this.isPrimary = false,
+    this.isEnabled = true,
   });
 
   @override
   Widget build(BuildContext context) {
+    final effectiveColor =
+    isEnabled ? color : AppColors.textMuted.withOpacity(0.75);
+
+    final effectiveBackground = isPrimary
+        ? (isEnabled ? AppColors.card : AppColors.background)
+        : AppColors.background;
+
+    final effectiveBorderColor = isPrimary
+        ? (isEnabled ? const Color(0x33FF8F69) : AppColors.border)
+        : AppColors.border;
+
     return Material(
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
+        onTap: isEnabled ? onTap : null,
         child: Ink(
           height: 56,
           decoration: BoxDecoration(
-            color: isPrimary ? AppColors.card : AppColors.background,
+            color: effectiveBackground,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: isPrimary
-                  ? const Color(0x33FF8F69)
-                  : AppColors.border,
+              color: effectiveBorderColor,
             ),
           ),
           child: Row(
@@ -1281,7 +1852,7 @@ class _PreviewFooterAction extends StatelessWidget {
             children: [
               Icon(
                 icon,
-                color: color,
+                color: effectiveColor,
                 size: 20,
               ),
               const SizedBox(width: 8),
@@ -1290,7 +1861,7 @@ class _PreviewFooterAction extends StatelessWidget {
                   label,
                   overflow: TextOverflow.ellipsis,
                   style: AppTextStyles.button.copyWith(
-                    color: color,
+                    color: effectiveColor,
                   ),
                 ),
               ),
@@ -1326,9 +1897,7 @@ class _FlashModeButton extends StatelessWidget {
             color: isSelected ? AppColors.card : AppColors.background,
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: isSelected
-                  ? AppColors.accent
-                  : AppColors.border,
+              color: isSelected ? AppColors.accent : AppColors.border,
             ),
           ),
           child: Center(
@@ -1350,23 +1919,24 @@ class _FlashModeButton extends StatelessWidget {
 /// Interactive crop handle anchored to one normalized corner point.
 class _DraggableCornerHandle extends StatelessWidget {
   final DocumentCorner point;
-  final Size previewSize;
+  final Rect imageRect;
+  final Color handleColor;
   final ValueChanged<DragUpdateDetails> onDragUpdate;
 
   const _DraggableCornerHandle({
     required this.point,
-    required this.previewSize,
+    required this.imageRect,
+    required this.handleColor,
     required this.onDragUpdate,
   });
 
   @override
   Widget build(BuildContext context) {
-    final left = (point.x * previewSize.width) - 20;
-    final top = (point.y * previewSize.height) - 20;
+    const double handleRadius = 20;
 
     return Positioned(
-      left: left,
-      top: top,
+      left: imageRect.left + (point.x * imageRect.width) - handleRadius,
+      top: imageRect.top + (point.y * imageRect.height) - handleRadius,
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
         onPanUpdate: onDragUpdate,
@@ -1381,9 +1951,78 @@ class _DraggableCornerHandle extends StatelessWidget {
               shape: BoxShape.circle,
               color: AppColors.textPrimary,
               border: Border.all(
-                color: AppColors.success,
+                color: handleColor,
                 width: 3,
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Visible draggable edge handle that sits on the current crop border,
+/// not on the outer image frame.
+///
+/// This lets users move one crop side as a pair of corners instead of
+/// adjusting both corners individually.
+class _EdgeHandle extends StatelessWidget {
+  final Offset start;
+  final Offset end;
+  final bool highlight;
+  final ValueChanged<DragUpdateDetails> onDragUpdate;
+
+  const _EdgeHandle({
+    required this.start,
+    required this.end,
+    required this.onDragUpdate,
+    this.highlight = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final edgeColor = highlight
+        ? Colors.white.withOpacity(0.95)
+        : Colors.white.withOpacity(0.75);
+
+    final mid = Offset(
+      (start.dx + end.dx) / 2,
+      (start.dy + end.dy) / 2,
+    );
+
+    final isHorizontal = (start.dy - end.dy).abs() <= (start.dx - end.dx).abs();
+
+    const double longSize = 56;
+    const double shortSize = 10;
+    const double hitPadding = 18;
+
+    final width = isHorizontal ? longSize : shortSize;
+    final height = isHorizontal ? shortSize : longSize;
+
+    return Positioned(
+      left: mid.dx - (width / 2) - hitPadding / 2,
+      top: mid.dy - (height / 2) - hitPadding / 2,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onPanUpdate: onDragUpdate,
+        child: Container(
+          width: width + hitPadding,
+          height: height + hitPadding,
+          alignment: Alignment.center,
+          child: Container(
+            width: width,
+            height: height,
+            decoration: BoxDecoration(
+              color: edgeColor,
+              borderRadius: BorderRadius.circular(999),
+              boxShadow: [
+                BoxShadow(
+                  color: edgeColor.withOpacity(0.35),
+                  blurRadius: 8,
+                  spreadRadius: 1,
+                ),
+              ],
             ),
           ),
         ),
@@ -1395,25 +2034,28 @@ class _DraggableCornerHandle extends StatelessWidget {
 /// Draws the crop quadrilateral and its corner markers over the preview image.
 class _DocumentBoundsPainter extends CustomPainter {
   final DocumentBounds bounds;
+  final Rect imageRect;
 
   const _DocumentBoundsPainter({
     required this.bounds,
+    required this.imageRect,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final topLeft =
-    Offset(bounds.topLeft.x * size.width, bounds.topLeft.y * size.height);
-    final topRight =
-    Offset(bounds.topRight.x * size.width, bounds.topRight.y * size.height);
-    final bottomRight = Offset(
-      bounds.bottomRight.x * size.width,
-      bounds.bottomRight.y * size.height,
-    );
-    final bottomLeft = Offset(
-      bounds.bottomLeft.x * size.width,
-      bounds.bottomLeft.y * size.height,
-    );
+    Offset mapPoint(Offset normalized) {
+      return Offset(
+        imageRect.left + (normalized.dx * imageRect.width),
+        imageRect.top + (normalized.dy * imageRect.height),
+      );
+    }
+
+    final topLeft = mapPoint(Offset(bounds.topLeft.x, bounds.topLeft.y));
+    final topRight = mapPoint(Offset(bounds.topRight.x, bounds.topRight.y));
+    final bottomRight =
+    mapPoint(Offset(bounds.bottomRight.x, bounds.bottomRight.y));
+    final bottomLeft =
+    mapPoint(Offset(bounds.bottomLeft.x, bounds.bottomLeft.y));
 
     final borderPaint = Paint()
       ..color = AppColors.success
@@ -1446,7 +2088,8 @@ class _DocumentBoundsPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DocumentBoundsPainter oldDelegate) {
-    return oldDelegate.bounds != bounds;
+    return oldDelegate.bounds != bounds ||
+        oldDelegate.imageRect != imageRect;
   }
 }
 

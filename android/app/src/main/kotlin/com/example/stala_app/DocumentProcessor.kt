@@ -95,57 +95,17 @@ object DocumentProcessor {
 
         Log.d("DocumentProcessor", "left=$left right=$right top=$top bottom=$bottom")
 
-        val topLeftCorner = findCornerPoint(
-            bitmap = scaledBitmap,
-            startX = left,
-            endX = (left + right) / 2,
-            startY = top,
-            endY = (top + bottom) / 2,
-            preferLeft = true,
-            preferTop = true,
-        )
+        val normalizedTopLeftX = left.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedTopLeftY = top.toDouble() / scaledBitmap.height.toDouble()
 
-        val topRightCorner = findCornerPoint(
-            bitmap = scaledBitmap,
-            startX = (left + right) / 2,
-            endX = right,
-            startY = top,
-            endY = (top + bottom) / 2,
-            preferLeft = false,
-            preferTop = true,
-        )
+        val normalizedTopRightX = right.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedTopRightY = top.toDouble() / scaledBitmap.height.toDouble()
 
-        val bottomRightCorner = findCornerPoint(
-            bitmap = scaledBitmap,
-            startX = (left + right) / 2,
-            endX = right,
-            startY = (top + bottom) / 2,
-            endY = bottom,
-            preferLeft = false,
-            preferTop = false,
-        )
+        val normalizedBottomRightX = right.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedBottomRightY = bottom.toDouble() / scaledBitmap.height.toDouble()
 
-        val bottomLeftCorner = findCornerPoint(
-            bitmap = scaledBitmap,
-            startX = left,
-            endX = (left + right) / 2,
-            startY = (top + bottom) / 2,
-            endY = bottom,
-            preferLeft = true,
-            preferTop = false,
-        )
-
-        val normalizedTopLeftX = topLeftCorner.first.toDouble() / scaledBitmap.width.toDouble()
-        val normalizedTopLeftY = topLeftCorner.second.toDouble() / scaledBitmap.height.toDouble()
-
-        val normalizedTopRightX = topRightCorner.first.toDouble() / scaledBitmap.width.toDouble()
-        val normalizedTopRightY = topRightCorner.second.toDouble() / scaledBitmap.height.toDouble()
-
-        val normalizedBottomRightX = bottomRightCorner.first.toDouble() / scaledBitmap.width.toDouble()
-        val normalizedBottomRightY = bottomRightCorner.second.toDouble() / scaledBitmap.height.toDouble()
-
-        val normalizedBottomLeftX = bottomLeftCorner.first.toDouble() / scaledBitmap.width.toDouble()
-        val normalizedBottomLeftY = bottomLeftCorner.second.toDouble() / scaledBitmap.height.toDouble()
+        val normalizedBottomLeftX = left.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedBottomLeftY = bottom.toDouble() / scaledBitmap.height.toDouble()
 
         val normalizedLeft = minOf(
             normalizedTopLeftX,
@@ -298,10 +258,12 @@ object DocumentProcessor {
         }
 
         val outputBitmap = createBitmap(outputWidth, outputHeight)
+        val canvas = android.graphics.Canvas(outputBitmap)
+        canvas.drawBitmap(bitmap, matrix, null)
 
         val finalBitmap =
             if (outputBitmap.width > outputBitmap.height) {
-                val matrix = android.graphics.Matrix().apply {
+                val rotationMatrix = android.graphics.Matrix().apply {
                     postRotate(90f)
                 }
 
@@ -311,7 +273,7 @@ object DocumentProcessor {
                     0,
                     outputBitmap.width,
                     outputBitmap.height,
-                    matrix,
+                    rotationMatrix,
                     true
                 )
 
@@ -320,9 +282,6 @@ object DocumentProcessor {
             } else {
                 outputBitmap
             }
-
-        val canvas = android.graphics.Canvas(outputBitmap)
-        canvas.drawBitmap(bitmap, matrix, null)
 
         val outputFile = File(
             sourceFile.parentFile,
