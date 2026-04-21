@@ -804,69 +804,114 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     required DragUpdateDetails details,
     required Rect imageRect,
   }) {
-    const minGap = 0.03;
+    double clamp01(double value) => value.clamp(0.0, 1.0);
 
-    final dx = details.delta.dx / imageRect.width;
-    final dy = details.delta.dy / imageRect.height;
+    DocumentCorner startCorner;
+    DocumentCorner endCorner;
 
-    double clamp01(double v) => v.clamp(0.0, 1.0);
+    switch (edge) {
+      case 'top':
+        startCorner = bounds.topLeft;
+        endCorner = bounds.topRight;
+        break;
+      case 'right':
+        startCorner = bounds.topRight;
+        endCorner = bounds.bottomRight;
+        break;
+      case 'bottom':
+        startCorner = bounds.bottomLeft;
+        endCorner = bounds.bottomRight;
+        break;
+      case 'left':
+        startCorner = bounds.topLeft;
+        endCorner = bounds.bottomLeft;
+        break;
+      default:
+        return bounds;
+    }
+
+    final startPx = Offset(
+      imageRect.left + (startCorner.x * imageRect.width),
+      imageRect.top + (startCorner.y * imageRect.height),
+    );
+
+    final endPx = Offset(
+      imageRect.left + (endCorner.x * imageRect.width),
+      imageRect.top + (endCorner.y * imageRect.height),
+    );
+
+    final edgeVector = endPx - startPx;
+    final edgeLength = edgeVector.distance;
+
+    if (edgeLength < 1e-3) {
+      return bounds;
+    }
+
+    // Unit normal pointing perpendicular to the edge.
+    // This is the direction the edge should move when dragged.
+    final normal = Offset(
+      -edgeVector.dy / edgeLength,
+      edgeVector.dx / edgeLength,
+    );
+
+    final drag = details.delta;
+    final projected = (drag.dx * normal.dx) + (drag.dy * normal.dy);
+
+    final moveDxNorm = (normal.dx * projected) / imageRect.width;
+    final moveDyNorm = (normal.dy * projected) / imageRect.height;
 
     DocumentBounds candidate;
 
     switch (edge) {
       case 'top':
-        final newY = clamp01(
-          (bounds.topLeft.y + dy).clamp(
-            0.0,
-            min(bounds.bottomLeft.y, bounds.bottomRight.y) - minGap,
-          ),
-        );
-
         candidate = bounds.copyWith(
-          topLeft: bounds.topLeft.copyWith(y: newY),
-          topRight: bounds.topRight.copyWith(y: newY),
-        );
-        break;
-
-      case 'bottom':
-        final newY = clamp01(
-          (bounds.bottomLeft.y + dy).clamp(
-            max(bounds.topLeft.y, bounds.topRight.y) + minGap,
-            1.0,
+          topLeft: bounds.topLeft.copyWith(
+            x: clamp01(bounds.topLeft.x + moveDxNorm),
+            y: clamp01(bounds.topLeft.y + moveDyNorm),
           ),
-        );
-
-        candidate = bounds.copyWith(
-          bottomLeft: bounds.bottomLeft.copyWith(y: newY),
-          bottomRight: bounds.bottomRight.copyWith(y: newY),
-        );
-        break;
-
-      case 'left':
-        final newX = clamp01(
-          (bounds.topLeft.x + dx).clamp(
-            0.0,
-            min(bounds.topRight.x, bounds.bottomRight.x) - minGap,
+          topRight: bounds.topRight.copyWith(
+            x: clamp01(bounds.topRight.x + moveDxNorm),
+            y: clamp01(bounds.topRight.y + moveDyNorm),
           ),
-        );
-
-        candidate = bounds.copyWith(
-          topLeft: bounds.topLeft.copyWith(x: newX),
-          bottomLeft: bounds.bottomLeft.copyWith(x: newX),
         );
         break;
 
       case 'right':
-        final newX = clamp01(
-          (bounds.topRight.x + dx).clamp(
-            max(bounds.topLeft.x, bounds.bottomLeft.x) + minGap,
-            1.0,
+        candidate = bounds.copyWith(
+          topRight: bounds.topRight.copyWith(
+            x: clamp01(bounds.topRight.x + moveDxNorm),
+            y: clamp01(bounds.topRight.y + moveDyNorm),
+          ),
+          bottomRight: bounds.bottomRight.copyWith(
+            x: clamp01(bounds.bottomRight.x + moveDxNorm),
+            y: clamp01(bounds.bottomRight.y + moveDyNorm),
           ),
         );
+        break;
 
+      case 'bottom':
         candidate = bounds.copyWith(
-          topRight: bounds.topRight.copyWith(x: newX),
-          bottomRight: bounds.bottomRight.copyWith(x: newX),
+          bottomLeft: bounds.bottomLeft.copyWith(
+            x: clamp01(bounds.bottomLeft.x + moveDxNorm),
+            y: clamp01(bounds.bottomLeft.y + moveDyNorm),
+          ),
+          bottomRight: bounds.bottomRight.copyWith(
+            x: clamp01(bounds.bottomRight.x + moveDxNorm),
+            y: clamp01(bounds.bottomRight.y + moveDyNorm),
+          ),
+        );
+        break;
+
+      case 'left':
+        candidate = bounds.copyWith(
+          topLeft: bounds.topLeft.copyWith(
+            x: clamp01(bounds.topLeft.x + moveDxNorm),
+            y: clamp01(bounds.topLeft.y + moveDyNorm),
+          ),
+          bottomLeft: bounds.bottomLeft.copyWith(
+            x: clamp01(bounds.bottomLeft.x + moveDxNorm),
+            y: clamp01(bounds.bottomLeft.y + moveDyNorm),
+          ),
         );
         break;
 
@@ -1962,11 +2007,10 @@ class _DraggableCornerHandle extends StatelessWidget {
   }
 }
 
-/// Visible draggable edge handle that sits on the current crop border,
-/// not on the outer image frame.
+/// Visible draggable edge handle that stays attached to the current crop edge.
 ///
-/// This lets users move one crop side as a pair of corners instead of
-/// adjusting both corners individually.
+/// The handle rotates to match the edge direction and includes a dark outline
+/// so it remains visible on bright or white backgrounds.
 class _EdgeHandle extends StatelessWidget {
   final Offset start;
   final Offset end;
@@ -1983,46 +2027,57 @@ class _EdgeHandle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final edgeColor = highlight
-        ? Colors.white.withOpacity(0.95)
-        : Colors.white.withOpacity(0.75);
+        ? Colors.white.withOpacity(0.96)
+        : Colors.white.withOpacity(0.86);
+
+    final outlineColor = Colors.black.withOpacity(0.65);
 
     final mid = Offset(
       (start.dx + end.dx) / 2,
       (start.dy + end.dy) / 2,
     );
 
-    final isHorizontal = (start.dy - end.dy).abs() <= (start.dx - end.dx).abs();
+    final angle = atan2(end.dy - start.dy, end.dx - start.dx);
 
-    const double longSize = 56;
-    const double shortSize = 10;
+    const double pillWidth = 58;
+    const double pillHeight = 12;
     const double hitPadding = 18;
 
-    final width = isHorizontal ? longSize : shortSize;
-    final height = isHorizontal ? shortSize : longSize;
-
     return Positioned(
-      left: mid.dx - (width / 2) - hitPadding / 2,
-      top: mid.dy - (height / 2) - hitPadding / 2,
+      left: mid.dx - (pillWidth / 2) - hitPadding / 2,
+      top: mid.dy - (pillHeight / 2) - hitPadding / 2,
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
         onPanUpdate: onDragUpdate,
         child: Container(
-          width: width + hitPadding,
-          height: height + hitPadding,
+          width: pillWidth + hitPadding,
+          height: pillHeight + hitPadding,
           alignment: Alignment.center,
-          child: Container(
-            width: width,
-            height: height,
-            decoration: BoxDecoration(
-              color: edgeColor,
-              borderRadius: BorderRadius.circular(999),
-              boxShadow: [
-                BoxShadow(
-                  color: edgeColor.withOpacity(0.35),
-                  blurRadius: 8,
-                  spreadRadius: 1,
+          child: Transform.rotate(
+            angle: angle,
+            child: Container(
+              width: pillWidth,
+              height: pillHeight,
+              decoration: BoxDecoration(
+                color: edgeColor,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(
+                  color: outlineColor,
+                  width: 1.8,
                 ),
-              ],
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.28),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                  BoxShadow(
+                    color: edgeColor.withOpacity(0.30),
+                    blurRadius: 8,
+                    spreadRadius: 1,
+                  ),
+                ],
+              ),
             ),
           ),
         ),
