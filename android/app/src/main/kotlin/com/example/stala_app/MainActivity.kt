@@ -6,7 +6,9 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import android.os.Bundle
 import android.util.Log
+import org.opencv.android.OpenCVLoader
 
 class MainActivity : FlutterActivity() {
     private val accessibilityChannel = "stala_app/accessibility"
@@ -43,10 +45,43 @@ class MainActivity : FlutterActivity() {
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "detectDocumentBounds" -> handleDetectDocumentBounds(call, result)
+                "validateSelectedCrop" -> handleValidateSelectedCrop(call, result)
                 "cropDocumentImage" -> handleCropDocumentImage(call, result)
                 "processImage" -> handleProcessImage(call, result)
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    private fun handleValidateSelectedCrop(call: MethodCall, result: MethodChannel.Result) {
+        val imagePath = call.argument<String>("imagePath")
+        val bounds = call.argument<Map<String, Any?>>("bounds")
+
+        if (imagePath.isNullOrBlank() || bounds == null) {
+            result.success(
+                mapOf(
+                    "validationState" to "fail",
+                    "confidence" to 0.0,
+                    "reason" to "The selected crop is not yet a reliable music-sheet region."
+                )
+            )
+            return
+        }
+
+        try {
+            val validation = DocumentProcessor.validateSelectedCrop(
+                imagePath = imagePath,
+                bounds = bounds
+            )
+            result.success(validation)
+        } catch (e: Exception) {
+            result.success(
+                mapOf(
+                    "validationState" to "fail",
+                    "confidence" to 0.0,
+                    "reason" to "Validation failed: ${e.message ?: "Unknown error"}"
+                )
+            )
         }
     }
 
@@ -191,6 +226,16 @@ class MainActivity : FlutterActivity() {
 
         return enabledServices.split(":").any {
             it.equals(expectedService, ignoreCase = true)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        if (OpenCVLoader.initDebug()) {
+            Log.d("OpenCV", "OpenCV loaded successfully")
+        } else {
+            Log.e("OpenCV", "OpenCV failed to load")
         }
     }
 }

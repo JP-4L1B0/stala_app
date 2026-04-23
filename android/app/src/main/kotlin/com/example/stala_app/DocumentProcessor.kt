@@ -2,39 +2,42 @@ package com.example.stala_app
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.Log
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.get
+import androidx.core.graphics.scale
+import org.opencv.android.Utils
+import org.opencv.core.Mat
+import org.opencv.core.MatOfPoint
+import org.opencv.core.MatOfPoint2f
+import org.opencv.core.Size
+import org.opencv.imgproc.Imgproc
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
-import android.util.Log
-import androidx.core.graphics.scale
-import androidx.core.graphics.get
-import androidx.core.graphics.createBitmap
+import kotlin.math.sqrt
 
 /**
- * Handles document boundary detection and crop output for the STALA capture flow.
+ * Refactored document processor for the STALA capture flow.
  *
- * Current version:
- * - Downscales the image for faster scanning
- * - Estimates document borders through row/column darkness checks
- * - Returns explicit failure when no clear document region is found
- * - Crops using the normalized bounds received from Flutter
+ * Main goals:
+ * - keep OpenCV as the primary detector
+ * - keep the old heuristic logic as fallback
+ * - add music-sheet-aware validation instead of only page-aware validation
+ * - support a second validation pass after the user manually adjusts the crop
  *
- * Later upgrade path:
- * - Replace border scanning with OpenCV contour detection
- * - Replace rectangular crop with perspective warp
+ * Decision model:
+ * - strong: confident music-sheet region, proceed normally
+ * - weak: usable but uncertain, suggest manual adjustment
+ * - fail: not a reliable music-sheet region, allow only guarded override in UI
  */
 object DocumentProcessor {
 
-    /**
-     * Detects likely document bounds from an image path.
-     *
-     * Current implementation is a safe scaffold:
-     * - validates the file
-     * - validates that the bitmap can be decoded
-     * - returns a structured success/failure payload matching Flutter expectations
-     */
+    private const val BRIGHTNESS_THRESHOLD = 160
 
-    private const val BRIGHTNESS_THRESHOLD = 160 // or 185
+    private const val STATE_STRONG = "strong"
+    private const val STATE_WEAK = "weak"
+    private const val STATE_FAIL = "fail"
 
     fun detectDocumentBounds(imagePath: String): Map<String, Any?> {
         Log.d("DocumentProcessor", "=== detectDocumentBounds called ===")
@@ -42,45 +45,73 @@ object DocumentProcessor {
 
         val imageFile = File(imagePath)
         if (!imageFile.exists()) {
-            Log.d("DocumentProcessor", "Image file does not exist.")
-            return failure("Image file does not exist.")
+            return detectionFailure("Image file does not exist.")
         }
 
         val bitmap = BitmapFactory.decodeFile(imagePath)
-            ?: run {
-                Log.d("DocumentProcessor", "Failed to decode image.")
-                return failure("Failed to decode image.")
-            }
+            ?: return detectionFailure("Failed to decode image.")
 
-        val width = bitmap.width
-        val height = bitmap.height
-
-        Log.d("DocumentProcessor", "originalWidth=$width originalHeight=$height")
-
-        if (width < 200 || height < 200) {
+        if (bitmap.width < 200 || bitmap.height < 200) {
             bitmap.recycle()
-            Log.d("DocumentProcessor", "Image too small for detection.")
-            return failure("Image is too small for document detection.")
+            return detectionFailure("Image is too small for document detection.")
         }
 
         val targetWidth = 400
-        val scale = targetWidth.toFloat() / width.toFloat()
-        val scaledHeight = (height * scale).toInt().coerceAtLeast(1)
-
+        val scale = targetWidth.toFloat() / bitmap.width.toFloat()
+        val scaledHeight = (bitmap.height * scale).toInt().coerceAtLeast(1)
         val scaledBitmap = bitmap.scale(targetWidth, scaledHeight)
         bitmap.recycle()
 
-        Log.d("DocumentProcessor", "scaledWidth=$targetWidth scaledHeight=$scaledHeight")
+        Log.d(
+            "DocumentProcessor",
+            "scaledWidth=${scaledBitmap.width} scaledHeight=${scaledBitmap.height}"
+        )
+
+        val openCvBounds = findOpenCvDocumentBounds(scaledBitmap)
+        val validOpenCvBounds = openCvBounds?.takeIf {
+            isAcceptableOpenCvBounds(it, scaledBitmap)
+        }
+
+        val fullSheetBounds =
+            if (validOpenCvBounds == null && isLikelyMusicSheetImage(scaledBitmap)) {
+                findFullSheetBounds(scaledBitmap)
+            } else {
+                null
+            }
+
+        val contourFallbackBounds =
+            if (validOpenCvBounds == null && fullSheetBounds == null) {
+                findContourDocumentBounds(scaledBitmap)
+            } else {
+                null
+            }
+
+        val brightFallbackBounds =
+            if (validOpenCvBounds == null &&
+                fullSheetBounds == null &&
+                contourFallbackBounds == null
+            ) {
+                findBrightDocumentBounds(scaledBitmap)
+            } else {
+                null
+            }
 
         val detectedBounds =
-            findContourDocumentBounds(scaledBitmap)
-                ?: findBrightDocumentBounds(scaledBitmap)
+            validOpenCvBounds
+                ?: fullSheetBounds
+                ?: contourFallbackBounds
+                ?: brightFallbackBounds
+
+        Log.d("DocumentProcessor", "openCvBounds=${openCvBounds?.contentToString()}")
+        Log.d("DocumentProcessor", "validOpenCvBounds=${validOpenCvBounds?.contentToString()}")
+        Log.d("DocumentProcessor", "fullSheetBounds=${fullSheetBounds?.contentToString()}")
+        Log.d("DocumentProcessor", "contourFallbackBounds=${contourFallbackBounds?.contentToString()}")
+        Log.d("DocumentProcessor", "brightFallbackBounds=${brightFallbackBounds?.contentToString()}")
         Log.d("DocumentProcessor", "detectedBounds=${detectedBounds?.contentToString()}")
 
         if (detectedBounds == null) {
-            Log.d("DocumentProcessor", "findBrightDocumentBounds returned null")
             scaledBitmap.recycle()
-            return failure("No clear document detected.")
+            return detectionFailure("Can't confidently detect a document. Kindly adjust the box.")
         }
 
         var left = detectedBounds[0]
@@ -88,111 +119,139 @@ object DocumentProcessor {
         var right = detectedBounds[2]
         var bottom = detectedBounds[3]
 
-        left = refineLeftEdge(scaledBitmap, left, top, bottom)
-        right = refineRightEdge(scaledBitmap, right, top, bottom)
-        top = refineTopEdge(scaledBitmap, top, left, right)
-        bottom = refineBottomEdge(scaledBitmap, bottom, left, right)
+        val usedHeuristicFallback =
+            validOpenCvBounds == null &&
+                    fullSheetBounds == null &&
+                    (contourFallbackBounds != null || brightFallbackBounds != null)
 
-        Log.d("DocumentProcessor", "left=$left right=$right top=$top bottom=$bottom")
-
-        val normalizedTopLeftX = left.toDouble() / scaledBitmap.width.toDouble()
-        val normalizedTopLeftY = top.toDouble() / scaledBitmap.height.toDouble()
-
-        val normalizedTopRightX = right.toDouble() / scaledBitmap.width.toDouble()
-        val normalizedTopRightY = top.toDouble() / scaledBitmap.height.toDouble()
-
-        val normalizedBottomRightX = right.toDouble() / scaledBitmap.width.toDouble()
-        val normalizedBottomRightY = bottom.toDouble() / scaledBitmap.height.toDouble()
-
-        val normalizedBottomLeftX = left.toDouble() / scaledBitmap.width.toDouble()
-        val normalizedBottomLeftY = bottom.toDouble() / scaledBitmap.height.toDouble()
-
-        val normalizedLeft = minOf(
-            normalizedTopLeftX,
-            normalizedBottomLeftX
-        )
-        val normalizedRight = maxOf(
-            normalizedTopRightX,
-            normalizedBottomRightX
-        )
-        val normalizedTop = minOf(
-            normalizedTopLeftY,
-            normalizedTopRightY
-        )
-        val normalizedBottom = maxOf(
-            normalizedBottomLeftY,
-            normalizedBottomRightY
-        )
-
-        Log.d(
-            "DocumentProcessor",
-            "normalizedLeft=$normalizedLeft normalizedRight=$normalizedRight normalizedTop=$normalizedTop normalizedBottom=$normalizedBottom"
-        )
-
-        val detectedWidth = normalizedRight - normalizedLeft
-        val detectedHeight = normalizedBottom - normalizedTop
-        val detectedArea = detectedWidth * detectedHeight
-
-        val pixelWidth = right - left
-        val pixelHeight = bottom - top
-        val aspectRatio = pixelWidth.toDouble() / pixelHeight.toDouble()
-
-        val centerX = (normalizedLeft + normalizedRight) / 2.0
-        val centerY = (normalizedTop + normalizedBottom) / 2.0
-
-        val isValid =
-            detectedWidth > 0.25 &&
-                    detectedHeight > 0.25 &&
-                    detectedArea in 0.10..0.65 &&
-                    aspectRatio in 0.55..0.90 &&
-                    centerX in 0.30..0.70 &&
-                    centerY in 0.30..0.70 &&
-                    normalizedLeft < normalizedRight &&
-                    normalizedTop < normalizedBottom
-
-        val isCornerShapeValid =
-            normalizedTopLeftX < normalizedTopRightX &&
-                    normalizedBottomLeftX < normalizedBottomRightX &&
-                    normalizedTopLeftY < normalizedBottomLeftY &&
-                    normalizedTopRightY < normalizedBottomRightY
-
-        if (!isValid || !isCornerShapeValid) {
-            scaledBitmap.recycle()
-            return failure("No clear document detected.")
+        if (usedHeuristicFallback) {
+            left = refineLeftEdge(scaledBitmap, left, top, bottom)
+            right = refineRightEdge(scaledBitmap, right, top, bottom)
+            top = refineTopEdge(scaledBitmap, top, left, right)
+            bottom = refineBottomEdge(scaledBitmap, bottom, left, right)
         }
 
-        val confidence = estimateConfidence(
-            normalizedLeft,
-            normalizedTop,
-            normalizedRight,
-            normalizedBottom
+        val flutterBounds = buildFlutterBounds(
+            scaledBitmap = scaledBitmap,
+            left = left,
+            top = top,
+            right = right,
+            bottom = bottom
         )
 
-        val flutterBounds = mapOf(
-            "topLeft" to mapOf("x" to normalizedTopLeftX, "y" to normalizedTopLeftY),
-            "topRight" to mapOf("x" to normalizedTopRightX, "y" to normalizedTopRightY),
-            "bottomRight" to mapOf("x" to normalizedBottomRightX, "y" to normalizedBottomRightY),
-            "bottomLeft" to mapOf("x" to normalizedBottomLeftX, "y" to normalizedBottomLeftY)
+        val validation = validateBoundsOnBitmap(
+            bitmap = scaledBitmap,
+            left = left,
+            top = top,
+            right = right,
+            bottom = bottom,
+            acceptedByOpenCv = validOpenCvBounds != null,
+            acceptedByFullSheet = fullSheetBounds != null,
+            acceptedByHeuristic = usedHeuristicFallback
         )
 
         scaledBitmap.recycle()
 
         return mapOf(
             "hasDocument" to true,
-            "confidence" to confidence,
-            "bounds" to flutterBounds
+            "confidence" to validation.confidence,
+            "bounds" to flutterBounds,
+            "validationState" to validation.state,
+            "needsManualAdjustment" to (validation.state != STATE_STRONG),
+            "reason" to validation.reason
         )
     }
 
     /**
-     * Crops the bitmap using normalized bounds from Flutter and saves a new file.
+     * Second-pass validation used after the user manually adjusts the crop box.
      *
-     * Current implementation uses an axis-aligned rectangle based on the outer
-     * min/max corner values. This is enough to make the pipeline work end-to-end.
-     *
-     * Later upgrade path:
-     * - use perspective transform / warp for skewed documents
+     * This is more forgiving than auto-detection but still music-sheet-aware.
      */
+    fun validateSelectedCrop(
+        imagePath: String,
+        bounds: Map<String, Any?>
+    ): Map<String, Any?> {
+
+        Log.d("DocumentProcessor", "=== validateSelectedCrop called ===")
+
+        val imageFile = File(imagePath)
+        if (!imageFile.exists()) {
+            return validationFailure("Image file does not exist.")
+        }
+
+        val bitmap = BitmapFactory.decodeFile(imagePath)
+            ?: return validationFailure("Failed to decode image.")
+
+        try {
+            val rect = boundsToRect(bitmap, bounds) ?: return validationFailure(
+                "The selected crop is not yet a reliable music-sheet region. Please adjust the box."
+            )
+
+            val left = rect[0]
+            val top = rect[1]
+            val right = rect[2]
+            val bottom = rect[3]
+
+            val cropWidth = (right - left).coerceAtLeast(1)
+            val cropHeight = (bottom - top).coerceAtLeast(1)
+
+            val marginX = (cropWidth * 0.02).toInt()
+            val marginY = (cropHeight * 0.02).toInt()
+
+            val expandedLeft = (left - marginX).coerceAtLeast(0)
+            val expandedTop = (top - marginY).coerceAtLeast(0)
+            val expandedRight = (right + marginX).coerceAtMost(bitmap.width)
+            val expandedBottom = (bottom + marginY).coerceAtMost(bitmap.height)
+
+            val expandedWidth = (expandedRight - expandedLeft).coerceAtLeast(1)
+            val expandedHeight = (expandedBottom - expandedTop).coerceAtLeast(1)
+
+            val croppedBitmap = Bitmap.createBitmap(
+                bitmap,
+                expandedLeft,
+                expandedTop,
+                expandedWidth,
+                expandedHeight
+            )
+
+            val targetWidth = 400
+            val scale = targetWidth.toFloat() / croppedBitmap.width.toFloat()
+            val scaledHeight = (croppedBitmap.height * scale).toInt().coerceAtLeast(1)
+            val scaledCrop = croppedBitmap.scale(targetWidth, scaledHeight)
+
+            Log.d(
+                "DocumentProcessor",
+                "validate rect=[$left, $top, $right, $bottom] expanded=[$expandedLeft, $expandedTop, $expandedRight, $expandedBottom]"
+            )
+            Log.d("DocumentProcessor", "validate scaledWidth=${scaledCrop.width} scaledHeight=${scaledCrop.height}")
+
+            croppedBitmap.recycle()
+
+            val validation = validateBoundsOnBitmap(
+                bitmap = scaledCrop,
+                left = 0,
+                top = 0,
+                right = scaledCrop.width,
+                bottom = scaledCrop.height,
+                acceptedByOpenCv = false,
+                acceptedByFullSheet = false,
+                acceptedByHeuristic = true
+            )
+
+            Log.d("DocumentProcessor", "validate result state=${validation.state} confidence=${validation.confidence} reason=${validation.reason}")
+
+            scaledCrop.recycle()
+
+            return mapOf(
+                "validationState" to validation.state,
+                "confidence" to validation.confidence,
+                "reason" to validation.reason
+            )
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
     fun cropDocumentImage(
         imagePath: String,
         bounds: Map<String, Any?>
@@ -210,17 +269,25 @@ object DocumentProcessor {
         val bottomRight = bounds["bottomRight"] as? Map<*, *> ?: return recycleAndNull(bitmap)
         val bottomLeft = bounds["bottomLeft"] as? Map<*, *> ?: return recycleAndNull(bitmap)
 
-        val tlx = ((topLeft["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * width
-        val tly = ((topLeft["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * height
+        val tlx = ((topLeft["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap))
+            .coerceIn(0f, 1f) * width
+        val tly = ((topLeft["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap))
+            .coerceIn(0f, 1f) * height
 
-        val trx = ((topRight["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * width
-        val tryy = ((topRight["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * height
+        val trx = ((topRight["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap))
+            .coerceIn(0f, 1f) * width
+        val tryy = ((topRight["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap))
+            .coerceIn(0f, 1f) * height
 
-        val brx = ((bottomRight["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * width
-        val bry = ((bottomRight["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * height
+        val brx = ((bottomRight["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap))
+            .coerceIn(0f, 1f) * width
+        val bry = ((bottomRight["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap))
+            .coerceIn(0f, 1f) * height
 
-        val blx = ((bottomLeft["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * width
-        val bly = ((bottomLeft["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap)).coerceIn(0f, 1f) * height
+        val blx = ((bottomLeft["x"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap))
+            .coerceIn(0f, 1f) * width
+        val bly = ((bottomLeft["y"] as? Number)?.toFloat() ?: return recycleAndNull(bitmap))
+            .coerceIn(0f, 1f) * height
 
         val topWidth = distance(tlx, tly, trx, tryy)
         val bottomWidth = distance(blx, bly, brx, bry)
@@ -230,16 +297,15 @@ object DocumentProcessor {
         val outputWidth = maxOf(1, max(topWidth, bottomWidth).toInt())
         val outputHeight = maxOf(1, max(leftHeight, rightHeight).toInt())
 
-        // Safety check
         if (outputWidth < 50 || outputHeight < 50) {
             return recycleAndNull(bitmap)
         }
 
         val src = floatArrayOf(
-            tlx, tly,   // top-left
-            trx, tryy,  // top-right
-            brx, bry,   // bottom-right
-            blx, bly    // bottom-left
+            tlx, tly,
+            trx, tryy,
+            brx, bry,
+            blx, bly
         )
 
         val dst = floatArrayOf(
@@ -288,16 +354,6 @@ object DocumentProcessor {
             "cropped_${System.currentTimeMillis()}.jpg"
         )
 
-        Log.d(
-            "STALA_CROP",
-            "cropDocumentImage: pre-rotation output=${outputWidth}x${outputHeight}"
-        )
-
-        Log.d(
-            "STALA_CROP",
-            "cropDocumentImage: final bitmap=${finalBitmap.width}x${finalBitmap.height}"
-        )
-
         FileOutputStream(outputFile).use { out ->
             finalBitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
             out.flush()
@@ -306,30 +362,452 @@ object DocumentProcessor {
         bitmap.recycle()
         finalBitmap.recycle()
 
-        Log.d(
-            "STALA_CROP",
-            "cropDocumentImage: outputWidth=$outputWidth outputHeight=$outputHeight"
-        )
-
-        Log.d(
-            "STALA_CROP",
-            "cropDocumentImage: outputPath=${outputFile.absolutePath}"
-        )
-
-        Log.d(
-            "STALA_CROP",
-            "cropDocumentImage: fileExists=${outputFile.exists()} size=${outputFile.length()}"
-        )
-
         return outputFile.absolutePath
     }
 
-    private fun failure(reason: String): Map<String, Any?> {
+    private data class SheetValidation(
+        val state: String,
+        val confidence: Double,
+        val reason: String
+    )
+
+    private fun detectionFailure(reason: String): Map<String, Any?> {
         return mapOf(
             "hasDocument" to false,
             "confidence" to 0.0,
+            "reason" to reason,
+            "validationState" to STATE_FAIL,
+            "needsManualAdjustment" to true
+        )
+    }
+
+    private fun validationFailure(reason: String): Map<String, Any?> {
+        return mapOf(
+            "validationState" to STATE_FAIL,
+            "confidence" to 0.0,
             "reason" to reason
         )
+    }
+
+    private fun buildFlutterBounds(
+        scaledBitmap: Bitmap,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int
+    ): Map<String, Any?> {
+        val normalizedTopLeftX = left.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedTopLeftY = top.toDouble() / scaledBitmap.height.toDouble()
+
+        val normalizedTopRightX = right.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedTopRightY = top.toDouble() / scaledBitmap.height.toDouble()
+
+        val normalizedBottomRightX = right.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedBottomRightY = bottom.toDouble() / scaledBitmap.height.toDouble()
+
+        val normalizedBottomLeftX = left.toDouble() / scaledBitmap.width.toDouble()
+        val normalizedBottomLeftY = bottom.toDouble() / scaledBitmap.height.toDouble()
+
+        return mapOf(
+            "topLeft" to mapOf("x" to normalizedTopLeftX, "y" to normalizedTopLeftY),
+            "topRight" to mapOf("x" to normalizedTopRightX, "y" to normalizedTopRightY),
+            "bottomRight" to mapOf("x" to normalizedBottomRightX, "y" to normalizedBottomRightY),
+            "bottomLeft" to mapOf("x" to normalizedBottomLeftX, "y" to normalizedBottomLeftY)
+        )
+    }
+
+    private fun validateBoundsOnBitmap(
+        bitmap: Bitmap,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        acceptedByOpenCv: Boolean,
+        acceptedByFullSheet: Boolean,
+        acceptedByHeuristic: Boolean
+    ): SheetValidation {
+        val safeLeft = left.coerceIn(0, bitmap.width - 1)
+        val safeTop = top.coerceIn(0, bitmap.height - 1)
+        val safeRight = right.coerceIn(safeLeft + 1, bitmap.width)
+        val safeBottom = bottom.coerceIn(safeTop + 1, bitmap.height)
+
+        val widthRatio = (safeRight - safeLeft).toDouble() / bitmap.width.toDouble()
+        val heightRatio = (safeBottom - safeTop).toDouble() / bitmap.height.toDouble()
+        val areaRatio = widthRatio * heightRatio
+
+        val shapeScore = when {
+            acceptedByOpenCv -> 0.18
+            acceptedByFullSheet -> 0.12
+            acceptedByHeuristic -> 0.08
+            else -> 0.0
+        }
+
+        val evidence = scoreMusicSheetRegion(
+            bitmap = bitmap,
+            left = safeLeft,
+            top = safeTop,
+            right = safeRight,
+            bottom = safeBottom
+        )
+
+        var score = 0.0
+
+        // Strong signal: actual music structure
+        score += evidence.staffGroupScore * 0.50
+
+        // Secondary: horizontal line evidence
+        score += evidence.strongHorizontalLineDensity * 0.25
+        score += evidence.horizontalLineDensity * 0.15
+
+        // Weak tone-based signals
+        score += (1.0 - evidence.lightRatio) * 0.05
+        score += evidence.darkRatio * 0.05
+
+        // Small crop-shape trust bonus
+        score += shapeScore
+
+        if (
+            evidence.staffGroupScore in 0.40..0.60 &&
+            evidence.horizontalLineDensity > 0.30
+        ) {
+            score += 0.08
+        }
+
+        // HARD REJECTION: looks like lines but no real staff structure
+        if (
+            evidence.staffGroupScore < 0.45 &&
+            evidence.strongHorizontalLineDensity > 0.6
+        ) {
+            Log.d("DocumentProcessor", "Rejected: strong lines but weak staff structure")
+
+            return SheetValidation(
+                state = STATE_FAIL,
+                confidence = score.coerceIn(0.0, 1.0),
+                reason = "This crop has lines, but they do not look like a clear music sheet."
+            )
+        }
+
+        // STRONG override after rejection
+        if (evidence.staffGroupScore > 0.60) {
+            return SheetValidation(
+                state = STATE_STRONG,
+                confidence = evidence.staffGroupScore.coerceIn(0.0, 1.0),
+                reason = "Music sheet detected via staff structure."
+            )
+        }
+
+        Log.d(
+            "DocumentProcessor",
+            "musicSheetScore=$score lightRatio=${evidence.lightRatio} darkRatio=${evidence.darkRatio} horizontalLineDensity=${evidence.horizontalLineDensity} strongHorizontalLineDensity=${evidence.strongHorizontalLineDensity} edgeLineDensity=${evidence.edgeLineDensity} continuityDensity=${evidence.continuityDensity} staffGroupScore=${evidence.staffGroupScore} shapeScore=$shapeScore"
+        )
+
+        return when {
+            score >= 0.60 -> SheetValidation(
+                state = STATE_STRONG,
+                confidence = score.coerceIn(0.0, 1.0),
+                reason = "Music-sheet region detected."
+            )
+            score >= 0.40 -> SheetValidation(
+                state = STATE_WEAK,
+                confidence = score.coerceIn(0.0, 1.0),
+                reason = "Music sheet detected, but the crop is still unclear. Try tightening the box around the notes and staff lines."
+            )
+            else -> SheetValidation(
+                state = STATE_FAIL,
+                confidence = score.coerceIn(0.0, 1.0),
+                reason = "This crop does not look like a clear music sheet. Adjust the box to include the full staff area, or proceed if this is intentional."
+            )
+        }
+    }
+
+    private data class SheetEvidence(
+        val lightRatio: Double,
+        val darkRatio: Double,
+        val horizontalLineDensity: Double,
+        val strongHorizontalLineDensity: Double,
+        val edgeLineDensity: Double,
+        val continuityDensity: Double,
+        val staffGroupScore: Double
+    )
+
+    private fun scoreMusicSheetRegion(
+        bitmap: Bitmap,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int
+    ): SheetEvidence {
+        val width = (right - left).coerceAtLeast(1)
+        val height = (bottom - top).coerceAtLeast(1)
+
+        var lightPixels = 0
+        var darkPixels = 0
+        var totalPixels = 0
+
+        var sampledRows = 0
+        var lineLikeRows = 0
+        var strongLineRows = 0
+        var edgeLineRows = 0
+        var continuityRows = 0
+
+        val rowSignalScores = mutableListOf<Double>()
+
+        val stepX = maxOf(1, width / 180)
+        val stepY = maxOf(1, height / 260)
+
+        for (y in (top + 1) until (bottom - 1) step stepY) {
+            var rowDark = 0
+            var rowTotal = 0
+            var rowEdgeHits = 0
+            var longestRun = 0
+            var currentRun = 0
+
+            for (x in left until right step stepX) {
+                val centerPixel = bitmap.getPixel(x, y)
+                val upPixel = bitmap.getPixel(x, (y - 1).coerceAtLeast(top))
+                val downPixel = bitmap.getPixel(x, (y + 1).coerceAtMost(bottom - 1))
+
+                val center = averageBrightness(centerPixel)
+                val up = averageBrightness(upPixel)
+                val down = averageBrightness(downPixel)
+
+                if (center > 210) lightPixels++
+                if (center < 165) {
+                    darkPixels++
+                    rowDark++
+                    currentRun++
+                } else {
+                    if (currentRun > longestRun) longestRun = currentRun
+                    currentRun = 0
+                }
+
+                // Edge-based detection for thin horizontal lines:
+                // a dark row between brighter rows is likely a staff line.
+                val surroundAvg = (up + down) / 2.0
+                val edgeStrength = surroundAvg - center.toDouble()
+                if (edgeStrength > 18.0) {
+                    rowEdgeHits++
+                }
+
+                totalPixels++
+                rowTotal++
+            }
+
+            if (currentRun > longestRun) longestRun = currentRun
+
+            if (rowTotal > 0) {
+                val rowDarkRatio = rowDark.toDouble() / rowTotal.toDouble()
+                val rowEdgeRatio = rowEdgeHits.toDouble() / rowTotal.toDouble()
+                val continuityRatio = longestRun.toDouble() / rowTotal.toDouble()
+
+                // Generic line-like rows
+                if (rowDarkRatio in 0.03..0.30 || rowEdgeRatio in 0.08..0.70) {
+                    lineLikeRows++
+                }
+
+                // Stronger evidence rows
+                if (rowDarkRatio in 0.05..0.22 || rowEdgeRatio in 0.14..0.75) {
+                    strongLineRows++
+                }
+
+                // Thin-line edge detector
+                if (rowEdgeRatio in 0.10..0.85) {
+                    edgeLineRows++
+                }
+
+                // Horizontal continuity detector
+                if (continuityRatio >= 0.18) {
+                    continuityRows++
+                }
+
+                // Combined row signal used for staff grouping
+                val rowSignal =
+                    (rowDarkRatio * 0.25) +
+                            (rowEdgeRatio * 0.50) +
+                            (continuityRatio * 0.25)
+
+                rowSignalScores.add(rowSignal)
+                sampledRows++
+            }
+        }
+
+        val lightRatio =
+            if (totalPixels == 0) 0.0 else lightPixels.toDouble() / totalPixels.toDouble()
+        val darkRatio =
+            if (totalPixels == 0) 0.0 else darkPixels.toDouble() / totalPixels.toDouble()
+        val horizontalLineDensity =
+            if (sampledRows == 0) 0.0 else lineLikeRows.toDouble() / sampledRows.toDouble()
+        val strongHorizontalLineDensity =
+            if (sampledRows == 0) 0.0 else strongLineRows.toDouble() / sampledRows.toDouble()
+        val edgeLineDensity =
+            if (sampledRows == 0) 0.0 else edgeLineRows.toDouble() / sampledRows.toDouble()
+        val continuityDensity =
+            if (sampledRows == 0) 0.0 else continuityRows.toDouble() / sampledRows.toDouble()
+
+        val staffGroupScore = detectStaffGroupScore(rowSignalScores)
+
+        return SheetEvidence(
+            lightRatio = lightRatio,
+            darkRatio = darkRatio,
+            horizontalLineDensity = horizontalLineDensity,
+            strongHorizontalLineDensity = strongHorizontalLineDensity,
+            edgeLineDensity = edgeLineDensity,
+            continuityDensity = continuityDensity,
+            staffGroupScore = staffGroupScore
+        )
+    }
+
+    private fun detectStaffGroupScore(rowSignals: List<Double>): Double {
+        if (rowSignals.isEmpty()) return 0.0
+
+        val candidateRows = mutableListOf<Int>()
+
+        for (i in rowSignals.indices) {
+            val signal = rowSignals[i]
+
+            // Lower threshold now that row signal includes edge + continuity evidence.
+            if (signal >= 0.10) {
+                candidateRows.add(i)
+            }
+        }
+
+        if (candidateRows.isEmpty()) return 0.0
+
+        // Merge nearby detections into single centers
+        val mergedCenters = mutableListOf<Double>()
+        var currentGroup = mutableListOf<Int>()
+
+        for (index in candidateRows) {
+            if (currentGroup.isEmpty()) {
+                currentGroup.add(index)
+            } else {
+                val prev = currentGroup.last()
+                if (index - prev <= 2) {
+                    currentGroup.add(index)
+                } else {
+                    mergedCenters.add(currentGroup.average())
+                    currentGroup = mutableListOf(index)
+                }
+            }
+        }
+
+        if (currentGroup.isNotEmpty()) {
+            mergedCenters.add(currentGroup.average())
+        }
+
+        if (mergedCenters.size < 5) return 0.0
+
+        var bestGroupScore = 0.0
+
+        for (start in 0..mergedCenters.size - 5) {
+            val group = mergedCenters.subList(start, start + 5)
+            val gaps = mutableListOf<Double>()
+
+            for (i in 0 until 4) {
+                gaps.add(group[i + 1] - group[i])
+            }
+
+            val avgGap = gaps.average()
+            if (avgGap <= 0.0) continue
+
+            val variance = gaps.sumOf { gap ->
+                val d = gap - avgGap
+                d * d
+            } / gaps.size.toDouble()
+
+            val normalizedVariance = variance / (avgGap * avgGap)
+            val spacingScore = (1.0 - normalizedVariance).coerceIn(0.0, 1.0)
+
+            val plausibilityScore = when {
+                avgGap in 1.0..16.0 -> 1.0
+                avgGap in 16.0..26.0 -> 0.7
+                else -> 0.2
+            }
+
+            val groupScore = spacingScore * plausibilityScore
+            if (groupScore > bestGroupScore) {
+                bestGroupScore = groupScore
+            }
+        }
+
+        return bestGroupScore
+    }
+
+    private fun isAcceptableOpenCvBounds(bounds: IntArray, bitmap: Bitmap): Boolean {
+        val width = bounds[2] - bounds[0]
+        val height = bounds[3] - bounds[1]
+
+        val widthRatio = width.toDouble() / bitmap.width
+        val heightRatio = height.toDouble() / bitmap.height
+        val areaRatio = widthRatio * heightRatio
+
+        if (widthRatio < 0.25 || heightRatio < 0.25) return false
+        if (areaRatio < 0.15) return false
+
+        return true
+    }
+
+    private fun findFullSheetBounds(bitmap: Bitmap): IntArray {
+        val insetX = (bitmap.width * 0.03).toInt()
+        val insetY = (bitmap.height * 0.03).toInt()
+
+        return intArrayOf(
+            insetX,
+            insetY,
+            bitmap.width - insetX,
+            bitmap.height - insetY
+        )
+    }
+
+    private fun isLikelyMusicSheetImage(bitmap: Bitmap): Boolean {
+        val evidence = scoreMusicSheetRegion(
+            bitmap = bitmap,
+            left = 0,
+            top = 0,
+            right = bitmap.width,
+            bottom = bitmap.height
+        )
+
+        val score =
+            (evidence.lightRatio * 0.16) +
+                    (evidence.darkRatio * 0.12) +
+                    (evidence.horizontalLineDensity * 0.16) +
+                    (evidence.edgeLineDensity * 0.22) +
+                    (evidence.continuityDensity * 0.14) +
+                    (evidence.staffGroupScore * 0.20)
+
+        Log.d(
+            "DocumentProcessor",
+            "fullImageSheetScore=$score lightRatio=${evidence.lightRatio} darkRatio=${evidence.darkRatio} horizontalLineDensity=${evidence.horizontalLineDensity} edgeLineDensity=${evidence.edgeLineDensity} continuityDensity=${evidence.continuityDensity} staffGroupScore=${evidence.staffGroupScore}"
+        )
+
+        return score >= 0.34
+    }
+
+    private fun boundsToRect(
+        bitmap: Bitmap,
+        bounds: Map<String, Any?>
+    ): IntArray? {
+        val topLeft = bounds["topLeft"] as? Map<*, *> ?: return null
+        val topRight = bounds["topRight"] as? Map<*, *> ?: return null
+        val bottomRight = bounds["bottomRight"] as? Map<*, *> ?: return null
+        val bottomLeft = bounds["bottomLeft"] as? Map<*, *> ?: return null
+
+        val tlx = (((topLeft["x"] as? Number)?.toDouble() ?: return null) * bitmap.width).toInt()
+        val tly = (((topLeft["y"] as? Number)?.toDouble() ?: return null) * bitmap.height).toInt()
+        val trx = (((topRight["x"] as? Number)?.toDouble() ?: return null) * bitmap.width).toInt()
+        val tryy = (((topRight["y"] as? Number)?.toDouble() ?: return null) * bitmap.height).toInt()
+        val brx = (((bottomRight["x"] as? Number)?.toDouble() ?: return null) * bitmap.width).toInt()
+        val bry = (((bottomRight["y"] as? Number)?.toDouble() ?: return null) * bitmap.height).toInt()
+        val blx = (((bottomLeft["x"] as? Number)?.toDouble() ?: return null) * bitmap.width).toInt()
+        val bly = (((bottomLeft["y"] as? Number)?.toDouble() ?: return null) * bitmap.height).toInt()
+
+        val left = minOf(tlx, trx, brx, blx).coerceIn(0, bitmap.width - 1)
+        val top = minOf(tly, tryy, bry, bly).coerceIn(0, bitmap.height - 1)
+        val right = maxOf(tlx, trx, brx, blx).coerceIn(left + 1, bitmap.width)
+        val bottom = maxOf(tly, tryy, bry, bly).coerceIn(top + 1, bitmap.height)
+
+        return intArrayOf(left, top, right, bottom)
     }
 
     private fun recycleAndNull(bitmap: Bitmap): String? {
@@ -337,13 +815,131 @@ object DocumentProcessor {
         return null
     }
 
+    private fun findOpenCvDocumentBounds(bitmap: Bitmap): IntArray? {
+        val rgba = Mat()
+        val gray = Mat()
+        val blurred = Mat()
+        val binary = Mat()
+        val morphed = Mat()
+        val hierarchy = Mat()
 
+        return try {
+            Utils.bitmapToMat(bitmap, rgba)
 
-    private fun luminance(pixel: Int): Int {
-        val r = android.graphics.Color.red(pixel)
-        val g = android.graphics.Color.green(pixel)
-        val b = android.graphics.Color.blue(pixel)
-        return ((0.299 * r) + (0.587 * g) + (0.114 * b)).toInt()
+            Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
+            Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
+
+            Imgproc.adaptiveThreshold(
+                blurred,
+                binary,
+                255.0,
+                Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
+                Imgproc.THRESH_BINARY_INV,
+                21,
+                15.0
+            )
+
+            val kernel = Imgproc.getStructuringElement(
+                Imgproc.MORPH_RECT,
+                Size(5.0, 5.0)
+            )
+            Imgproc.morphologyEx(
+                binary,
+                morphed,
+                Imgproc.MORPH_CLOSE,
+                kernel
+            )
+            kernel.release()
+
+            val contours = mutableListOf<MatOfPoint>()
+            Imgproc.findContours(
+                morphed,
+                contours,
+                hierarchy,
+                Imgproc.RETR_EXTERNAL,
+                Imgproc.CHAIN_APPROX_SIMPLE
+            )
+
+            Log.d("DocumentProcessor", "OpenCV contours=${contours.size}")
+
+            val imageArea = bitmap.width.toDouble() * bitmap.height.toDouble()
+            val imageCenterX = bitmap.width / 2.0
+            val imageCenterY = bitmap.height / 2.0
+
+            var bestRect: IntArray? = null
+            var bestScore = Double.NEGATIVE_INFINITY
+
+            for (contour in contours) {
+                val contour2f = MatOfPoint2f(*contour.toArray())
+                val perimeter = Imgproc.arcLength(contour2f, true)
+
+                val approx = MatOfPoint2f()
+                Imgproc.approxPolyDP(
+                    contour2f,
+                    approx,
+                    0.02 * perimeter,
+                    true
+                )
+
+                val rect = Imgproc.boundingRect(contour)
+                val rectArea = rect.width.toDouble() * rect.height.toDouble()
+                val fillRatio = rectArea / imageArea
+                val aspectRatio =
+                    if (rect.height == 0) 999.0 else rect.width.toDouble() / rect.height.toDouble()
+
+                val centerX = rect.x + rect.width / 2.0
+                val centerY = rect.y + rect.height / 2.0
+                val centerDistance =
+                    kotlin.math.abs(centerX - imageCenterX) / bitmap.width.toDouble() +
+                            kotlin.math.abs(centerY - imageCenterY) / bitmap.height.toDouble()
+
+                val approxPoints = approx.toArray().size
+
+                var score = fillRatio * 120.0
+                score -= kotlin.math.abs(aspectRatio - 0.72) * 14.0
+                score -= centerDistance * 16.0
+                score += when {
+                    approxPoints == 4 -> 16.0
+                    approxPoints == 5 -> 10.0
+                    approxPoints == 6 -> 6.0
+                    else -> 0.0
+                }
+                score += (rect.height.toDouble() / bitmap.height.toDouble()) * 10.0
+
+                val isReasonable =
+                    rect.width > bitmap.width * 0.12 &&
+                            rect.height > bitmap.height * 0.18 &&
+                            fillRatio > 0.035 &&
+                            aspectRatio in 0.20..1.60
+
+                if (isReasonable && score > bestScore) {
+                    bestScore = score
+                    bestRect = intArrayOf(
+                        rect.x.coerceIn(0, bitmap.width - 1),
+                        rect.y.coerceIn(0, bitmap.height - 1),
+                        (rect.x + rect.width).coerceIn(0, bitmap.width - 1),
+                        (rect.y + rect.height).coerceIn(0, bitmap.height - 1)
+                    )
+                }
+
+                contour2f.release()
+                approx.release()
+                contour.release()
+            }
+
+            Log.d("DocumentProcessor", "OpenCV bestScore=$bestScore")
+            bestRect
+        } catch (e: Exception) {
+            Log.e("DocumentProcessor", "OpenCV detection failed", e)
+            null
+        } finally {
+            rgba.release()
+            gray.release()
+            blurred.release()
+            binary.release()
+            morphed.release()
+            hierarchy.release()
+        }
     }
 
     private fun findBrightDocumentBounds(bitmap: Bitmap): IntArray? {
@@ -377,20 +973,8 @@ object DocumentProcessor {
             }
         }
 
-        Log.d(
-            "DocumentProcessor",
-            "brightCount=$brightCount minX=$minX minY=$minY maxX=$maxX maxY=$maxY"
-        )
-
-        if (brightCount < 500) {
-            Log.d("DocumentProcessor", "Rejected: brightCount too low")
-            return null
-        }
-
-        if (maxX <= minX || maxY <= minY) {
-            Log.d("DocumentProcessor", "Rejected: invalid bounds")
-            return null
-        }
+        if (brightCount < 500) return null
+        if (maxX <= minX || maxY <= minY) return null
 
         return intArrayOf(minX, minY, maxX, maxY)
     }
@@ -406,7 +990,6 @@ object DocumentProcessor {
         var minY = height
         var maxX = -1
         var maxY = -1
-
         var edgeCount = 0
 
         for (y in marginY until height - marginY - 2 step 2) {
@@ -481,7 +1064,7 @@ object DocumentProcessor {
             if (ratio >= 0.75) {
                 if (streak == 0) best = x
                 streak++
-                if (streak >=4) return best
+                if (streak >= 4) return best
             } else {
                 streak = 0
             }
@@ -500,7 +1083,7 @@ object DocumentProcessor {
             if (ratio >= 0.75) {
                 if (streak == 0) best = x
                 streak++
-                if (streak >=4) return best
+                if (streak >= 4) return best
             } else {
                 streak = 0
             }
@@ -573,61 +1156,23 @@ object DocumentProcessor {
         return if (total == 0) 0.0 else bright.toDouble() / total.toDouble()
     }
 
-    private fun findCornerPoint(
-        bitmap: Bitmap,
-        startX: Int,
-        endX: Int,
-        startY: Int,
-        endY: Int,
-        preferLeft: Boolean,
-        preferTop: Boolean,
-    ): Pair<Int, Int> {
-        var bestX = startX
-        var bestY = startY
-        var bestScore = Double.NEGATIVE_INFINITY
-
-        for (y in startY until endY step 2) {
-            for (x in startX until endX step 2) {
-                val score = cornerScore(bitmap, x, y)
-
-                val horizontalBias = if (preferLeft) -x.toDouble() else x.toDouble()
-                val verticalBias = if (preferTop) -y.toDouble() else y.toDouble()
-
-                val weightedScore = score + (horizontalBias * 0.01) + (verticalBias * 0.01)
-
-                if (weightedScore > bestScore) {
-                    bestScore = weightedScore
-                    bestX = x
-                    bestY = y
-                }
-            }
-        }
-
-        return Pair(bestX, bestY)
+    private fun luminance(pixel: Int): Int {
+        val r = android.graphics.Color.red(pixel)
+        val g = android.graphics.Color.green(pixel)
+        val b = android.graphics.Color.blue(pixel)
+        return ((0.299 * r) + (0.587 * g) + (0.114 * b)).toInt()
     }
 
-    private fun cornerScore(bitmap: Bitmap, x: Int, y: Int): Double {
-        val width = bitmap.width
-        val height = bitmap.height
-
-        val center = luminance(bitmap[x.coerceIn(0, width - 1), y.coerceIn(0, height - 1)])
-        val right = luminance(bitmap[(x + 2).coerceIn(0, width - 1), y.coerceIn(0, height - 1)])
-        val bottom = luminance(bitmap[x.coerceIn(0, width - 1), (y + 2).coerceIn(0, height - 1)])
-        val diag = luminance(bitmap[(x + 2).coerceIn(0, width - 1), (y + 2).coerceIn(0, height - 1)])
-
-        val edgeStrength =
-            kotlin.math.abs(center - right) +
-                    kotlin.math.abs(center - bottom) +
-                    kotlin.math.abs(center - diag)
-
-        val brightness = center.toDouble()
-
-        return edgeStrength + (brightness * 0.35)
+    private fun averageBrightness(pixel: Int): Int {
+        val r = (pixel shr 16) and 0xff
+        val g = (pixel shr 8) and 0xff
+        val b = pixel and 0xff
+        return (r + g + b) / 3
     }
 
     private fun distance(x1: Float, y1: Float, x2: Float, y2: Float): Float {
         val dx = x2 - x1
         val dy = y2 - y1
-        return kotlin.math.sqrt(dx * dx + dy * dy)
+        return sqrt(dx * dx + dy * dy)
     }
 }

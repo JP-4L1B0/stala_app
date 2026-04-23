@@ -14,13 +14,10 @@ import 'processing_page.dart';
 
 /// Main camera workflow page for the STALA capture flow.
 ///
-/// Responsibilities:
-/// - initialize and display the back camera
-/// - capture an image or select one from gallery
-/// - show a crop preview sheet
-/// - allow manual crop corner adjustment
-/// - auto-detect and crop document bounds through the native bridge
-/// - forward the final cropped image to the processing page
+/// Refactor goals:
+/// - support detection states: strong / weak / fail
+/// - support second-pass crop validation before proceeding
+/// - allow guarded override for fail state via long press
 class CameraLogicPage extends StatefulWidget {
   const CameraLogicPage({super.key});
 
@@ -28,10 +25,8 @@ class CameraLogicPage extends StatefulWidget {
   State<CameraLogicPage> createState() => _CameraLogicPageState();
 }
 
-/// A single normalized crop corner.
-///
-/// Values are stored from 0.0 to 1.0 relative to the image space
-/// so they are easy to pass across UI and native processing layers.
+enum SheetValidationState { strong, weak, fail }
+
 class DocumentCorner {
   final double x;
   final double y;
@@ -66,16 +61,6 @@ class DocumentCorner {
   }
 }
 
-/// Holds the four document crop corners.
-///
-/// Expected order:
-/// - topLeft
-/// - topRight
-/// - bottomRight
-/// - bottomLeft
-///
-/// This structure is shared between the UI crop overlay and the
-/// native/Python crop pipeline.
 class DocumentBounds {
   final DocumentCorner topLeft;
   final DocumentCorner topRight;
@@ -107,7 +92,6 @@ class DocumentBounds {
     };
   }
 
-  /// Fallback crop rectangle used when automatic detection is not available.
   factory DocumentBounds.defaultInset() {
     return const DocumentBounds(
       topLeft: DocumentCorner(x: 0.08, y: 0.12),
@@ -132,12 +116,68 @@ class DocumentBounds {
   }
 }
 
+class DocumentDetectionResult {
+  final bool hasDocument;
+  final double confidence;
+  final DocumentBounds? bounds;
+  final String? reason;
+  final SheetValidationState validationState;
+  final bool needsManualAdjustment;
+
+  const DocumentDetectionResult({
+    required this.hasDocument,
+    required this.confidence,
+    this.bounds,
+    this.reason,
+    required this.validationState,
+    required this.needsManualAdjustment,
+  });
+
+  factory DocumentDetectionResult.success({
+    required DocumentBounds bounds,
+    required double confidence,
+    required SheetValidationState validationState,
+    required bool needsManualAdjustment,
+    String? reason,
+  }) {
+    return DocumentDetectionResult(
+      hasDocument: true,
+      confidence: confidence,
+      bounds: bounds,
+      reason: reason,
+      validationState: validationState,
+      needsManualAdjustment: needsManualAdjustment,
+    );
+  }
+
+  factory DocumentDetectionResult.failure({
+    double confidence = 0.0,
+    String? reason,
+  }) {
+    return DocumentDetectionResult(
+      hasDocument: false,
+      confidence: confidence,
+      reason: reason,
+      bounds: null,
+      validationState: SheetValidationState.fail,
+      needsManualAdjustment: true,
+    );
+  }
+}
+
+class CropValidationResult {
+  final SheetValidationState validationState;
+  final double confidence;
+  final String? reason;
+
+  const CropValidationResult({
+    required this.validationState,
+    required this.confidence,
+    this.reason,
+  });
+}
+
 class _CameraLogicPageState extends State<CameraLogicPage> {
-  /// Bridge used for native Android / Chaquopy / Python document operations.
-  ///
-  /// Current intended methods:
-  /// - detectDocumentBounds
-  /// - cropDocumentImage
   static const MethodChannel _pythonChannel =
   MethodChannel('stala/python_bridge');
 
@@ -152,16 +192,14 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
   bool _isHdEnabled = true;
   FlashMode _selectedFlashMode = FlashMode.off;
 
+  Timer? _cropValidationDebounce;
+
   @override
   void initState() {
     super.initState();
     _initializeCamera();
   }
 
-  /// Initializes the best available back camera and prepares the preview.
-  ///
-  /// Auto focus and auto exposure are enabled after setup to keep the
-  /// capture experience simple and mostly automatic.
   Future<void> _initializeCamera() async {
     final oldController = _cameraController;
 
@@ -199,9 +237,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
       try {
         await controller.setFlashMode(_selectedFlashMode);
-      } catch (_) {
-        //
-      }
+      } catch (_) {}
 
       if (!mounted) {
         await controller.dispose();
@@ -302,8 +338,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                       style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
                     ),
                     const SizedBox(height: 18),
-
-                    /// HD Toggle
                     Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 16,
@@ -353,10 +387,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                         ],
                       ),
                     ),
-
                     const SizedBox(height: 14),
-
-                    /// Flash Mode
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
@@ -433,22 +464,14 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     );
   }
 
-  /// Requests access to photos before opening gallery.
-  ///
-  /// Limited access is also accepted because it is sufficient
-  /// for user-selected images on modern Android/iOS flows.
   Future<bool> _ensureGalleryPermission() async {
     PermissionStatus status = await Permission.photos.status;
 
-    if (status.isGranted || status.isLimited) {
-      return true;
-    }
+    if (status.isGranted || status.isLimited) return true;
 
     status = await Permission.photos.request();
 
-    if (status.isGranted || status.isLimited) {
-      return true;
-    }
+    if (status.isGranted || status.isLimited) return true;
 
     if (status.isPermanentlyDenied) {
       _showSnackBar(
@@ -462,7 +485,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     return false;
   }
 
-  /// Captures a photo using the active camera preview and opens the crop sheet.
   Future<void> _captureImage() async {
     final controller = _cameraController;
 
@@ -496,8 +518,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     }
   }
 
-  /// Opens the gallery picker and sends the selected image
-  /// into the same preview-and-crop flow as camera capture.
   Future<void> _pickImageFromGallery() async {
     try {
       final hasPermission = await _ensureGalleryPermission();
@@ -518,10 +538,17 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     }
   }
 
-  /// Asks the native layer to detect document bounds on the selected image.
-  ///
-  /// Unlike the old version, this does not silently pretend success.
-  /// If no document is detected, the UI can stop auto-crop cleanly.
+  SheetValidationState _parseValidationState(String? raw) {
+    switch (raw) {
+      case 'strong':
+        return SheetValidationState.strong;
+      case 'weak':
+        return SheetValidationState.weak;
+      default:
+        return SheetValidationState.fail;
+    }
+  }
+
   Future<DocumentDetectionResult> _detectDocumentBounds(String imagePath) async {
     try {
       final result = await _pythonChannel.invokeMethod(
@@ -530,20 +557,28 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       );
 
       if (result is Map) {
-        final hasDocument = result['hasDocument'] == true;
         final confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
         final reason = result['reason']?.toString();
+        final validationState =
+        _parseValidationState(result['validationState']?.toString());
+        final needsManualAdjustment =
+            result['needsManualAdjustment'] == true ||
+                validationState != SheetValidationState.strong;
 
-        if (hasDocument && result['bounds'] is Map) {
+        if (result['bounds'] is Map) {
           return DocumentDetectionResult.success(
             bounds: DocumentBounds.fromMap(result['bounds']),
             confidence: confidence,
+            validationState: validationState,
+            needsManualAdjustment: needsManualAdjustment,
+            reason: reason,
           );
         }
 
         return DocumentDetectionResult.failure(
           confidence: confidence,
-          reason: reason ?? 'No visible document detected.',
+          reason: reason ??
+              'Can’t confidently detect a document. Kindly adjust the box.',
         );
       }
     } catch (_) {}
@@ -551,6 +586,118 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     return DocumentDetectionResult.failure(
       reason: 'Automatic crop is unavailable.',
     );
+  }
+
+  Future<CropValidationResult> _validateSelectedCrop({
+    required String imagePath,
+    required DocumentBounds bounds,
+  }) async {
+    try {
+      final result = await _pythonChannel.invokeMethod(
+        'validateSelectedCrop',
+        {
+          'imagePath': imagePath,
+          'bounds': bounds.toMap(),
+        },
+      );
+
+      if (result is Map) {
+        return CropValidationResult(
+          validationState: _parseValidationState(
+            result['validationState']?.toString(),
+          ),
+          confidence: (result['confidence'] as num?)?.toDouble() ?? 0.0,
+          reason: result['reason']?.toString(),
+        );
+      }
+    } catch (_) {}
+
+    return const CropValidationResult(
+      validationState: SheetValidationState.fail,
+      confidence: 0.0,
+      reason:
+      'The selected crop does not yet appear to be a reliable music-sheet region.',
+    );
+  }
+
+  Future<bool> _showWeakValidationDialog(String message) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: AppColors.background,
+          title: Text(
+            'Music sheet needs review',
+            style: AppTextStyles.sectionTitle.copyWith(fontSize: 18),
+          ),
+          content: Text(
+            message,
+            style: AppTextStyles.body.copyWith(color: AppColors.textSecondary),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Adjust'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Proceed'),
+            ),
+          ],
+        );
+      },
+    );
+
+    return result == true;
+  }
+
+  Future<bool> _showFailValidationDialog(String message) async {
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: AppColors.background,
+          title: Text(
+            'Music sheet not confidently detected',
+            style: AppTextStyles.sectionTitle.copyWith(fontSize: 18),
+          ),
+          content: Text(
+            message,
+            style: AppTextStyles.body.copyWith(color: AppColors.textSecondary),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Adjust'),
+            ),
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () {
+                _showSnackBar('Press and hold to proceed.');
+              },
+              onLongPress: () => Navigator.pop(dialogContext, true),
+              child: Container(
+                padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.warning),
+                ),
+                child: Text(
+                  'Hold to Proceed',
+                  style: AppTextStyles.button.copyWith(
+                    color: AppColors.warning,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    return result == true;
   }
 
   bool _isValidBounds(DocumentBounds bounds) {
@@ -598,9 +745,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       final c = points[(i + 2) % points.length];
       final cross = _cross(a, b, c);
 
-      if (cross.abs() < 0.002) {
-        return false;
-      }
+      if (cross.abs() < 0.002) return false;
     }
 
     bool hasPositive = false;
@@ -615,9 +760,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       if (cross > 0) hasPositive = true;
       if (cross < 0) hasNegative = true;
 
-      if (hasPositive && hasNegative) {
-        return false;
-      }
+      if (hasPositive && hasNegative) return false;
     }
 
     return true;
@@ -652,11 +795,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
         a.bottomLeft.y == b.bottomLeft.y;
   }
 
-  /// Sends the current crop bounds to the native layer and requests
-  /// a real cropped image file.
-  ///
-  /// This now throws on crop failure so the preview flow can stop
-  /// instead of silently forwarding the original image.
   Future<String> _cropDocumentImage({
     required String imagePath,
     required DocumentBounds bounds,
@@ -670,9 +808,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
         },
       );
 
-      if (result is String && result.isNotEmpty) {
-        return result;
-      }
+      if (result is String && result.isNotEmpty) return result;
 
       throw Exception('Crop returned an empty path.');
     } on PlatformException catch (e) {
@@ -680,10 +816,22 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     }
   }
 
-  /// Updates one dragged crop corner while keeping the crop
-  /// as a usable quadrilateral.
-  ///
-  /// Invalid updates are rejected and the previous bounds are kept.
+  Future<void> _proceedToCropAndOpen({
+    required BuildContext sheetContext,
+    required String imagePath,
+    required DocumentBounds bounds,
+  }) async {
+    final croppedImagePath = await _cropDocumentImage(
+      imagePath: imagePath,
+      bounds: bounds,
+    );
+
+    if (!mounted) return;
+
+    Navigator.pop(sheetContext);
+    await _openProcessingPage(croppedImagePath);
+  }
+
   DocumentBounds _updateDraggedCorner({
     required DocumentBounds bounds,
     required String cornerKey,
@@ -704,85 +852,60 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
         candidate = bounds.copyWith(
           topLeft: bounds.topLeft.copyWith(
             x: clamp01(
-              (bounds.topLeft.x + dx).clamp(
-                0.0,
-                bounds.topRight.x - minGap,
-              ),
+              (bounds.topLeft.x + dx).clamp(0.0, bounds.topRight.x - minGap),
             ),
             y: clamp01(
-              (bounds.topLeft.y + dy).clamp(
-                0.0,
-                bounds.bottomLeft.y - minGap,
-              ),
+              (bounds.topLeft.y + dy).clamp(0.0, bounds.bottomLeft.y - minGap),
             ),
           ),
         );
         break;
-
       case 'topRight':
         candidate = bounds.copyWith(
           topRight: bounds.topRight.copyWith(
             x: clamp01(
-              (bounds.topRight.x + dx).clamp(
-                bounds.topLeft.x + minGap,
-                1.0,
-              ),
+              (bounds.topRight.x + dx).clamp(bounds.topLeft.x + minGap, 1.0),
             ),
             y: clamp01(
-              (bounds.topRight.y + dy).clamp(
-                0.0,
-                bounds.bottomRight.y - minGap,
-              ),
+              (bounds.topRight.y + dy)
+                  .clamp(0.0, bounds.bottomRight.y - minGap),
             ),
           ),
         );
         break;
-
       case 'bottomRight':
         candidate = bounds.copyWith(
           bottomRight: bounds.bottomRight.copyWith(
             x: clamp01(
-              (bounds.bottomRight.x + dx).clamp(
-                bounds.bottomLeft.x + minGap,
-                1.0,
-              ),
+              (bounds.bottomRight.x + dx)
+                  .clamp(bounds.bottomLeft.x + minGap, 1.0),
             ),
             y: clamp01(
-              (bounds.bottomRight.y + dy).clamp(
-                bounds.topRight.y + minGap,
-                1.0,
-              ),
+              (bounds.bottomRight.y + dy)
+                  .clamp(bounds.topRight.y + minGap, 1.0),
             ),
           ),
         );
         break;
-
       case 'bottomLeft':
         candidate = bounds.copyWith(
           bottomLeft: bounds.bottomLeft.copyWith(
             x: clamp01(
-              (bounds.bottomLeft.x + dx).clamp(
-                0.0,
-                bounds.bottomRight.x - minGap,
-              ),
+              (bounds.bottomLeft.x + dx)
+                  .clamp(0.0, bounds.bottomRight.x - minGap),
             ),
             y: clamp01(
-              (bounds.bottomLeft.y + dy).clamp(
-                bounds.topLeft.y + minGap,
-                1.0,
-              ),
+              (bounds.bottomLeft.y + dy)
+                  .clamp(bounds.topLeft.y + minGap, 1.0),
             ),
           ),
         );
         break;
-
       default:
         return bounds;
     }
 
-    if (!_isConvexQuadrilateral(candidate)) {
-      return bounds;
-    }
+    if (!_isConvexQuadrilateral(candidate)) return bounds;
 
     final area = _polygonArea([
       Offset(candidate.topLeft.x, candidate.topLeft.y),
@@ -791,9 +914,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       Offset(candidate.bottomLeft.x, candidate.bottomLeft.y),
     ]).abs();
 
-    if (area < 0.02) {
-      return bounds;
-    }
+    if (area < 0.02) return bounds;
 
     return candidate;
   }
@@ -843,12 +964,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     final edgeVector = endPx - startPx;
     final edgeLength = edgeVector.distance;
 
-    if (edgeLength < 1e-3) {
-      return bounds;
-    }
+    if (edgeLength < 1e-3) return bounds;
 
-    // Unit normal pointing perpendicular to the edge.
-    // This is the direction the edge should move when dragged.
     final normal = Offset(
       -edgeVector.dy / edgeLength,
       edgeVector.dx / edgeLength,
@@ -875,7 +992,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
           ),
         );
         break;
-
       case 'right':
         candidate = bounds.copyWith(
           topRight: bounds.topRight.copyWith(
@@ -888,7 +1004,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
           ),
         );
         break;
-
       case 'bottom':
         candidate = bounds.copyWith(
           bottomLeft: bounds.bottomLeft.copyWith(
@@ -901,7 +1016,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
           ),
         );
         break;
-
       case 'left':
         candidate = bounds.copyWith(
           topLeft: bounds.topLeft.copyWith(
@@ -914,14 +1028,11 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
           ),
         );
         break;
-
       default:
         return bounds;
     }
 
-    if (!_isConvexQuadrilateral(candidate)) {
-      return bounds;
-    }
+    if (!_isConvexQuadrilateral(candidate)) return bounds;
 
     final area = _polygonArea([
       Offset(candidate.topLeft.x, candidate.topLeft.y),
@@ -930,14 +1041,11 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       Offset(candidate.bottomLeft.x, candidate.bottomLeft.y),
     ]).abs();
 
-    if (area < 0.02) {
-      return bounds;
-    }
+    if (area < 0.02) return bounds;
 
     return candidate;
   }
 
-  /// Navigates to the processing page using the finalized image path.
   Future<void> _openProcessingPage(String imagePath) async {
     final oldController = _cameraController;
 
@@ -950,9 +1058,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
     try {
       await oldController?.dispose();
-    } catch (_) {
-      //
-    }
+    } catch (_) {}
 
     if (!mounted) return;
 
@@ -1011,22 +1117,13 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     );
   }
 
-  /// Shows the image preview bottom sheet.
-  ///
-  /// Available actions:
-  /// - Retry: discard preview and return to capture page
-  /// - Auto Crop: re-detect document bounds
-  /// - Continue: crop image and proceed to processing page
   Future<void> _showImagePreviewSheet({
     required String imagePath,
     required String sourceLabel,
   }) async {
     final detectionResult = await _detectDocumentBounds(imagePath);
 
-    final initialBounds =
-    detectionResult.hasDocument && detectionResult.bounds != null
-        ? detectionResult.bounds!
-        : DocumentBounds.defaultInset();
+    final initialBounds = detectionResult.bounds ?? DocumentBounds.defaultInset();
 
     await showModalBottomSheet(
       context: context,
@@ -1036,28 +1133,44 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       builder: (sheetContext) {
         DocumentBounds currentBounds = initialBounds;
         bool isProcessing = false;
-        bool hasDetectedDocument = detectionResult.hasDocument;
-        String? detectionMessage = detectionResult.hasDocument
-            ? null
-            : (detectionResult.reason ?? 'No visible document detected.');
+        bool hasDetectedDocument = detectionResult.bounds != null;
+        String? detectionMessage = detectionResult.reason;
+        SheetValidationState detectionState = detectionResult.validationState;
+        bool needsManualAdjustment = detectionResult.needsManualAdjustment;
         String? adjustmentMessage;
         bool adjustmentBlocked = false;
 
         return StatefulBuilder(
           builder: (context, setModalState) {
+            void triggerPostAdjustValidation() {
+              if (!adjustmentBlocked) {
+                _scheduleCropValidation(
+                  imagePath: imagePath,
+                  bounds: currentBounds,
+                  setModalState: setModalState,
+                  onValidated: (message, state) {
+                    detectionMessage = message;
+                    needsManualAdjustment = state != SheetValidationState.strong;
+                    detectionState = state;
+                  },
+                );
+              }
+            }
+
             final bool shapeIsValid = _isValidBounds(currentBounds);
 
             final bool canContinue =
                 hasDetectedDocument && shapeIsValid && !adjustmentBlocked;
 
             final String? cropValidationMessage = !hasDetectedDocument
-                ? (detectionMessage ?? 'No visible document detected.')
+                ? (detectionMessage ??
+                'Can’t confidently detect a document. Kindly adjust the box.')
                 : (!shapeIsValid
                 ? 'Crop is not allowed. Please fix the document bounds or retry Auto Crop.'
                 : (adjustmentBlocked
                 ? (adjustmentMessage ??
                 'Adjustment not allowed. Keep the crop as a quadrilateral.')
-                : null));
+                : (needsManualAdjustment ? detectionMessage : null)));
 
             return FractionallySizedBox(
               heightFactor: 0.83,
@@ -1071,8 +1184,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                 child: Column(
                   children: [
                     const SizedBox(height: 10),
-
-                    /// Small top handle to indicate draggable bottom sheet.
                     Container(
                       width: 46,
                       height: 5,
@@ -1081,10 +1192,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                         borderRadius: BorderRadius.circular(999),
                       ),
                     ),
-
                     const SizedBox(height: 16),
-
-                    /// Sheet header.
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       child: Row(
@@ -1107,14 +1215,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                         ],
                       ),
                     ),
-
                     const SizedBox(height: 16),
-
-                    /// Main preview area with:
-                    /// - fitted image display
-                    /// - crop polygon overlay
-                    /// - colored corner handles for precise adjustment
-                    /// - subtle edge handles for quick border movement
                     Expanded(
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1160,8 +1261,10 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
                                     final topLeftPoint = mapPoint(currentBounds.topLeft);
                                     final topRightPoint = mapPoint(currentBounds.topRight);
-                                    final bottomRightPoint = mapPoint(currentBounds.bottomRight);
-                                    final bottomLeftPoint = mapPoint(currentBounds.bottomLeft);
+                                    final bottomRightPoint =
+                                    mapPoint(currentBounds.bottomRight);
+                                    final bottomLeftPoint =
+                                    mapPoint(currentBounds.bottomLeft);
 
                                     return Stack(
                                       fit: StackFit.expand,
@@ -1185,9 +1288,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-
-                                              final updated =
-                                              _updateDraggedCorner(
+                                              final updated = _updateDraggedCorner(
                                                 bounds: currentBounds,
                                                 cornerKey: 'topLeft',
                                                 details: details,
@@ -1204,6 +1305,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                   : null;
                                             });
                                           },
+
+                                          onDragEnd: triggerPostAdjustValidation,
+
                                         ),
                                         _DraggableCornerHandle(
                                           point: currentBounds.topRight,
@@ -1212,9 +1316,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-
-                                              final updated =
-                                              _updateDraggedCorner(
+                                              final updated = _updateDraggedCorner(
                                                 bounds: currentBounds,
                                                 cornerKey: 'topRight',
                                                 details: details,
@@ -1231,6 +1333,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                   : null;
                                             });
                                           },
+
+                                          onDragEnd: triggerPostAdjustValidation,
+
                                         ),
                                         _DraggableCornerHandle(
                                           point: currentBounds.bottomRight,
@@ -1239,9 +1344,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-
-                                              final updated =
-                                              _updateDraggedCorner(
+                                              final updated = _updateDraggedCorner(
                                                 bounds: currentBounds,
                                                 cornerKey: 'bottomRight',
                                                 details: details,
@@ -1258,6 +1361,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                   : null;
                                             });
                                           },
+
+                                          onDragEnd: triggerPostAdjustValidation,
+
                                         ),
                                         _DraggableCornerHandle(
                                           point: currentBounds.bottomLeft,
@@ -1266,9 +1372,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-
-                                              final updated =
-                                              _updateDraggedCorner(
+                                              final updated = _updateDraggedCorner(
                                                 bounds: currentBounds,
                                                 cornerKey: 'bottomLeft',
                                                 details: details,
@@ -1285,6 +1389,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                   : null;
                                             });
                                           },
+
+                                          onDragEnd: triggerPostAdjustValidation,
+
                                         ),
                                         _EdgeHandle(
                                           start: topLeftPoint,
@@ -1293,7 +1400,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-
                                               final updated = _updateEdge(
                                                 bounds: currentBounds,
                                                 edge: 'top',
@@ -1301,7 +1407,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                 imageRect: imageRect,
                                               );
 
-                                              final wasBlocked = _sameBounds(updated, previous);
+                                              final wasBlocked =
+                                              _sameBounds(updated, previous);
 
                                               currentBounds = updated;
                                               adjustmentBlocked = wasBlocked;
@@ -1310,6 +1417,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                   : null;
                                             });
                                           },
+
+                                          onDragEnd: triggerPostAdjustValidation,
+
                                         ),
                                         _EdgeHandle(
                                           start: bottomLeftPoint,
@@ -1318,7 +1428,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-
                                               final updated = _updateEdge(
                                                 bounds: currentBounds,
                                                 edge: 'bottom',
@@ -1326,7 +1435,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                 imageRect: imageRect,
                                               );
 
-                                              final wasBlocked = _sameBounds(updated, previous);
+                                              final wasBlocked =
+                                              _sameBounds(updated, previous);
 
                                               currentBounds = updated;
                                               adjustmentBlocked = wasBlocked;
@@ -1335,6 +1445,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                   : null;
                                             });
                                           },
+
+                                          onDragEnd: triggerPostAdjustValidation,
+
                                         ),
                                         _EdgeHandle(
                                           start: topLeftPoint,
@@ -1343,7 +1456,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-
                                               final updated = _updateEdge(
                                                 bounds: currentBounds,
                                                 edge: 'left',
@@ -1351,7 +1463,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                 imageRect: imageRect,
                                               );
 
-                                              final wasBlocked = _sameBounds(updated, previous);
+                                              final wasBlocked =
+                                              _sameBounds(updated, previous);
 
                                               currentBounds = updated;
                                               adjustmentBlocked = wasBlocked;
@@ -1360,6 +1473,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                   : null;
                                             });
                                           },
+
+                                          onDragEnd: triggerPostAdjustValidation,
+
                                         ),
                                         _EdgeHandle(
                                           start: topRightPoint,
@@ -1368,7 +1484,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-
                                               final updated = _updateEdge(
                                                 bounds: currentBounds,
                                                 edge: 'right',
@@ -1376,7 +1491,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                 imageRect: imageRect,
                                               );
 
-                                              final wasBlocked = _sameBounds(updated, previous);
+                                              final wasBlocked =
+                                              _sameBounds(updated, previous);
 
                                               currentBounds = updated;
                                               adjustmentBlocked = wasBlocked;
@@ -1385,6 +1501,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                   : null;
                                             });
                                           },
+
+                                          onDragEnd: triggerPostAdjustValidation,
+
                                         ),
                                         if (isProcessing)
                                           Container(
@@ -1405,10 +1524,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                         ),
                       ),
                     ),
-
                     const SizedBox(height: 16),
-
-                    /// Footer actions for preview flow.
                     Container(
                       padding: const EdgeInsets.fromLTRB(16, 12, 16, 18),
                       decoration: const BoxDecoration(
@@ -1428,8 +1544,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                               decoration: BoxDecoration(
                                 color: AppColors.background,
                                 borderRadius: BorderRadius.circular(14),
-                                border:
-                                Border.all(color: AppColors.accentSoft),
+                                border: Border.all(color: AppColors.accentSoft),
                               ),
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1484,30 +1599,27 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
                                     setModalState(() {
                                       isProcessing = false;
-                                      hasDetectedDocument =
-                                          detection.hasDocument;
-                                      detectionMessage = detection.hasDocument
-                                          ? null
-                                          : (detection.reason ??
-                                          'No clear document detected.');
+                                      hasDetectedDocument = detection.bounds != null;
+                                      detectionMessage = detection.reason;
+                                      detectionState = detection.validationState;
+                                      needsManualAdjustment =
+                                          detection.needsManualAdjustment;
 
-                                      if (detection.hasDocument &&
-                                          detection.bounds != null) {
+                                      if (detection.bounds != null) {
                                         currentBounds = detection.bounds!;
                                         adjustmentBlocked = false;
                                         adjustmentMessage = null;
                                       }
                                     });
 
-                                    if (detection.hasDocument &&
-                                        detection.bounds != null) {
+                                    if (detection.bounds != null) {
                                       _showSnackBar('Auto-crop updated.');
                                       return;
                                     }
 
                                     _showSnackBar(
                                       detection.reason ??
-                                          'No clear document detected. Processing remains blocked.',
+                                          'Can’t confidently detect a document. Kindly adjust the box.',
                                     );
                                   },
                                 ),
@@ -1525,7 +1637,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                     if (!hasDetectedDocument) {
                                       _showSnackBar(
                                         detectionMessage ??
-                                            'No visible document detected. Please retry or recapture.',
+                                            'Can’t confidently detect a document. Kindly adjust the box.',
                                       );
                                       return;
                                     }
@@ -1541,30 +1653,58 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                       isProcessing = true;
                                     });
 
-                                    try {
-                                      final croppedImagePath =
-                                      await _cropDocumentImage(
+                                    final cropValidation =
+                                    await _validateSelectedCrop(
+                                      imagePath: imagePath,
+                                      bounds: currentBounds,
+                                    );
+
+                                    if (!mounted) return;
+
+                                    setModalState(() {
+                                      isProcessing = false;
+                                    });
+
+                                    if (cropValidation.validationState ==
+                                        SheetValidationState.strong) {
+                                      await _proceedToCropAndOpen(
+                                        sheetContext: sheetContext,
                                         imagePath: imagePath,
                                         bounds: currentBounds,
                                       );
+                                      return;
+                                    }
 
-                                      if (!mounted) return;
+                                    if (cropValidation.validationState ==
+                                        SheetValidationState.weak) {
+                                      final proceed =
+                                      await _showWeakValidationDialog(
+                                        cropValidation.reason ??
+                                            'The selected crop may not be a reliable music-sheet region. Adjust the box or proceed?',
+                                      );
 
-                                      setModalState(() {
-                                        adjustmentBlocked = false;
-                                        adjustmentMessage = null;
-                                      });
+                                      if (proceed) {
+                                        await _proceedToCropAndOpen(
+                                          sheetContext: sheetContext,
+                                          imagePath: imagePath,
+                                          bounds: currentBounds,
+                                        );
+                                      }
+                                      return;
+                                    }
 
-                                      Navigator.pop(sheetContext);
-                                      await _openProcessingPage(croppedImagePath);
-                                    } catch (error) {
-                                      if (!mounted) return;
+                                    final proceed =
+                                    await _showFailValidationDialog(
+                                      cropValidation.reason ??
+                                          'The selected crop does not appear to be a reliable music-sheet region. Please adjust the box, or press and hold to continue anyway.',
+                                    );
 
-                                      setModalState(() {
-                                        isProcessing = false;
-                                      });
-
-                                      _showSnackBar('Cropping failed: $error');
+                                    if (proceed) {
+                                      await _proceedToCropAndOpen(
+                                        sheetContext: sheetContext,
+                                        imagePath: imagePath,
+                                        bounds: currentBounds,
+                                      );
                                     }
                                   },
                                 ),
@@ -1584,7 +1724,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     );
   }
 
-  /// Shows a short message for camera and gallery flow feedback.
   void _showSnackBar(String message) {
     if (!mounted) return;
 
@@ -1601,6 +1740,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
   @override
   void dispose() {
+    _cropValidationDebounce?.cancel();
     _cameraController?.dispose();
     super.dispose();
   }
@@ -1622,12 +1762,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
             ? const _CameraUnavailableView()
             : Stack(
           children: [
-            /// Live camera feed.
             Positioned.fill(
               child: CameraPreview(controller),
             ),
-
-            /// Soft dark overlay to improve contrast of controls.
             Positioned.fill(
               child: IgnorePointer(
                 child: Container(
@@ -1645,8 +1782,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                 ),
               ),
             ),
-
-            /// Rule-of-thirds grid for capture framing.
             Positioned.fill(
               child: IgnorePointer(
                 child: CustomPaint(
@@ -1654,8 +1789,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                 ),
               ),
             ),
-
-            /// Top navigation and settings actions.
             Positioned(
               top: 14,
               left: 20,
@@ -1674,8 +1807,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                 ],
               ),
             ),
-
-            /// Bottom capture controls.
             Positioned(
               left: 22,
               right: 22,
@@ -1695,8 +1826,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                 ],
               ),
             ),
-
-            /// Fullscreen blocker while taking a picture.
             if (_isCapturingImage)
               Positioned.fill(
                 child: Container(
@@ -1713,9 +1842,30 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       ),
     );
   }
+
+  void _scheduleCropValidation({
+    required String imagePath,
+    required DocumentBounds bounds,
+    required void Function(void Function()) setModalState,
+    required void Function(String? message, SheetValidationState state) onValidated,
+  }) {
+    _cropValidationDebounce?.cancel();
+
+    _cropValidationDebounce = Timer(const Duration(milliseconds: 300), () async {
+      final result = await _validateSelectedCrop(
+        imagePath: imagePath,
+        bounds: bounds,
+      );
+
+      if (!mounted) return;
+
+      setModalState(() {
+        onValidated(result.reason, result.validationState);
+      });
+    });
+  }
 }
 
-/// Fallback content shown when camera initialization fails.
 class _CameraUnavailableView extends StatelessWidget {
   const _CameraUnavailableView();
 
@@ -1730,7 +1880,6 @@ class _CameraUnavailableView extends StatelessWidget {
   }
 }
 
-/// Small circular action button used in the camera top bar.
 class _TopCircleButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
@@ -1764,7 +1913,6 @@ class _TopCircleButton extends StatelessWidget {
   }
 }
 
-/// Square gallery shortcut button shown at the bottom left.
 class _BottomSquareButton extends StatelessWidget {
   final IconData icon;
   final Color backgroundColor;
@@ -1797,7 +1945,6 @@ class _BottomSquareButton extends StatelessWidget {
   }
 }
 
-/// Main circular shutter button used for camera capture.
 class _ShutterButton extends StatelessWidget {
   final VoidCallback onTap;
 
@@ -1845,9 +1992,6 @@ class _ShutterButton extends StatelessWidget {
   }
 }
 
-/// Footer button used in the preview sheet.
-///
-/// `isPrimary` is used to visually emphasize the final continue action.
 class _PreviewFooterAction extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -1961,18 +2105,19 @@ class _FlashModeButton extends StatelessWidget {
   }
 }
 
-/// Interactive crop handle anchored to one normalized corner point.
 class _DraggableCornerHandle extends StatelessWidget {
   final DocumentCorner point;
   final Rect imageRect;
   final Color handleColor;
   final ValueChanged<DragUpdateDetails> onDragUpdate;
+  final VoidCallback? onDragEnd;
 
   const _DraggableCornerHandle({
     required this.point,
     required this.imageRect,
     required this.handleColor,
     required this.onDragUpdate,
+    this.onDragEnd,
   });
 
   @override
@@ -1985,6 +2130,7 @@ class _DraggableCornerHandle extends StatelessWidget {
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
         onPanUpdate: onDragUpdate,
+        onPanEnd: (_) => onDragEnd?.call(),
         child: Container(
           width: 40,
           height: 40,
@@ -1995,10 +2141,7 @@ class _DraggableCornerHandle extends StatelessWidget {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: AppColors.textPrimary,
-              border: Border.all(
-                color: handleColor,
-                width: 3,
-              ),
+              border: Border.all(color: handleColor, width: 3),
             ),
           ),
         ),
@@ -2007,21 +2150,19 @@ class _DraggableCornerHandle extends StatelessWidget {
   }
 }
 
-/// Visible draggable edge handle that stays attached to the current crop edge.
-///
-/// The handle rotates to match the edge direction and includes a dark outline
-/// so it remains visible on bright or white backgrounds.
 class _EdgeHandle extends StatelessWidget {
   final Offset start;
   final Offset end;
   final bool highlight;
   final ValueChanged<DragUpdateDetails> onDragUpdate;
+  final VoidCallback? onDragEnd;
 
   const _EdgeHandle({
     required this.start,
     required this.end,
     required this.onDragUpdate,
     this.highlight = false,
+    this.onDragEnd,
   });
 
   @override
@@ -2049,6 +2190,7 @@ class _EdgeHandle extends StatelessWidget {
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
         onPanUpdate: onDragUpdate,
+        onPanEnd: (_) => onDragEnd?.call(),
         child: Container(
           width: pillWidth + hitPadding,
           height: pillHeight + hitPadding,
@@ -2086,7 +2228,6 @@ class _EdgeHandle extends StatelessWidget {
   }
 }
 
-/// Draws the crop quadrilateral and its corner markers over the preview image.
 class _DocumentBoundsPainter extends CustomPainter {
   final DocumentBounds bounds;
   final Rect imageRect;
@@ -2148,7 +2289,6 @@ class _DocumentBoundsPainter extends CustomPainter {
   }
 }
 
-/// Paints a basic rule-of-thirds grid on the live camera preview.
 class _CameraGridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -2169,44 +2309,4 @@ class _CameraGridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-/// Result returned by document auto-detection.
-///
-/// This tells the UI whether a document was found and, if so,
-/// what bounds should be used for the crop overlay.
-class DocumentDetectionResult {
-  final bool hasDocument;
-  final double confidence;
-  final DocumentBounds? bounds;
-  final String? reason;
-
-  const DocumentDetectionResult({
-    required this.hasDocument,
-    required this.confidence,
-    this.bounds,
-    this.reason,
-  });
-
-  factory DocumentDetectionResult.success({
-    required DocumentBounds bounds,
-    double confidence = 1.0,
-  }) {
-    return DocumentDetectionResult(
-      hasDocument: true,
-      confidence: confidence,
-      bounds: bounds,
-    );
-  }
-
-  factory DocumentDetectionResult.failure({
-    double confidence = 0.0,
-    String? reason,
-  }) {
-    return DocumentDetectionResult(
-      hasDocument: false,
-      confidence: confidence,
-      reason: reason,
-    );
-  }
 }
