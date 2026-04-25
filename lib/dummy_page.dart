@@ -479,15 +479,11 @@ class DetectionOverlayPainter extends CustomPainter {
   final List<DetectionPoint> detections;
   final double imageWidth;
   final double imageHeight;
-  final double modelInputWidth;
-  final double modelInputHeight;
 
   DetectionOverlayPainter({
     required this.detections,
     required this.imageWidth,
     required this.imageHeight,
-    this.modelInputWidth = 1024,
-    this.modelInputHeight = 1024,
   });
 
   @override
@@ -507,30 +503,17 @@ class DetectionOverlayPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = (innerRadius * 0.4).clamp(0.6, 1.2);
 
-    final scale = _min(
-      modelInputWidth / imageWidth,
-      modelInputHeight / imageHeight,
-    );
-
-    final resizedWidth = imageWidth * scale;
-    final resizedHeight = imageHeight * scale;
-
-    final padX = (modelInputWidth - resizedWidth) / 2.0;
-    final padY = (modelInputHeight - resizedHeight) / 2.0;
-
     for (final detection in detections) {
-      final originalX = (detection.centerX - padX) / scale;
-      final originalY = (detection.centerY - padY) / scale;
 
-      if (originalX < 0 ||
-          originalY < 0 ||
-          originalX > imageWidth ||
-          originalY > imageHeight) {
+      if (detection.centerX < 0 ||
+          detection.centerY < 0 ||
+          detection.centerX > imageWidth ||
+          detection.centerY > imageHeight) {
         continue;
       }
 
-      final dx = (originalX / imageWidth) * size.width;
-      final dy = (originalY / imageHeight) * size.height;
+      final dx = (detection.centerX / imageWidth) * size.width;
+      final dy = (detection.centerY / imageHeight) * size.height;
 
       canvas.drawCircle(Offset(dx, dy), innerRadius, pointPaint);
       canvas.drawCircle(Offset(dx, dy), outerRadius, ringPaint);
@@ -541,12 +524,8 @@ class DetectionOverlayPainter extends CustomPainter {
   bool shouldRepaint(covariant DetectionOverlayPainter oldDelegate) {
     return oldDelegate.detections != detections ||
         oldDelegate.imageWidth != imageWidth ||
-        oldDelegate.imageHeight != imageHeight ||
-        oldDelegate.modelInputWidth != modelInputWidth ||
-        oldDelegate.modelInputHeight != modelInputHeight;
+        oldDelegate.imageHeight != imageHeight;
   }
-
-  double _min(double a, double b) => a < b ? a : b;
 }
 
 Widget _buildImageOrEmpty({
@@ -1058,45 +1037,6 @@ class _GeneratePanel extends StatelessWidget {
                 ),
               );
             },
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _PlaceholderPanel extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final String description;
-
-  const _PlaceholderPanel({
-    required this.title,
-    required this.subtitle,
-    required this.description,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        _PanelHeader(title: title, subtitle: subtitle),
-        Expanded(
-          child: Center(
-            child: Container(
-              margin: const EdgeInsets.all(20),
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: Text(
-                description,
-                textAlign: TextAlign.center,
-                style: AppTextStyles.bodySecondary.copyWith(height: 1.5),
-              ),
-            ),
           ),
         ),
       ],

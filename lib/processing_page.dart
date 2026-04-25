@@ -105,7 +105,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
       ),
       const ProcessingStageItem(
         title: 'Detecting Symbols',
-        subtitle: 'Running Faster R-CNN single-class detection.',
+        subtitle: 'Running Faster R-CNN multiclass symbol detection.',
         icon: Icons.center_focus_strong_rounded,
         status: ProcessingStageStatus.pending,
       ),
@@ -206,9 +206,15 @@ class _ProcessingPageState extends State<ProcessingPage> {
         });
 
         final segmentationInputPath =
-            response['croppedImagePath'] ??
-                response['preprocessedImagePath'] ??
+            response['preprocessedImagePath'] ??
+                response['detectionImagePath'] ??
+                response['croppedImagePath'] ??
                 widget.imagePath;
+
+        print('DEBUG: segmentationInputPath = $segmentationInputPath');
+        print('DEBUG: preprocessedImagePath = ${response['preprocessedImagePath']}');
+        print('DEBUG: detectionImagePath = ${response['detectionImagePath']}');
+        print('DEBUG: croppedImagePath = ${response['croppedImagePath']}');
 
         final segmentationResult =
         await _segmentationService.segmentStaffLines(

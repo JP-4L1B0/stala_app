@@ -27,7 +27,7 @@ class OnnxDetector(private val context: Context) {
     private val environment: OrtEnvironment = OrtEnvironment.getEnvironment()
     private var session: OrtSession? = null
 
-    fun loadModel(assetPath: String = "models/stala_notehead_detector.onnx") {
+    fun loadModel(assetPath: String = "models/stala_multiclass_detector.onnx") {
         if (session != null) {
             Log.d(TAG, "loadModel: session already loaded")
             return
@@ -76,10 +76,17 @@ class OnnxDetector(private val context: Context) {
                 MODEL_INPUT_HEIGHT
             )
 
+            val preprocessedImagePath = saveBitmapToCache(
+                resizedBitmap,
+                "onnx_preprocessed_${System.currentTimeMillis()}.png"
+            )
+
             Log.d(
                 TAG,
                 "detectFromImagePath: letterboxed bitmap width=${resizedBitmap.width} height=${resizedBitmap.height}"
             )
+
+            Log.d(TAG, "detectFromImagePath: preprocessedImagePath=$preprocessedImagePath")
 
             val inputData = bitmapToFloatArray(resizedBitmap)
             Log.d(TAG, "detectFromImagePath: inputData size=${inputData.size}")
@@ -100,10 +107,10 @@ class OnnxDetector(private val context: Context) {
             mapOf(
                 "status" to "success",
                 "message" to "ONNX detection completed successfully.",
-                "modelVersion" to "stala_notehead_detector.onnx",
+                "modelVersion" to "stala_multiclass_detector.onnx",
                 "inputImagePath" to imagePath,
-                "preprocessedImagePath" to imagePath,
-                "detectionImagePath" to imagePath,
+                "preprocessedImagePath" to preprocessedImagePath,
+                "detectionImagePath" to preprocessedImagePath,
                 "imageWidth" to MODEL_INPUT_WIDTH,
                 "imageHeight" to MODEL_INPUT_HEIGHT,
                 "detections" to detections,
@@ -222,7 +229,12 @@ class OnnxDetector(private val context: Context) {
 
     private fun labelToClassName(label: Int): String {
         return when (label) {
-            1 -> "notehead"
+            1 -> "bass_clef"
+            2 -> "flat"
+            3 -> "natural"
+            4 -> "notehead"
+            5 -> "sharp"
+            6 -> "treble_clef"
             else -> "unknown"
         }
     }
@@ -231,15 +243,10 @@ class OnnxDetector(private val context: Context) {
         val fileName = assetPath.substringAfterLast("/")
         val outFile = File(context.filesDir, fileName)
 
-        if (outFile.exists()) {
-            Log.d(TAG, "copyAssetToInternalFile: reusing existing file=${outFile.absolutePath}")
-            return outFile
-        }
-
         Log.d(TAG, "copyAssetToInternalFile: copying asset=$assetPath to ${outFile.absolutePath}")
 
         context.assets.open(assetPath).use { input ->
-            FileOutputStream(outFile).use { output ->
+            FileOutputStream(outFile, false).use { output ->
                 input.copyTo(output)
             }
         }
@@ -353,5 +360,16 @@ class OnnxDetector(private val context: Context) {
         Log.d(TAG, "letterboxBitmap: source=${source.width}x${source.height} resized=${resizedWidth}x${resizedHeight} placedAt=($left,$top)")
 
         return outputBitmap
+    }
+
+    private fun saveBitmapToCache(bitmap: Bitmap, fileName: String): String {
+        val outFile = File(context.cacheDir, fileName)
+
+        FileOutputStream(outFile).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        }
+
+        Log.d(TAG, "saveBitmapToCache: saved ${outFile.absolutePath}")
+        return outFile.absolutePath
     }
 }
