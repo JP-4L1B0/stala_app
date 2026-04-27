@@ -1,16 +1,45 @@
 import 'dart:io';
 import 'package:image/image.dart' as img;
 import 'package:path/path.dart' as p;
+import 'package:flutter/services.dart';
 
 class StaffSegmentationService {
+  static const _channel = MethodChannel('stala/python_bridge');
+
   Future<Map<String, dynamic>> segmentStaffLines({
     required String imagePath,
   }) async {
     try {
-      print('SEGMENT: input imagePath = $imagePath');
+      print('SEGMENT: trying native OpenCV segmentation');
+
+      final result = await _channel.invokeMethod(
+        'segmentStaffLines',
+        {'imagePath': imagePath},
+      );
+
+      final nativeResult = Map<String, dynamic>.from(result);
+
+      if (nativeResult['status'] == 'success') {
+        print('SEGMENT: native OpenCV segmentation success');
+        return nativeResult;
+      }
+
+      print('SEGMENT: native failed, falling back to Dart');
+      return _segmentStaffLinesFallback(imagePath: imagePath);
+    } catch (e) {
+      print('SEGMENT: native exception, falling back to Dart: $e');
+      return _segmentStaffLinesFallback(imagePath: imagePath);
+    }
+  }
+
+  Future<Map<String, dynamic>> _segmentStaffLinesFallback({
+    required String imagePath,
+  }) async {
+    try {
+      print('SEGMENT FALLBACK: input imagePath = $imagePath');
 
       final file = File(imagePath);
-      print('SEGMENT: file exists = ${file.existsSync()}');
+      print('SEGMENT FALLBACK: file exists = ${file.existsSync()}');
 
       if (!file.existsSync()) {
         throw Exception('Image not found: $imagePath');
@@ -19,7 +48,7 @@ class StaffSegmentationService {
       final bytes = await file.readAsBytes();
       final original = img.decodeImage(bytes);
 
-      print('SEGMENT: image decoded = ${original != null}');
+      print('SEGMENT FALLBACK: image decoded = ${original != null}');
 
       if (original == null) {
         throw Exception('Failed to decode image');
@@ -44,14 +73,14 @@ class StaffSegmentationService {
       }
 
       final rawRows = _collectRawHorizontalRows(binary);
-      print('SEGMENT: rawRows = ${rawRows.length}');
+      print('SEGMENT FALLBACK: rawRows = ${rawRows.length}');
 
       final lineCandidates = _deduplicateRows(rawRows);
-      print('SEGMENT: lineCandidates = ${lineCandidates.length}');
-      print('SEGMENT: candidate ys = $lineCandidates');
+      print('SEGMENT FALLBACK: lineCandidates = ${lineCandidates.length}');
+      print('SEGMENT FALLBACK: candidate ys = $lineCandidates');
 
       final validatedStaffs = _buildValidatedStaffs(lineCandidates);
-      print('SEGMENT: validatedStaffs = ${validatedStaffs.length}');
+      print('SEGMENT FALLBACK: validatedStaffs = ${validatedStaffs.length}');
 
       final overlay = img.Image.from(original);
 
@@ -92,14 +121,14 @@ class StaffSegmentationService {
         'segmented_${DateTime.now().millisecondsSinceEpoch}.png',
       );
 
-      print('SEGMENT: outputPath = $outputPath');
+      print('SEGMENT FALLBACK: outputPath = $outputPath');
 
       final outFile = File(outputPath);
       await outFile.writeAsBytes(img.encodePng(overlay));
 
       return {
         'status': 'success',
-        'message': 'Segmentation completed',
+        'message': 'Fallback Dart segmentation completed',
         'segmentedImagePath': outputPath,
         'staffLineCount': validatedStaffs.fold<int>(
           0,
@@ -128,7 +157,7 @@ class StaffSegmentationService {
         'validatedStaffs': validatedStaffs,
       };
     } catch (e) {
-      print('SEGMENT ERROR: $e');
+      print('SEGMENT FALLBACK ERROR: $e');
       return {
         'status': 'error',
         'message': e.toString(),
@@ -211,7 +240,7 @@ class StaffSegmentationService {
             (s) => (s - avgSpacing).abs() <= avgSpacing * 0.30,
       );
 
-      print('SEGMENT WINDOW: $candidate spacings=$spacings avg=$avgSpacing consistent=$isConsistent');
+      print('SEGMENT FALLBACK WINDOW: $candidate spacings=$spacings avg=$avgSpacing consistent=$isConsistent');
 
       if (!isConsistent) continue;
 

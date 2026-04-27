@@ -29,6 +29,20 @@ class DetectionPoint {
   });
 }
 
+class LedgerLineViewItem {
+  final String staffId;
+  final double x1;
+  final double x2;
+  final double y;
+
+  const LedgerLineViewItem({
+    required this.staffId,
+    required this.x1,
+    required this.x2,
+    required this.y,
+  });
+}
+
 class SymbolClassItem {
   final String className;
   final double x;
@@ -61,6 +75,7 @@ class DummyPage extends StatefulWidget {
   final String? segmentedImagePath;
 
   final List<DetectionPoint> detections;
+  final List<LedgerLineViewItem> ledgerLines;
   final List<SymbolClassItem> classItems;
   final List<StaffTranslateGroup> translateGroups;
   final List<GenerateOutputItem> generateOutputs;
@@ -71,6 +86,7 @@ class DummyPage extends StatefulWidget {
     this.detectedImagePath,
     this.segmentedImagePath,
     this.detections = const [],
+    this.ledgerLines = const [],
     this.classItems = const [],
     this.translateGroups = const [],
     this.generateOutputs = const [],
@@ -157,11 +173,12 @@ class _DummyPageState extends State<DummyPage> {
         );
 
       case DummyViewOption.segments:
-        return _ImagePanel(
+        return _DetectedPanel(
           title: 'C. Segmenting - Segments',
-          subtitle: 'Detected staff lines overlay',
+          subtitle: 'Staff lines with confirmed ledger overlays',
           imagePath: widget.segmentedImagePath,
-          emptyMessage: 'No segmentation result yet.',
+          detections: const [],
+          ledgerLines: widget.ledgerLines,
         );
 
       case DummyViewOption.classList:
@@ -173,7 +190,7 @@ class _DummyPageState extends State<DummyPage> {
 
       case DummyViewOption.translate:
         return _TranslatePanel(
-          title: 'E. Translating - Translate',
+          title: 'E. Translating - Map',
           subtitle: 'Grouped translation result by staff line',
           groups: widget.translateGroups,
         );
@@ -313,12 +330,14 @@ class _DetectedPanel extends StatelessWidget {
   final String subtitle;
   final String? imagePath;
   final List<DetectionPoint> detections;
+  final List<LedgerLineViewItem> ledgerLines;
 
   const _DetectedPanel({
     required this.title,
     required this.subtitle,
     required this.imagePath,
     required this.detections,
+    this.ledgerLines = const [],
   });
 
   @override
@@ -349,6 +368,7 @@ class _DetectedPanel extends StatelessWidget {
                               child: _DetectionImageWithOverlay(
                                 imagePath: imagePath!,
                                 detections: detections,
+                                ledgerLines: ledgerLines,
                                 maxWidth: constraints.maxWidth,
                                 maxHeight: constraints.maxHeight,
                               ),
@@ -392,12 +412,14 @@ class _DetectedPanel extends StatelessWidget {
 class _DetectionImageWithOverlay extends StatelessWidget {
   final String imagePath;
   final List<DetectionPoint> detections;
+  final List<LedgerLineViewItem> ledgerLines;
   final double maxWidth;
   final double maxHeight;
 
   const _DetectionImageWithOverlay({
     required this.imagePath,
     required this.detections,
+    this.ledgerLines = const [],
     required this.maxWidth,
     required this.maxHeight,
   });
@@ -443,6 +465,7 @@ class _DetectionImageWithOverlay extends StatelessWidget {
                 child: CustomPaint(
                   painter: DetectionOverlayPainter(
                     detections: detections,
+                    ledgerLines: ledgerLines,
                     imageWidth: imageWidth,
                     imageHeight: imageHeight,
                   ),
@@ -477,11 +500,13 @@ class _DetectionImageWithOverlay extends StatelessWidget {
 class DetectionOverlayPainter extends CustomPainter {
 
   final List<DetectionPoint> detections;
+  final List<LedgerLineViewItem> ledgerLines;
   final double imageWidth;
   final double imageHeight;
 
   DetectionOverlayPainter({
     required this.detections,
+    this.ledgerLines = const [],
     required this.imageWidth,
     required this.imageHeight,
   });
@@ -518,11 +543,29 @@ class DetectionOverlayPainter extends CustomPainter {
       canvas.drawCircle(Offset(dx, dy), innerRadius, pointPaint);
       canvas.drawCircle(Offset(dx, dy), outerRadius, ringPaint);
     }
+
+    final ledgerPaint = Paint()
+      ..color = Colors.greenAccent
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.5;
+
+    for (final ledger in ledgerLines) {
+      final x1 = (ledger.x1 / imageWidth) * size.width;
+      final x2 = (ledger.x2 / imageWidth) * size.width;
+      final y = (ledger.y / imageHeight) * size.height;
+
+      canvas.drawLine(
+        Offset(x1, y),
+        Offset(x2, y),
+        ledgerPaint,
+      );
+    }
   }
 
   @override
   bool shouldRepaint(covariant DetectionOverlayPainter oldDelegate) {
     return oldDelegate.detections != detections ||
+        oldDelegate.ledgerLines != ledgerLines ||
         oldDelegate.imageWidth != imageWidth ||
         oldDelegate.imageHeight != imageHeight;
   }
@@ -877,8 +920,11 @@ class _TranslatePanelState extends State<_TranslatePanel> {
                                     ),
                                     child: Text(
                                       '${item.id} -- ${item.yDisplay} -- ${item.defaultKeyLabel}',
-                                      style: AppTextStyles.bodySecondary
-                                          .copyWith(fontSize: 12),
+                                      style: AppTextStyles.bodySecondary.copyWith(
+                                        fontSize: 12,
+                                        color: item.id.startsWith('v_') ? Colors.lightBlueAccent : null,
+                                        fontStyle: item.id.startsWith('v_') ? FontStyle.italic : null,
+                                      ),
                                     ),
                                   ),
                                 )
@@ -898,6 +944,7 @@ class _TranslatePanelState extends State<_TranslatePanel> {
                                 crossAxisAlignment:
                                 CrossAxisAlignment.start,
                                 children: group.symbols
+                                    .where((symbol) => symbol.assignmentStatus != 'ledgerCandidate')
                                     .map(
                                       (symbol) => Padding(
                                     padding:
@@ -940,11 +987,12 @@ class _TranslatePanelState extends State<_TranslatePanel> {
 
     if (symbol.className.trim().toLowerCase() == 'notehead') {
       return '${symbol.className} -- $yText -- $confidenceText -- '
-          '${symbol.locationId} -- ${symbol.defaultKeyLabel ?? 'Unresolved'}';
+          '${symbol.locationId} -- ${symbol.defaultKeyLabel ?? 'Unresolved'} -- '
+          '${symbol.assignmentStatus}';
     }
 
     return '${symbol.className} -- $yText -- $confidenceText -- '
-        '${symbol.locationId}';
+        '${symbol.locationId} -- ${symbol.assignmentStatus}';
   }
 }
 

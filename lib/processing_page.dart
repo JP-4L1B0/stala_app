@@ -232,6 +232,8 @@ class _ProcessingPageState extends State<ProcessingPage> {
           segmentationResult['staffLines'];
           response['validatedStaffs'] =
           segmentationResult['validatedStaffs'];
+          response['ledgerLines'] =
+          segmentationResult['ledgerLines'];
 
           setState(() {
             _stages[2] = _stages[2].copyWith(
@@ -248,7 +250,10 @@ class _ProcessingPageState extends State<ProcessingPage> {
           final translateGroups = _translationGroupingService.buildGroups(
             classItems: classItems,
             staffLines: (response['staffLines'] as List?) ?? const [],
+            ledgerLines: (response['ledgerLines'] as List?) ?? const [],
           );
+
+          print('DEBUG: response ledgerLines = ${response['ledgerLines']}');
 
           response['translateGroups'] = translateGroups;
           _processingResult = response;
@@ -378,6 +383,11 @@ class _ProcessingPageState extends State<ProcessingPage> {
     final translateGroups =
         (result['translateGroups'] as List<StaffTranslateGroup>?) ?? const [];
 
+    final ledgerLines = _parseConfirmedLedgerLines(
+      result['ledgerLines'],
+      translateGroups,
+    );
+
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -389,6 +399,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
           detections: detections,
           classItems: classItems,
           translateGroups: translateGroups,
+          ledgerLines: ledgerLines,
           generateOutputs: const [],
         ),
       ),
@@ -640,6 +651,54 @@ class _ProcessingPageState extends State<ProcessingPage> {
     });
 
     return sorted;
+  }
+
+  List<LedgerLineViewItem> _parseConfirmedLedgerLines(
+      dynamic rawLedgerLines,
+      List<StaffTranslateGroup> groups,
+      ) {
+    if (rawLedgerLines is! List) return const [];
+
+    final confirmedSymbols = groups
+        .expand((group) => group.symbols)
+        .where((symbol) => symbol.assignmentStatus == 'ledgerConfirmed')
+        .toList();
+
+    final result = <LedgerLineViewItem>[];
+
+    for (final item in rawLedgerLines) {
+      if (item is! Map) continue;
+
+      final map = Map<String, dynamic>.from(
+        item.map((key, value) => MapEntry(key.toString(), value)),
+      );
+
+      final staffId = map['staffId']?.toString();
+      final x1 = _toDouble(map['x1']);
+      final x2 = _toDouble(map['x2']);
+      final y = _toDouble(map['y']);
+
+      if (staffId == null || x1 == null || x2 == null || y == null) continue;
+
+      final hasMatchingConfirmedNote = confirmedSymbols.any((symbol) {
+        final yClose = (symbol.centerY - y).abs() <= 24.0;
+        final xClose = symbol.centerX >= x1 - 36.0 && symbol.centerX <= x2 + 36.0;
+        return yClose && xClose;
+      });
+
+      if (!hasMatchingConfirmedNote) continue;
+
+      result.add(
+        LedgerLineViewItem(
+          staffId: staffId,
+          x1: x1,
+          x2: x2,
+          y: y,
+        ),
+      );
+    }
+
+    return result;
   }
 }
 

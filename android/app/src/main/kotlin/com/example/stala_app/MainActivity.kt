@@ -48,9 +48,54 @@ class MainActivity : FlutterActivity() {
                 "validateSelectedCrop" -> handleValidateSelectedCrop(call, result)
                 "cropDocumentImage" -> handleCropDocumentImage(call, result)
                 "processImage" -> handleProcessImage(call, result)
+                "segmentStaffLines" -> handleSegmentStaffLines(call, result)
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun handleSegmentStaffLines(call: MethodCall, result: MethodChannel.Result) {
+        val imagePath = call.argument<String>("imagePath")
+
+        if (imagePath.isNullOrBlank()) {
+            result.success(
+                mapOf(
+                    "status" to "error",
+                    "message" to "Image path is missing.",
+                    "segmentedImagePath" to null,
+                    "staffLineCount" to 0,
+                    "staffLines" to emptyList<Any>(),
+                    "validatedStaffs" to emptyList<Any>()
+                )
+            )
+            return
+        }
+
+        Thread {
+            try {
+                val response = StaffSegmentationProcessor.segmentStaffLines(
+                    context = this,
+                    imagePath = imagePath
+                )
+
+                runOnUiThread {
+                    result.success(response)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    result.success(
+                        mapOf(
+                            "status" to "error",
+                            "message" to "Native segmentation failed: ${e.message ?: "Unknown error"}",
+                            "segmentedImagePath" to null,
+                            "staffLineCount" to 0,
+                            "staffLines" to emptyList<Any>(),
+                            "validatedStaffs" to emptyList<Any>()
+                        )
+                    )
+                }
+            }
+        }.start()
     }
 
     private fun handleValidateSelectedCrop(call: MethodCall, result: MethodChannel.Result) {
@@ -180,7 +225,7 @@ class MainActivity : FlutterActivity() {
                 val detector = onnxDetector ?: OnnxDetector(this).also { onnxDetector = it }
 
                 android.util.Log.d("STALA_ONNX", "loading model")
-                detector.loadModel("models/stala_notehead_detector.onnx")
+                detector.loadModel("models/stala_multiclass_detector.onnx")
 
                 android.util.Log.d("STALA_ONNX", "running detectFromImagePath")
                 val response = detector.detectFromImagePath(imagePath)
