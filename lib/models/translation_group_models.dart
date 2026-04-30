@@ -1,3 +1,5 @@
+// Translation Group Model
+
 class StaffSummary {
   final int lineCount;
   final int symbolCount;
@@ -53,12 +55,17 @@ class TranslatedSymbolViewItem {
   final double centerY;
   final double? score;
   final List<double>? bbox;
+  final String staffId;
+  final String staffRole; // treble, bass, unknown
 
   /// line_0, space_1, etc.
   final String locationId;
 
   /// "line" or "space"
   final String locationType;
+
+  /// assign status to detected notes
+  final String assignmentStatus;
 
   /// Default displayed translation for noteheads while accidental rules
   /// are not yet applied. For non-noteheads, keep null.
@@ -79,8 +86,11 @@ class TranslatedSymbolViewItem {
     required this.centerY,
     this.score,
     this.bbox,
+    required this.staffId,
+    required this.staffRole,
     required this.locationId,
     required this.locationType,
+    required this.assignmentStatus,
     this.defaultKeyLabel,
     this.accidentalState,
   });

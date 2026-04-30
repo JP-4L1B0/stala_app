@@ -1,5 +1,10 @@
 import '../models/translation_group_models.dart';
 import '../dummy_page.dart';
+import 'clef_resolution_service.dart';
+import 'pitch_mapping_service.dart';
+import 'accidental_service.dart';
+import 'key_signature_service.dart';
+import 'note_grouping_service.dart';
 
 class TranslationGroupingService {
   /// Builds staff_n groups using segmented staff lines and detected symbols.
@@ -16,19 +21,57 @@ class TranslationGroupingService {
   /// - accidentalState is reserved for accidental logic
   /// - clefStatusLabel is reserved for real clef resolution
   /// - defaultKeyLabel can later be replaced by resolved pitch output
+
+  final ClefResolutionService _clefResolutionService =
+  ClefResolutionService();
+  final PitchMappingService _pitchMappingService =
+  PitchMappingService();
+  final AccidentalService _accidentalService =
+  AccidentalService();
+  final KeySignatureService _keySignatureService =
+  KeySignatureService();
+  final NoteGroupingService _noteGroupingService =
+  NoteGroupingService();
+
+  static const int _virtualLedgerSteps = 5;
+  static const double _virtualLedgerPadding = 0.75;
+
   List<StaffTranslateGroup> buildGroups({
     required List<SymbolClassItem> classItems,
     required List<dynamic> staffLines,
+    List<dynamic> ledgerLines = const [],
   }) {
+
     final normalizedLines = _normalizeStaffLines(staffLines);
+    final normalizedLedgerLines = _normalizeLedgerLines(ledgerLines);
+    print('GROUPING: ledgerLines count = ${normalizedLedgerLines.length}');
+
     if (normalizedLines.length < 5) {
       return const [];
     }
 
     final staffGroups = _buildStaffLineGroups(normalizedLines);
+
+    final staffLineMap = <String, List<double>>{
+      for (int i = 0; i < staffGroups.length; i++)
+        'staff_$i': staffGroups[i],
+    };
+
+    final clefResults = _clefResolutionService.resolveClefs(
+      classItems: classItems,
+      staffLineGroups: staffLineMap,
+    );
+
+    final clefByStaffId = {
+      for (final result in clefResults) result.staffId: result,
+    };
+
     final result = <StaffTranslateGroup>[];
 
     for (int staffIndex = 0; staffIndex < staffGroups.length; staffIndex++) {
+      final staffId = 'staff_$staffIndex';
+      final clefResult = clefByStaffId[staffId];
+
       final lines = staffGroups[staffIndex];
       if (lines.length < 5) continue;
 
@@ -37,13 +80,91 @@ class TranslationGroupingService {
       final topBoundary = _computeTopBoundary(lines);
       final bottomBoundary = _computeBottomBoundary(lines);
 
-      final symbolsInStaff = classItems
-          .where((item) => item.y >= topBoundary && item.y <= bottomBoundary)
-          .toList()
+      final spacing = _averageSpacing(lines);
+
+      final extendedTopBoundary =
+          lines.first - (spacing * (_virtualLedgerSteps + _virtualLedgerPadding));
+
+      final extendedBottomBoundary =
+          lines.last + (spacing * (_virtualLedgerSteps + _virtualLedgerPadding));
+
+      final symbolsInStaff = classItems.where((item) {
+        final className = item.className.trim().toLowerCase();
+
+        final insideNormalStaff =
+            item.y >= topBoundary && item.y <= bottomBoundary;
+
+        final insideVirtualExtension =
+            item.y >= extendedTopBoundary && item.y <= extendedBottomBoundary;
+
+        if (insideNormalStaff) return true;
+
+        if (className == 'notehead' && insideVirtualExtension) {
+          return true;
+        }
+
+        return false;
+      }).toList()
         ..sort((a, b) => a.x.compareTo(b.x));
+
+      final keySignature = _keySignatureService.resolveKeySignature(
+        staffId: staffId,
+        symbolsInStaff: symbolsInStaff,
+        spacing: spacing,
+      );
+
+      final staffRole = _resolveStaffRole(clefResult?.label);
 
       final translatedSymbols = symbolsInStaff.map((item) {
         final location = _findNearestSegment(item.y, segmentMap);
+
+        // Computes pitch
+        final pitch = item.className.trim().toLowerCase() == 'notehead'
+            ? _pitchMappingService.resolvePitch(
+          segment: location,
+          clef: clefResult?.clef ?? ResolvedClef.unknown,
+        )
+            : null;
+
+        final pitchWithKey = pitch != null
+            ? _keySignatureService.applyToPitch(
+          pitch: pitch,
+          keySignature: keySignature,
+        )
+            : null;
+
+        // Add accidental effect to pitch
+        final isNotehead = item.className.trim().toLowerCase() == 'notehead';
+
+        final accidentalResult = isNotehead && pitchWithKey != null
+            ? _accidentalService.applyDirectAccidental(
+          basePitch: pitchWithKey,
+          notehead: item,
+          symbolsInStaff: symbolsInStaff,
+          spacing: spacing,
+        )
+            : null;
+
+        // Ledger line
+        final insideNormalStaff =
+            item.y >= topBoundary && item.y <= bottomBoundary;
+
+        String assignmentStatus;
+
+        if (insideNormalStaff) {
+          assignmentStatus = 'normal';
+        } else {
+          final confirmed = _isNearLedgerLine(
+            symbol: item,
+            staffId: staffId,
+            ledgerLines: normalizedLedgerLines,
+            spacing: spacing,
+          );
+
+          assignmentStatus = confirmed
+              ? 'ledgerConfirmed'
+              : 'ledgerCandidate';
+        }
 
         return TranslatedSymbolViewItem(
           className: item.className,
@@ -51,13 +172,14 @@ class TranslationGroupingService {
           centerY: item.y,
           score: item.score,
           bbox: item.bbox,
+          staffId: staffId,
+          staffRole: staffRole,
           locationId: location.id,
           locationType: location.type,
-          defaultKeyLabel:
-          item.className.trim().toLowerCase() == 'notehead'
-              ? location.defaultKeyLabel
-              : null,
-          accidentalState: _defaultAccidentalState(item.className),
+          assignmentStatus: assignmentStatus,
+          defaultKeyLabel: accidentalResult?.pitch,
+          accidentalState:
+          accidentalResult?.accidental.name ?? _defaultAccidentalState(item.className),
         );
       }).toList();
 
@@ -67,7 +189,8 @@ class TranslationGroupingService {
           summary: StaffSummary(
             lineCount: lines.length,
             symbolCount: translatedSymbols.length,
-            clefStatusLabel: 'Clef pending — showing default F / A mapping',
+            clefStatusLabel:
+            '${clefResult?.label ?? 'Unknown clef'} • ${keySignature.label}',
           ),
           segmentMap: segmentMap,
           symbols: translatedSymbols,
@@ -101,6 +224,38 @@ class TranslationGroupingService {
 
     values.sort();
     return values;
+  }
+
+  List<_LedgerLineItem> _normalizeLedgerLines(List<dynamic> rawLedgerLines) {
+    final result = <_LedgerLineItem>[];
+
+    for (final item in rawLedgerLines) {
+      if (item is! Map) continue;
+
+      final map = Map<String, dynamic>.from(
+        item.map((key, value) => MapEntry(key.toString(), value)),
+      );
+
+      final staffId = map['staffId']?.toString();
+      final x1 = _toDouble(map['x1']);
+      final x2 = _toDouble(map['x2']);
+      final y = _toDouble(map['y']);
+      final position = map['position']?.toString() ?? 'unknown';
+
+      if (staffId == null || x1 == null || x2 == null || y == null) continue;
+
+      result.add(
+        _LedgerLineItem(
+          staffId: staffId,
+          x1: x1,
+          x2: x2,
+          y: y,
+          position: position,
+        ),
+      );
+    }
+
+    return result;
   }
 
   List<List<double>> _buildStaffLineGroups(List<double> lines) {
@@ -173,6 +328,54 @@ class TranslationGroupingService {
       );
     }
 
+    final spacing = _averageSpacing(lines);
+
+    const aboveVirtualMap = {
+      1: 'G / B',
+      2: 'A / C',
+      3: 'B / D',
+      4: 'C / E',
+      5: 'D / F',
+    };
+
+    const belowVirtualMap = {
+      1: 'D / F',
+      2: 'C / E',
+      3: 'B / D',
+      4: 'A / C',
+      5: 'G / B',
+    };
+
+    // Virtual lines above staff
+    for (int i = _virtualLedgerSteps; i >= 1; i--) {
+      final y = lines.first - (spacing * i);
+
+
+      items.insert(
+        0,
+        SegmentMapItem(
+          id: 'v_line_above_$i',
+          type: 'virtual_line',
+          centerY: y,
+          defaultKeyLabel: aboveVirtualMap[i] ?? 'virtual',
+        ),
+      );
+    }
+
+    // Virtual lines below staff
+    for (int i = 1; i <= _virtualLedgerSteps; i++) {
+      final y = lines.last + (spacing * i);
+
+      items.add(
+        SegmentMapItem(
+          id: 'v_line_below_$i',
+          type: 'virtual_line',
+          centerY: y,
+          defaultKeyLabel: belowVirtualMap[i] ?? 'virtual',
+        ),
+      );
+    }
+
     return items;
   }
 
@@ -228,4 +431,65 @@ class TranslationGroupingService {
     if (value is num) return value.toDouble();
     return double.tryParse(value.toString());
   }
+
+  bool _isNearLedgerLine({
+    required SymbolClassItem symbol,
+    required String staffId,
+    required List<_LedgerLineItem> ledgerLines,
+    required double spacing,
+  }) {
+    final symbolHalfWidth = symbol.bbox != null
+        ? ((symbol.bbox![2] - symbol.bbox![0]).abs() / 2.0)
+        : spacing * 0.6;
+
+    final xTolerance = spacing * 0.95;
+    final yTolerance = spacing * 0.8;
+
+    for (final ledger in ledgerLines) {
+      if (ledger.staffId != staffId) continue;
+
+      final yClose = (symbol.y - ledger.y).abs() <= yTolerance;
+
+      final symbolLeft = symbol.bbox != null ? symbol.bbox![0] : symbol.x - spacing;
+      final symbolRight = symbol.bbox != null ? symbol.bbox![2] : symbol.x + spacing;
+
+      final xOverlaps =
+          symbolRight >= (ledger.x1 - xTolerance) &&
+              symbolLeft <= (ledger.x2 + xTolerance);
+
+      final ledgerCenterX = (ledger.x1 + ledger.x2) / 2.0;
+      final centerClose = (symbol.x - ledgerCenterX).abs() <= spacing * 1.6;
+
+      if (yClose && xOverlaps && centerClose) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  String _resolveStaffRole(String? clefLabel) {
+    final label = clefLabel?.toLowerCase() ?? '';
+
+    if (label.contains('treble')) return 'treble';
+    if (label.contains('bass')) return 'bass';
+
+    return 'unknown';
+  }
+}
+
+class _LedgerLineItem {
+  final String staffId;
+  final double x1;
+  final double x2;
+  final double y;
+  final String position;
+
+  const _LedgerLineItem({
+    required this.staffId,
+    required this.x1,
+    required this.x2,
+    required this.y,
+    required this.position,
+  });
 }
