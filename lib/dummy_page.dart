@@ -69,6 +69,58 @@ class GenerateOutputItem {
   });
 }
 
+class NoteGroupViewItem {
+  final String staffId;
+  final List<List<String>> groups;
+
+  const NoteGroupViewItem({
+    required this.staffId,
+    required this.groups,
+  });
+}
+
+class GrandStaffPairViewItem {
+  final String id;
+  final String trebleStaffId;
+  final String? bassStaffId;
+  final List<List<String>> trebleGroups;
+  final List<List<String>> bassGroups;
+
+  const GrandStaffPairViewItem({
+    required this.id,
+    required this.trebleStaffId,
+    required this.bassStaffId,
+    required this.trebleGroups,
+    required this.bassGroups,
+  });
+}
+
+class PolyMonoViewItem {
+  final String grandStaffId;
+  final List<List<String>> harmonicStacks;
+  final List<String> chordAwareStacks;
+  final List<String> strictMelody;
+  final List<String> continuityMelody;
+
+  const PolyMonoViewItem({
+    required this.grandStaffId,
+    required this.harmonicStacks,
+    required this.chordAwareStacks,
+    required this.strictMelody,
+    required this.continuityMelody,
+  });
+}
+
+class MusicInterpretationViewItem {
+  final String title;
+  final List<String> labels;
+
+  const MusicInterpretationViewItem({
+    required this.title,
+    required this.labels,
+  });
+}
+
 class DummyPage extends StatefulWidget {
   final String? croppedImagePath;
   final String? detectedImagePath;
@@ -79,6 +131,10 @@ class DummyPage extends StatefulWidget {
   final List<SymbolClassItem> classItems;
   final List<StaffTranslateGroup> translateGroups;
   final List<GenerateOutputItem> generateOutputs;
+  final List<NoteGroupViewItem> noteGroups;
+  final List<GrandStaffPairViewItem> grandStaffPairs;
+  final List<PolyMonoViewItem> polyMonoResults;
+  final List<MusicInterpretationViewItem> musicInterpretations;
 
   const DummyPage({
     super.key,
@@ -90,6 +146,11 @@ class DummyPage extends StatefulWidget {
     this.classItems = const [],
     this.translateGroups = const [],
     this.generateOutputs = const [],
+    this.noteGroups = const [],
+    this.grandStaffPairs = const [],
+    this.polyMonoResults = const [],
+    this.musicInterpretations = const [],
+
   });
 
   @override
@@ -193,6 +254,7 @@ class _DummyPageState extends State<DummyPage> {
           title: 'E. Translating - Map',
           subtitle: 'Grouped translation result by staff line',
           groups: widget.translateGroups,
+          noteGroups: widget.noteGroups,
         );
 
       case DummyViewOption.generate:
@@ -200,6 +262,9 @@ class _DummyPageState extends State<DummyPage> {
           title: 'F. Generating - Generate',
           subtitle: 'Prepared output for graph / API generation',
           outputs: widget.generateOutputs,
+          grandStaffPairs: widget.grandStaffPairs,
+          polyMonoResults: widget.polyMonoResults,
+          musicInterpretations: widget.musicInterpretations,
         );
     }
   }
@@ -813,11 +878,13 @@ class _TranslatePanel extends StatefulWidget {
   final String title;
   final String subtitle;
   final List<StaffTranslateGroup> groups;
+  final List<NoteGroupViewItem> noteGroups;
 
   const _TranslatePanel({
     required this.title,
     required this.subtitle,
     required this.groups,
+    required this.noteGroups,
   });
 
   @override
@@ -826,155 +893,251 @@ class _TranslatePanel extends StatefulWidget {
 
 class _TranslatePanelState extends State<_TranslatePanel> {
   String? _expandedStaffId;
+  int _selectedTranslateTab = 0; // 0 = Map, 1 = Note Group
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         _PanelHeader(title: widget.title, subtitle: widget.subtitle),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: Row(
+            children: [
+              _TranslateTabButton(
+                label: 'Map',
+                selected: _selectedTranslateTab == 0,
+                onTap: () {
+                  setState(() {
+                    _selectedTranslateTab = 0;
+                  });
+                },
+              ),
+              const SizedBox(width: 8),
+              _TranslateTabButton(
+                label: 'Note Group',
+                selected: _selectedTranslateTab == 1,
+                onTap: () {
+                  setState(() {
+                    _selectedTranslateTab = 1;
+                  });
+                },
+              ),
+            ],
+          ),
+        ),
         Expanded(
-          child: widget.groups.isEmpty
-              ? const _EmptyPanelMessage(
-            message: 'No translation data available yet.',
-          )
-              : ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: widget.groups.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 10),
-            itemBuilder: (context, index) {
-              final group = widget.groups[index];
-              final isExpanded = _expandedStaffId == group.staffId;
+          child: _selectedTranslateTab == 0
+              ? _buildMapTab()
+              : _buildNoteGroupTab(),
+        ),
+      ],
+    );
+  }
 
-              return Container(
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: Column(
-                  children: [
-                    InkWell(
-                      borderRadius: BorderRadius.circular(14),
-                      onTap: () {
-                        setState(() {
-                          _expandedStaffId =
-                          isExpanded ? null : group.staffId;
-                        });
-                      },
-                      child: Padding(
-                        padding: const EdgeInsets.all(14),
-                        child: Row(
+  Widget _buildMapTab() {
+    return widget.groups.isEmpty
+        ? const _EmptyPanelMessage(
+      message: 'No translation data available yet.',
+    )
+        : ListView.separated(
+      padding: const EdgeInsets.all(16),
+      itemCount: widget.groups.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (context, index) {
+        final group = widget.groups[index];
+        final isExpanded = _expandedStaffId == group.staffId;
+
+        return Container(
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Column(
+            children: [
+              InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: () {
+                  setState(() {
+                    _expandedStaffId =
+                    isExpanded ? null : group.staffId;
+                  });
+                },
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment:
-                                CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    group.staffId,
-                                    style: AppTextStyles.body.copyWith(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '${group.summary.lineCount} lines detected • '
-                                        '${group.summary.symbolCount} symbols assigned • '
-                                        '${group.summary.clefStatusLabel}',
-                                    style: AppTextStyles.caption.copyWith(
-                                      fontSize: 11.5,
-                                    ),
-                                  ),
-                                ],
+                            Text(
+                              group.staffId,
+                              style: AppTextStyles.body.copyWith(
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
-                            Icon(
-                              isExpanded
-                                  ? Icons.keyboard_arrow_up_rounded
-                                  : Icons.keyboard_arrow_down_rounded,
-                              color: AppColors.textSecondary,
+                            const SizedBox(height: 4),
+                            Text(
+                              '${group.summary.lineCount} lines detected • '
+                                  '${group.summary.symbolCount} symbols assigned • '
+                                  '${group.summary.clefStatusLabel}',
+                              style: AppTextStyles.caption.copyWith(
+                                fontSize: 11.5,
+                              ),
                             ),
                           ],
                         ),
                       ),
-                    ),
-                    if (isExpanded) ...[
-                      Container(
-                        height: 1,
-                        color: AppColors.divider,
+                      Icon(
+                        isExpanded
+                            ? Icons.keyboard_arrow_up_rounded
+                            : Icons.keyboard_arrow_down_rounded,
+                        color: AppColors.textSecondary,
                       ),
-                      Padding(
-                        padding: const EdgeInsets.all(14),
+                    ],
+                  ),
+                ),
+              ),
+              if (isExpanded) ...[
+                Container(height: 1, color: AppColors.divider),
+                Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    children: [
+                      _TranslateBox(
+                        title: 'Segment Map',
                         child: Column(
-                          children: [
-                            _TranslateBox(
-                              title: 'Segment Map',
-                              child: Column(
-                                crossAxisAlignment:
-                                CrossAxisAlignment.start,
-                                children: group.segmentMap
-                                    .map(
-                                      (item) => Padding(
-                                    padding: const EdgeInsets.only(
-                                      bottom: 5,
-                                    ),
-                                    child: Text(
-                                      '${item.id} -- ${item.yDisplay} -- ${item.defaultKeyLabel}',
-                                      style: AppTextStyles.bodySecondary.copyWith(
-                                        fontSize: 12,
-                                        color: item.id.startsWith('v_') ? Colors.lightBlueAccent : null,
-                                        fontStyle: item.id.startsWith('v_') ? FontStyle.italic : null,
-                                      ),
-                                    ),
-                                  ),
-                                )
-                                    .toList(),
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: group.segmentMap
+                              .map(
+                                (item) => Padding(
+                              padding: const EdgeInsets.only(bottom: 5),
+                              child: Text(
+                                '${item.id} -- ${item.yDisplay} -- ${item.defaultKeyLabel}',
+                                style: AppTextStyles.bodySecondary.copyWith(
+                                  fontSize: 12,
+                                  color: item.id.startsWith('v_')
+                                      ? Colors.lightBlueAccent
+                                      : null,
+                                  fontStyle: item.id.startsWith('v_')
+                                      ? FontStyle.italic
+                                      : null,
+                                ),
                               ),
                             ),
-                            const SizedBox(height: 12),
-                            _TranslateBox(
-                              title: 'Symbol/s',
-                              child: group.symbols.isEmpty
-                                  ? Text(
-                                'No symbols assigned within this staff.',
+                          )
+                              .toList(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      _TranslateBox(
+                        title: 'Symbol/s',
+                        child: group.symbols.isEmpty
+                            ? Text(
+                          'No symbols assigned within this staff.',
+                          style: AppTextStyles.bodySecondary
+                              .copyWith(fontSize: 12),
+                        )
+                            : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: group.symbols
+                              .where((symbol) =>
+                          symbol.assignmentStatus !=
+                              'ledgerCandidate')
+                              .map(
+                                (symbol) => Padding(
+                              padding:
+                              const EdgeInsets.only(bottom: 6),
+                              child: Text(
+                                _buildSymbolLine(symbol),
                                 style: AppTextStyles.bodySecondary
                                     .copyWith(fontSize: 12),
-                              )
-                                  : Column(
-                                crossAxisAlignment:
-                                CrossAxisAlignment.start,
-                                children: group.symbols
-                                    .where((symbol) => symbol.assignmentStatus != 'ledgerCandidate')
-                                    .map(
-                                      (symbol) => Padding(
-                                    padding:
-                                    const EdgeInsets.only(
-                                      bottom: 6,
-                                    ),
-                                    child: Text(
-                                      _buildSymbolLine(symbol),
-                                      style: AppTextStyles
-                                          .bodySecondary
-                                          .copyWith(
-                                        fontSize: 12,
-                                      ),
-                                    ),
-                                  ),
-                                )
-                                    .toList(),
                               ),
                             ),
-                          ],
+                          )
+                              .toList(),
                         ),
                       ),
                     ],
-                  ],
+                  ),
                 ),
-              );
-            },
+              ],
+            ],
           ),
-        ),
-      ],
+        );
+      },
+    );
+  }
+
+  Widget _buildNoteGroupTab() {
+    return widget.noteGroups.isEmpty
+        ? const _EmptyPanelMessage(
+      message: 'No note groups available yet.',
+    )
+        : ListView.separated(
+      padding: const EdgeInsets.all(16),
+      itemCount: widget.noteGroups.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      itemBuilder: (context, index) {
+        final item = widget.noteGroups[index];
+
+        return Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item.staffId,
+                style: AppTextStyles.body.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 10),
+              if (item.groups.isEmpty)
+                Text(
+                  'No grouped notes for this staff.',
+                  style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+                )
+              else
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: item.groups.map((group) {
+                    final label = group.length == 1
+                        ? group.first
+                        : group.join(' + ');
+
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 7,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.card,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppColors.border),
+                      ),
+                      child: Text(
+                        '[$label]',
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.textPrimary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -993,6 +1156,46 @@ class _TranslatePanelState extends State<_TranslatePanel> {
 
     return '${symbol.className} -- $yText -- $confidenceText -- '
         '${symbol.locationId} -- ${symbol.assignmentStatus}';
+  }
+}
+
+class _TranslateTabButton extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _TranslateTabButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Container(
+          height: 38,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? AppColors.accent : AppColors.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Text(
+            label,
+            style: AppTextStyles.caption.copyWith(
+              color: selected
+                  ? AppColors.textPrimary
+                  : AppColors.textSecondary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -1032,62 +1235,334 @@ class _TranslateBox extends StatelessWidget {
   }
 }
 
-class _GeneratePanel extends StatelessWidget {
+class _GeneratePanel extends StatefulWidget {
   final String title;
   final String subtitle;
   final List<GenerateOutputItem> outputs;
+  final List<GrandStaffPairViewItem> grandStaffPairs;
+  final List<PolyMonoViewItem> polyMonoResults;
+  final List<MusicInterpretationViewItem> musicInterpretations;
 
   const _GeneratePanel({
     required this.title,
     required this.subtitle,
     required this.outputs,
+    required this.grandStaffPairs,
+    required this.polyMonoResults,
+    required this.musicInterpretations,
   });
+
+  @override
+  State<_GeneratePanel> createState() => _GeneratePanelState();
+}
+
+class _GeneratePanelState extends State<_GeneratePanel> {
+  String? _expandedSectionId = 'grand_staff';
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _PanelHeader(title: title, subtitle: subtitle),
+        _PanelHeader(title: widget.title, subtitle: widget.subtitle),
         Expanded(
-          child: outputs.isEmpty
-              ? const _EmptyPanelMessage(
-            message: 'No generation payload available yet.',
-          )
-              : ListView.separated(
+          child: ListView(
             padding: const EdgeInsets.all(16),
-            itemCount: outputs.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 10),
-            itemBuilder: (context, index) {
-              final item = outputs[index];
-              return Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: RichText(
-                  text: TextSpan(
-                    style: AppTextStyles.body,
-                    children: [
-                      TextSpan(
-                        text: '${item.title}: ',
-                        style: AppTextStyles.body.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      TextSpan(
-                        text: item.value,
-                        style: AppTextStyles.bodySecondary,
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
+            children: [
+              _buildGenerateSection(
+                sectionId: 'grand_staff',
+                title: 'Grand Staff Pairing',
+                subtitle: '${widget.grandStaffPairs.length} pairs prepared',
+                child: _buildGrandStaffPairsContent(),
+              ),
+              const SizedBox(height: 10),
+              _buildGenerateSection(
+                sectionId: 'poly_mono',
+                title: 'Poly-Mono',
+                subtitle: '${widget.polyMonoResults.length} results prepared',
+                child: _buildPolyMonoContent(),
+              ),
+              const SizedBox(height: 10),
+              _buildGenerateSection(
+                sectionId: 'music_interpretation',
+                title: 'Musical Interpretation',
+                subtitle: '${widget.musicInterpretations.length} structures prepared',
+                child: _buildMusicInterpretationContent(),
+              ),
+            ],
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildGenerateSection({
+    required String sectionId,
+    required String title,
+    required String subtitle,
+    required Widget child,
+  }) {
+    final isExpanded = _expandedSectionId == sectionId;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () {
+              setState(() {
+                _expandedSectionId = isExpanded ? null : sectionId;
+              });
+            },
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          title,
+                          style: AppTextStyles.body.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          subtitle,
+                          style: AppTextStyles.caption.copyWith(fontSize: 11.5),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    isExpanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    color: AppColors.textSecondary,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (isExpanded) ...[
+            Container(height: 1, color: AppColors.divider),
+            Padding(
+              padding: const EdgeInsets.all(14),
+              child: child,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGrandStaffPairsContent() {
+    if (widget.grandStaffPairs.isEmpty) {
+      return Text(
+        'No grand staff pairs available yet.',
+        style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+      );
+    }
+
+    return Column(
+      children: widget.grandStaffPairs.map((pair) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _TranslateBox(
+            title: pair.id,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Treble (${pair.trebleStaffId})',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                _buildGroupWrap(pair.trebleGroups),
+                const SizedBox(height: 10),
+                if (pair.bassStaffId != null) ...[
+                  Text(
+                    'Bass (${pair.bassStaffId})',
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  _buildGroupWrap(pair.bassGroups),
+                ],
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildPolyMonoContent() {
+    if (widget.polyMonoResults.isEmpty) {
+      return Text(
+        'No poly-mono result available yet.',
+        style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+      );
+    }
+
+    return Column(
+      children: widget.polyMonoResults.map((item) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _TranslateBox(
+            title: item.grandStaffId,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'H-detr Harmonic Stacks',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                _buildGroupWrap(item.harmonicStacks),
+                const SizedBox(height: 12),
+
+                Text(
+                  'H-detr Chord-Aware',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                _buildTextWrap(item.chordAwareStacks),
+                const SizedBox(height: 12),
+                Text(
+                  'M-prio (Strict)',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                _buildGroupWrap(
+                  item.strictMelody.map((p) => [p]).toList(),
+                ),
+
+                const SizedBox(height: 12),
+
+                Text(
+                  'M-prio (Continuity)',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                _buildGroupWrap(
+                  item.continuityMelody.map((p) => [p]).toList(),
+                ),
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildMusicInterpretationContent() {
+    if (widget.musicInterpretations.isEmpty) {
+      return Text(
+        'No interpreted music structures available yet.',
+        style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+      );
+    }
+
+    return Column(
+      children: widget.musicInterpretations.map((item) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _TranslateBox(
+            title: item.title,
+            child: _buildTextWrap(
+              item.labels.isEmpty ? ['Empty'] : item.labels,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildGroupWrap(List<List<String>> groups) {
+    if (groups.isEmpty) {
+      return Text(
+        'No notes',
+        style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+      );
+    }
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: groups.map((group) {
+        final label = group.length == 1 ? group.first : group.join(' + ');
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Text(
+            '[$label]',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildTextWrap(List<String> items) {
+    if (items.isEmpty) {
+      return Text(
+        'No chord-aware stacks available.',
+        style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+      );
+    }
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: items.map((text) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            color: AppColors.card,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Text(
+            text,
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        );
+      }).toList(),
     );
   }
 }

@@ -9,6 +9,10 @@ import 'dummy_page.dart';
 import 'services/staff_segmentation_service.dart';
 import 'models/translation_group_models.dart';
 import 'services/translation_grouping_service.dart';
+import 'services/note_grouping_service.dart';
+import 'services/grand_staff_pairing_service.dart';
+import 'services/polyphonic_to_monophonic_service.dart';
+import 'services/musical_interpretation_service.dart';
 
 /// Processing screen shown after the image crop is confirmed.
 ///
@@ -81,6 +85,17 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
   final TranslationGroupingService _translationGroupingService =
   TranslationGroupingService();
+
+  final NoteGroupingService _noteGroupingService = NoteGroupingService();
+
+  final GrandStaffPairingService _grandStaffPairingService =
+  GrandStaffPairingService();
+
+  final PolyphonicToMonophonicService _polyMonoService =
+  PolyphonicToMonophonicService();
+
+  final MusicalInterpretationService _musicalInterpretationService =
+  MusicalInterpretationService();
 
   Map<String, dynamic>? _processingResult;
 
@@ -255,6 +270,122 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
           print('DEBUG: response ledgerLines = ${response['ledgerLines']}');
 
+          final groupedNotes = _noteGroupingService.groupNotes(
+            staffGroups: translateGroups,
+          );
+
+          final noteGroupViewItems = groupedNotes.entries.map((entry) {
+            return NoteGroupViewItem(
+              staffId: entry.key,
+              groups: entry.value
+                  .map((group) => group
+                  .map((note) => note.defaultKeyLabel ?? 'Unresolved')
+                  .toList())
+                  .toList(),
+            );
+          }).toList();
+
+          response['noteGroups'] = noteGroupViewItems;
+
+          final grandStaffPairs = _grandStaffPairingService.pairStaffs(
+            noteGroups: noteGroupViewItems,
+            translateGroups: translateGroups,
+          );
+
+          final grandStaffPairViewItems = grandStaffPairs.map((pair) {
+            final trebleView = noteGroupViewItems.firstWhere(
+                  (item) => item.staffId == pair.trebleStaffId,
+            );
+
+            final bassView = pair.bassStaffId == null
+                ? null
+                : noteGroupViewItems.firstWhere(
+                  (item) => item.staffId == pair.bassStaffId,
+            );
+
+            return GrandStaffPairViewItem(
+              id: pair.id,
+              trebleStaffId: pair.trebleStaffId,
+              bassStaffId: pair.bassStaffId,
+              trebleGroups: trebleView.groups,
+              bassGroups: bassView?.groups ?? const [],
+            );
+          }).toList();
+
+          response['grandStaffPairs'] = grandStaffPairViewItems;
+
+          final polyMonoResults = _polyMonoService.convert(
+            grandStaffPairs: grandStaffPairs,
+            groupedNotes: groupedNotes,
+          );
+
+          final polyMonoViewItems = polyMonoResults.map((result) {
+            final chordAwareStrings = result.chordAwareStacks.map((stack) {
+              final notes = stack.notes
+                  .map((n) => n.defaultKeyLabel ?? 'Unresolved')
+                  .join(' + ');
+
+              final chord = stack.chordName;
+
+              if (chord == null) {
+                return 'NO_CHORD';
+              }
+
+              return '[$notes] → $chord';
+            }).toList();
+
+            final allNoChord =
+            chordAwareStrings.every((item) => item == 'NO_CHORD');
+
+            final finalChordAware = allNoChord
+                ? ['No chords detected']
+                : chordAwareStrings.where((item) => item != 'NO_CHORD').toList();
+
+            return PolyMonoViewItem(
+              grandStaffId: result.grandStaffId,
+              harmonicStacks: result.harmonicStacks.map((stack) {
+                return stack.notes
+                    .map((n) => n.defaultKeyLabel ?? 'Unresolved')
+                    .toList();
+              }).toList(),
+              chordAwareStacks: finalChordAware,
+              strictMelody: result.strictMelody.map((n) => n.pitch).toList(),
+              continuityMelody:
+              result.continuityMelody.map((n) => n.pitch).toList(),
+            );
+          }).toList();
+
+          response['polyMonoResults'] = polyMonoViewItems;
+
+          // Music interpretation service
+          final musicInterpretation =
+          _musicalInterpretationService.interpret(
+            polyMonoResults: polyMonoResults,
+          );
+
+          final musicInterpretationViewItems = [
+            MusicInterpretationViewItem(
+              title: musicInterpretation.chordAwareLine.title,
+              labels: musicInterpretation.chordAwareLine.events
+                  .map((event) => event.label)
+                  .toList(),
+            ),
+            MusicInterpretationViewItem(
+              title: musicInterpretation.strictMelodyLine.title,
+              labels: musicInterpretation.strictMelodyLine.events
+                  .map((event) => event.label)
+                  .toList(),
+            ),
+            MusicInterpretationViewItem(
+              title: musicInterpretation.continuityMelodyLine.title,
+              labels: musicInterpretation.continuityMelodyLine.events
+                  .map((event) => event.label)
+                  .toList(),
+            ),
+          ];
+
+          response['musicInterpretations'] = musicInterpretationViewItems;
+
           response['translateGroups'] = translateGroups;
           _processingResult = response;
 
@@ -383,6 +514,19 @@ class _ProcessingPageState extends State<ProcessingPage> {
     final translateGroups =
         (result['translateGroups'] as List<StaffTranslateGroup>?) ?? const [];
 
+    final noteGroups =
+        (result['noteGroups'] as List<NoteGroupViewItem>?) ?? const [];
+
+    final grandStaffPairs =
+        (result['grandStaffPairs'] as List<GrandStaffPairViewItem>?) ?? const [];
+
+    final polyMonoResults =
+        (result['polyMonoResults'] as List<PolyMonoViewItem>?) ?? const [];
+
+    final musicInterpretations =
+        (result['musicInterpretations'] as List<MusicInterpretationViewItem>?) ??
+            const [];
+
     final ledgerLines = _parseConfirmedLedgerLines(
       result['ledgerLines'],
       translateGroups,
@@ -399,6 +543,10 @@ class _ProcessingPageState extends State<ProcessingPage> {
           detections: detections,
           classItems: classItems,
           translateGroups: translateGroups,
+          noteGroups: noteGroups,
+          grandStaffPairs: grandStaffPairs,
+          polyMonoResults: polyMonoResults,
+          musicInterpretations: musicInterpretations,
           ledgerLines: ledgerLines,
           generateOutputs: const [],
         ),
