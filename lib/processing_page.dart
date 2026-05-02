@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'models/session_data.dart';
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_text_styles.dart';
 import 'dummy_page.dart';
@@ -13,6 +14,11 @@ import 'services/note_grouping_service.dart';
 import 'services/grand_staff_pairing_service.dart';
 import 'services/polyphonic_to_monophonic_service.dart';
 import 'services/musical_interpretation_service.dart';
+import 'services/fretboard_mapping_service.dart';
+import 'services/event_manager_service.dart';
+import 'services/chord_voicing_service.dart';
+import 'services/tablature_result_adapter.dart';
+import 'services/generation_service.dart';
 
 /// Processing screen shown after the image crop is confirmed.
 ///
@@ -96,6 +102,15 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
   final MusicalInterpretationService _musicalInterpretationService =
   MusicalInterpretationService();
+
+  final FretboardMappingService _fretboardMappingService =
+  FretboardMappingService();
+
+  final EventManagerService _eventManagerService =
+  EventManagerService();
+
+  final ChordVoicingService _chordVoicingService =
+  ChordVoicingService();
 
   Map<String, dynamic>? _processingResult;
 
@@ -386,6 +401,161 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
           response['musicInterpretations'] = musicInterpretationViewItems;
 
+          // F-map
+          final fretboardMapping = _fretboardMappingService.mapInterpretation(
+            interpretation: musicInterpretation,
+          );
+
+          final fretboardMappingViewItems = fretboardMapping.lines.map((line) {
+            return FretboardMappingViewItem(
+              title: line.title,
+              eventSummaries: line.events.map((event) {
+                final preview = event.candidates.take(3).map((candidate) {
+                  return candidate.positions.map((pos) {
+                    return 'S${pos.stringNumber} F${pos.fret}';
+                  }).join(' + ');
+                }).join(', ');
+
+                final suffix = event.candidates.length > 3 ? '...' : '';
+
+                return '${event.label} → ${event.candidates.length} candidates: $preview$suffix';
+              }).toList(),
+            );
+          }).toList();
+
+          response['fretboardMappings'] = fretboardMappingViewItems;
+
+          // Event manager
+          final eventManagerResult = _eventManagerService.manage(
+            fretboardMapping: fretboardMapping,
+          );
+
+          final eventManagerViewItems = eventManagerResult.lines.map((line) {
+            return EventManagerViewItem(
+              title: line.title,
+              totalCost: line.totalCost.toStringAsFixed(2),
+              events: line.events.map((event) {
+                final positions = event.chosenPositions.map((pos) {
+                  return '${pos.pitch}: S${pos.stringNumber} F${pos.fret}';
+                }).join(' + ');
+
+                return '${event.label} → $positions';
+              }).toList(),
+            );
+          }).toList();
+
+          response['eventManagerResults'] = eventManagerViewItems;
+
+          // Chord voicing
+          final chordVoicingResult = _chordVoicingService.voice(
+            fretboardMapping: fretboardMapping,
+          );
+
+          final chordVoicingViewItems = chordVoicingResult.lines.map((line) {
+            return ChordVoicingViewItem(
+              title: line.title,
+              events: line.events.map((event) {
+                final positions = event.chosenPositions.map((pos) {
+                  return '${pos.pitch}: S${pos.stringNumber} F${pos.fret}';
+                }).join(' + ');
+
+                return '${event.label} → $positions (${event.voicingReason})';
+              }).toList(),
+            );
+          }).toList();
+
+          response['chordVoicingResults'] = chordVoicingViewItems;
+
+          // Result adapter
+          final tablatureResults = const TablatureResultAdapter().combine(
+            eventManagerResult: eventManagerResult,
+            chordVoicingResult: chordVoicingResult,
+            titleFallback: 'Sample 1',
+          );
+
+          debugPrint('TABLATURE RESULTS: ${tablatureResults.length} mode(s)');
+
+          response['tablatureResults'] =
+              tablatureResults.map((result) => result.toJson()).toList();
+
+          for (final result in tablatureResults) {
+            debugPrint('${result.mode.name}: ${result.events.length} events');
+
+            if (result.events.isNotEmpty) {
+              final first = result.events.first;
+              debugPrint(
+                'First event: index=${first.eventIndex}, '
+                    'duration=${first.durationSeconds}, '
+                    'label=${first.label}, '
+                    'positions=${first.positions.length}',
+              );
+            }
+          }
+
+          // Session save
+          final session = SessionData(
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            projectName: 'Sample 1',
+
+            originalImagePath: widget.imagePath,
+            croppedImagePath: response['croppedImagePath']?.toString(),
+            detectionImagePath: response['detectionImagePath']?.toString(),
+            segmentationImagePath: response['segmentedImagePath']?.toString(),
+
+            detectedSymbols: (response['detections'] as List? ?? const [])
+                .whereType<Map>()
+                .map((item) => Map<String, dynamic>.from(item))
+                .toList(),
+
+            segmentationData: (response['staffLines'] as List? ?? const [])
+                .whereType<Map>()
+                .map((item) => Map<String, dynamic>.from(item))
+                .toList(),
+
+            pitchMappingData: const [],
+            fretboardEvents: const [],
+
+            tablatureResults: tablatureResults,
+
+            processingTimestamp: DateTime.now(),
+            modelVersion: 'v1',
+            hasPipelineSnapshot: true,
+          );
+
+          // Generate display data
+          final generatedTabs = const GenerationService().generateAll(
+            results: tablatureResults,
+          );
+
+          debugPrint('GENERATED TABS: ${generatedTabs.length} mode(s)');
+
+          for (final tab in generatedTabs) {
+            debugPrint(
+              '${tab.mode.name}: '
+                  '${tab.columns.length} columns, '
+                  '${tab.fretboardFrames.length} fretboard frames, '
+                  '${tab.exportPages.length} export pages',
+            );
+          }
+
+          final generatedTabViewItems = generatedTabs.map((tab) {
+            final first = tab.columns.isNotEmpty ? tab.columns.first : null;
+
+            return GeneratedTabViewItem(
+              mode: tab.mode.name,
+              columns: tab.columns.length,
+              fretboardFrames: tab.fretboardFrames.length,
+              exportPages: tab.exportPages.length,
+              firstEventSummary: first == null
+                  ? 'No events'
+                  : '${first.label} → ${first.numbers.length} note(s)',
+            );
+          }).toList();
+
+          response['sessionData'] = session;
+          response['generatedTabResults'] = generatedTabs;
+          response['generatedTabViewItems'] = generatedTabViewItems;
+
           response['translateGroups'] = translateGroups;
           _processingResult = response;
 
@@ -527,6 +697,26 @@ class _ProcessingPageState extends State<ProcessingPage> {
         (result['musicInterpretations'] as List<MusicInterpretationViewItem>?) ??
             const [];
 
+    final fretboardMappings =
+        (result['fretboardMappings'] as List<FretboardMappingViewItem>?) ??
+            const [];
+
+    final eventManagerResults =
+        (result['eventManagerResults'] as List<EventManagerViewItem>?) ??
+            const [];
+
+    final chordVoicingResults =
+        (result['chordVoicingResults'] as List<ChordVoicingViewItem>?) ??
+            const [];
+
+    final session = result['sessionData'] as SessionData;
+    final generatedTabResults =
+        (result['generatedTabResults'] as List<GeneratedTabResult>?) ?? const [];
+
+    final generatedTabs =
+        (result['generatedTabViewItems'] as List<GeneratedTabViewItem>?) ??
+            const [];
+
     final ledgerLines = _parseConfirmedLedgerLines(
       result['ledgerLines'],
       translateGroups,
@@ -547,6 +737,12 @@ class _ProcessingPageState extends State<ProcessingPage> {
           grandStaffPairs: grandStaffPairs,
           polyMonoResults: polyMonoResults,
           musicInterpretations: musicInterpretations,
+          fretboardMappings: fretboardMappings,
+          eventManagerResults: eventManagerResults,
+          chordVoicingResults: chordVoicingResults,
+          session: session,
+          generatedTabResults: generatedTabResults,
+          generatedTabs: generatedTabs,
           ledgerLines: ledgerLines,
           generateOutputs: const [],
         ),

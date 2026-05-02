@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_text_styles.dart';
 import 'models/translation_group_models.dart';
+import 'models/session_data.dart';
+import 'result_page.dart';
+import 'services/generation_service.dart';
 
 enum DummyViewOption {
   cropped,
@@ -121,6 +124,54 @@ class MusicInterpretationViewItem {
   });
 }
 
+class FretboardMappingViewItem {
+  final String title;
+  final List<String> eventSummaries;
+
+  const FretboardMappingViewItem({
+    required this.title,
+    required this.eventSummaries,
+  });
+}
+
+class EventManagerViewItem {
+  final String title;
+  final String totalCost;
+  final List<String> events;
+
+  const EventManagerViewItem({
+    required this.title,
+    required this.totalCost,
+    required this.events,
+  });
+}
+
+class ChordVoicingViewItem {
+  final String title;
+  final List<String> events;
+
+  const ChordVoicingViewItem({
+    required this.title,
+    required this.events,
+  });
+}
+
+class GeneratedTabViewItem {
+  final String mode;
+  final int columns;
+  final int fretboardFrames;
+  final int exportPages;
+  final String firstEventSummary;
+
+  const GeneratedTabViewItem({
+    required this.mode,
+    required this.columns,
+    required this.fretboardFrames,
+    required this.exportPages,
+    required this.firstEventSummary,
+  });
+}
+
 class DummyPage extends StatefulWidget {
   final String? croppedImagePath;
   final String? detectedImagePath;
@@ -135,6 +186,12 @@ class DummyPage extends StatefulWidget {
   final List<GrandStaffPairViewItem> grandStaffPairs;
   final List<PolyMonoViewItem> polyMonoResults;
   final List<MusicInterpretationViewItem> musicInterpretations;
+  final List<FretboardMappingViewItem> fretboardMappings;
+  final List<EventManagerViewItem> eventManagerResults;
+  final List<ChordVoicingViewItem> chordVoicingResults;
+  final SessionData? session;
+  final List<GeneratedTabResult> generatedTabResults;
+  final List<GeneratedTabViewItem> generatedTabs;
 
   const DummyPage({
     super.key,
@@ -150,6 +207,12 @@ class DummyPage extends StatefulWidget {
     this.grandStaffPairs = const [],
     this.polyMonoResults = const [],
     this.musicInterpretations = const [],
+    this.fretboardMappings = const [],
+    this.eventManagerResults = const [],
+    this.chordVoicingResults = const [],
+    this.generatedTabs = const [],
+    this.generatedTabResults = const [],
+    this.session,
 
   });
 
@@ -265,6 +328,12 @@ class _DummyPageState extends State<DummyPage> {
           grandStaffPairs: widget.grandStaffPairs,
           polyMonoResults: widget.polyMonoResults,
           musicInterpretations: widget.musicInterpretations,
+          fretboardMappings: widget.fretboardMappings,
+          eventManagerResults: widget.eventManagerResults,
+          chordVoicingResults: widget.chordVoicingResults,
+          generatedTabResults: widget.generatedTabResults,
+          generatedTabs: widget.generatedTabs,
+          session: widget.session,
         );
     }
   }
@@ -1242,6 +1311,12 @@ class _GeneratePanel extends StatefulWidget {
   final List<GrandStaffPairViewItem> grandStaffPairs;
   final List<PolyMonoViewItem> polyMonoResults;
   final List<MusicInterpretationViewItem> musicInterpretations;
+  final List<FretboardMappingViewItem> fretboardMappings;
+  final List<EventManagerViewItem> eventManagerResults;
+  final List<ChordVoicingViewItem> chordVoicingResults;
+  final List<GeneratedTabResult> generatedTabResults;
+  final List<GeneratedTabViewItem> generatedTabs;
+  final SessionData? session;
 
   const _GeneratePanel({
     required this.title,
@@ -1250,6 +1325,12 @@ class _GeneratePanel extends StatefulWidget {
     required this.grandStaffPairs,
     required this.polyMonoResults,
     required this.musicInterpretations,
+    required this.fretboardMappings,
+    required this.eventManagerResults,
+    required this.chordVoicingResults,
+    required this.generatedTabResults,
+    required this.generatedTabs,
+    required this.session,
   });
 
   @override
@@ -1287,6 +1368,34 @@ class _GeneratePanelState extends State<_GeneratePanel> {
                 title: 'Musical Interpretation',
                 subtitle: '${widget.musicInterpretations.length} structures prepared',
                 child: _buildMusicInterpretationContent(),
+              ),
+              const SizedBox(height: 10),
+              _buildGenerateSection(
+                sectionId: 'fretboard_mapping',
+                title: 'Fretboard Mapping',
+                subtitle: '${widget.fretboardMappings.length} mapped structures prepared',
+                child: _buildFretboardMappingContent(),
+              ),
+              const SizedBox(height: 10),
+              _buildGenerateSection(
+                sectionId: 'event_manager',
+                title: 'Event Manager',
+                subtitle: '${widget.eventManagerResults.length} optimized lines prepared',
+                child: _buildEventManagerContent(),
+              ),
+              const SizedBox(height: 10),
+              _buildGenerateSection(
+                sectionId: 'chord_voicing',
+                title: 'Chord Voicing',
+                subtitle: '${widget.chordVoicingResults.length} voiced lines prepared',
+                child: _buildChordVoicingContent(),
+              ),
+              const SizedBox(height: 10),
+              _buildGenerateSection(
+                sectionId: 'generated_tabs',
+                title: 'Generated Tabs',
+                subtitle: '${widget.generatedTabs.length} generated tab outputs prepared',
+                child: _buildGeneratedTabsContent(),
               ),
             ],
           ),
@@ -1499,6 +1608,131 @@ class _GeneratePanelState extends State<_GeneratePanel> {
           ),
         );
       }).toList(),
+    );
+  }
+
+  Widget _buildFretboardMappingContent() {
+    if (widget.fretboardMappings.isEmpty) {
+      return Text(
+        'No fretboard mapping results available yet.',
+        style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+      );
+    }
+
+    return Column(
+      children: widget.fretboardMappings.map((item) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _TranslateBox(
+            title: item.title,
+            child: _buildTextWrap(
+              item.eventSummaries.isEmpty
+                  ? ['No mapped events']
+                  : item.eventSummaries,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildEventManagerContent() {
+    if (widget.eventManagerResults.isEmpty) {
+      return Text(
+        'No optimized playable events available yet.',
+        style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+      );
+    }
+
+    return Column(
+      children: widget.eventManagerResults.map((item) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _TranslateBox(
+            title: '${item.title} • cost ${item.totalCost}',
+            child: _buildTextWrap(
+              item.events.isEmpty ? ['No playable events'] : item.events,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildChordVoicingContent() {
+    if (widget.chordVoicingResults.isEmpty) {
+      return Text(
+        'No chord voicing results available yet.',
+        style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+      );
+    }
+
+    return Column(
+      children: widget.chordVoicingResults.map((item) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _TranslateBox(
+            title: item.title,
+            child: _buildTextWrap(
+              item.events.isEmpty ? ['No voiced chord events'] : item.events,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildGeneratedTabsContent() {
+    if (widget.generatedTabs.isEmpty) {
+      return Text(
+        'No generated tab result available yet.',
+        style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ElevatedButton(
+          onPressed: widget.generatedTabResults.isEmpty || widget.session == null
+              ? null
+              : () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ResultPage(
+                  session: widget.session!,
+                  generatedTabs: widget.generatedTabResults,
+                ),
+              ),
+            );
+          },
+          child: const Text('Open Result Page'),
+        ),
+        const SizedBox(height: 12),
+
+        ...widget.generatedTabs.map((item) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _TranslateBox(
+              title: item.mode,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Columns: ${item.columns}', style: AppTextStyles.caption),
+                  Text('Fretboard Frames: ${item.fretboardFrames}', style: AppTextStyles.caption),
+                  Text('Export Pages: ${item.exportPages}', style: AppTextStyles.caption),
+                  const SizedBox(height: 8),
+                  Text(
+                    item.firstEventSummary,
+                    style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+      ],
     );
   }
 

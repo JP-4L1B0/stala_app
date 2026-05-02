@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +9,8 @@ import 'core/theme/app_colors.dart';
 import 'core/theme/app_text_styles.dart';
 import 'data/recent_items_repository.dart';
 import 'models/saved_item_data.dart';
+import 'result_page.dart';
+import 'services/generation_service.dart';
 
 class AccessibilityServiceHelper {
   static const MethodChannel _channel =
@@ -67,7 +71,6 @@ class _MainPanel01PageState extends State<MainPanel01Page>
   void initState() {
     super.initState();
 
-    /// Subtle up-and-down floating animation for the camera button.
     _cameraButtonController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1400),
@@ -329,20 +332,37 @@ class _HomeTabView extends StatefulWidget {
 }
 
 class _HomeTabViewState extends State<_HomeTabView> {
+  @override
+  void initState() {
+    super.initState();
+    _loadItems();
+  }
+
+  Future<void> _loadItems() async {
+    final items = await RecentItemsRepository.getRecentItems();
+
+    if (!mounted) return;
+
+    setState(() {
+      _items = items;
+      _isLoading = false;
+    });
+  }
+
   bool _showAll = false;
 
-  late final List<SavedItemData> _temporaryPlaceholderItems =
-  RecentItemsRepository.getTemporaryRecentItems();
+  List<SavedItemData> _items = [];
+  bool _isLoading = true;
 
   List<SavedItemData> get _visibleItems {
-    return _showAll
-        ? _temporaryPlaceholderItems
-        : _temporaryPlaceholderItems.take(4).toList();
+    return _showAll ? _items : _items.take(4).toList();
   }
 
   void _handleRename(int index) {
+    final item = _visibleItems[index];
+
     final controller = TextEditingController(
-      text: _temporaryPlaceholderItems[index].title,
+      text: item.title,
     );
 
     showDialog(
@@ -350,10 +370,7 @@ class _HomeTabViewState extends State<_HomeTabView> {
       builder: (context) {
         return AlertDialog(
           backgroundColor: AppColors.card,
-          title: Text(
-            'Rename File',
-            style: AppTextStyles.cardTitle,
-          ),
+          title: Text('Rename File', style: AppTextStyles.cardTitle),
           content: TextField(
             controller: controller,
             style: AppTextStyles.body,
@@ -382,24 +399,106 @@ class _HomeTabViewState extends State<_HomeTabView> {
 
                 if (updatedTitle.isNotEmpty) {
                   setState(() {
-                    _temporaryPlaceholderItems[index] =
-                        _temporaryPlaceholderItems[index].copyWith(
-                          title: updatedTitle,
-                        );
+                    final originalIndex =
+                    _items.indexWhere((saved) => saved.id == item.id);
+
+                    if (originalIndex != -1) {
+                      _items[originalIndex] =
+                          _items[originalIndex].copyWith(title: updatedTitle);
+                    }
                   });
                 }
 
                 Navigator.pop(context);
               },
-              child: Text(
-                'Save',
-                style: AppTextStyles.button,
-              ),
+              child: Text('Save', style: AppTextStyles.button),
             ),
           ],
         );
       },
     );
+  }
+
+  Future<void> _openSavedItem(SavedItemData item) async {
+    try {
+      final file = File(item.filePath);
+
+      final session = await RecentItemsRepository.loadSessionFromFile(file);
+
+      final generatedTabs = const GenerationService().generateAll(
+        results: session.tablatureResults,
+      );
+
+      if (!mounted) return;
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ResultPage(
+            session: session,
+            generatedTabs: generatedTabs,
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to open saved item: $error'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleDelete(SavedItemData item) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: AppColors.card,
+          title: Text('Delete File', style: AppTextStyles.cardTitle),
+          content: Text(
+            'Delete "${item.title}" from saved items?',
+            style: AppTextStyles.bodySecondary,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text('Cancel', style: AppTextStyles.button),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: AppColors.textPrimary,
+              ),
+              onPressed: () => Navigator.pop(context, true),
+              child: Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    await RecentItemsRepository.deleteItem(item);
+
+    if (!mounted) return;
+
+    setState(() {
+      _items.removeWhere((saved) => saved.id == item.id);
+    });
+  }
+
+  Future<void> _handlePin(SavedItemData item) async {
+    final updated = await RecentItemsRepository.togglePinned(_items, item);
+
+    if (!mounted) return;
+
+    setState(() {
+      _items = updated;
+    });
   }
 
   @override
@@ -419,7 +518,16 @@ class _HomeTabViewState extends State<_HomeTabView> {
         ),
         const SizedBox(height: 14),
         Expanded(
-          child: ListView.separated(
+          child: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : _visibleItems.isEmpty
+              ? Center(
+            child: Text(
+              'No saved items yet.',
+              style: AppTextStyles.bodySecondary,
+            ),
+          )
+              : ListView.separated(
             physics: const BouncingScrollPhysics(),
             itemCount: _visibleItems.length,
             separatorBuilder: (_, __) => const SizedBox(height: 10),
@@ -427,6 +535,9 @@ class _HomeTabViewState extends State<_HomeTabView> {
               return SavedListCard(
                 data: _visibleItems[index],
                 onEdit: () => _handleRename(index),
+                onDelete: () => _handleDelete(_visibleItems[index]),
+                onPin: () => _handlePin(_visibleItems[index]),
+                onTap: () => _openSavedItem(_visibleItems[index]),
               );
             },
           ),
@@ -440,100 +551,129 @@ class _HomeTabViewState extends State<_HomeTabView> {
 class SavedListCard extends StatelessWidget {
   final SavedItemData data;
   final VoidCallback onEdit;
+  final VoidCallback onDelete;
+  final VoidCallback onPin;
+  final VoidCallback? onTap;
 
   const SavedListCard({
     super.key,
     required this.data,
     required this.onEdit,
+    required this.onDelete,
+    required this.onPin,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 90,
-            alignment: Alignment.center,
-            child: Text(
-              data.fileType.replaceAll('.', '').toUpperCase(),
-              textAlign: TextAlign.center,
-              style: AppTextStyles.sectionTitle.copyWith(
-                fontSize: 24,
-                letterSpacing: 1,
-                color: AppColors.accent,
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 90,
+              alignment: Alignment.center,
+              child: Text(
+                data.fileType.replaceAll('.', '').toUpperCase(),
+                textAlign: TextAlign.center,
+                style: AppTextStyles.sectionTitle.copyWith(
+                  fontSize: 24,
+                  letterSpacing: 1,
+                  color: AppColors.accent,
+                ),
               ),
             ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: RichText(
-                        text: TextSpan(
-                          style: AppTextStyles.body.copyWith(height: 1.4),
-                          children: [
-                            TextSpan(
-                              text: 'Title: ',
-                              style: AppTextStyles.body.copyWith(
-                                color: AppColors.textSecondary,
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: RichText(
+                          text: TextSpan(
+                            style: AppTextStyles.body.copyWith(height: 1.4),
+                            children: [
+                              TextSpan(
+                                text: 'Title: ',
+                                style: AppTextStyles.body.copyWith(
+                                  color: AppColors.textSecondary,
+                                ),
                               ),
-                            ),
-                            TextSpan(
-                              text: data.title,
-                              style: AppTextStyles.body.copyWith(
-                                fontWeight: FontWeight.w600,
+                              TextSpan(
+                                text: data.title,
+                                style: AppTextStyles.body.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    TextButton(
-                      onPressed: onEdit,
-                      style: TextButton.styleFrom(
-                        minimumSize: Size.zero,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      child: Text(
-                        'Edit',
-                        style: AppTextStyles.caption.copyWith(
-                          fontStyle: FontStyle.italic,
+                      if (data.isPinned) ...[
+                        const SizedBox(width: 6),
+                        const Icon(
+                          Icons.push_pin_rounded,
+                          size: 14,
                           color: AppColors.accent,
                         ),
+                      ],
+                      PopupMenuButton<String>(
+                        icon: const Icon(
+                          Icons.more_vert_rounded,
+                          color: AppColors.textSecondary,
+                        ),
+                        color: AppColors.card,
+                        onSelected: (value) {
+                          if (value == 'pin') onPin();
+                          if (value == 'edit') onEdit();
+                          if (value == 'delete') onDelete();
+                        },
+                        itemBuilder: (context) => [
+                          PopupMenuItem(
+                            value: 'pin',
+                            child: Text(
+                              data.isPinned ? 'Unpin' : 'Pin',
+                              style: AppTextStyles.body,
+                            ),
+                          ),
+                          PopupMenuItem(
+                            value: 'edit',
+                            child: Text('Rename', style: AppTextStyles.body),
+                          ),
+                          PopupMenuItem(
+                            value: 'delete',
+                            child: Text('Delete', style: AppTextStyles.body),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Date created: ${data.createdAt}',
-                  style: AppTextStyles.body,
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Modified: ${data.subtitle}',
-                  style: AppTextStyles.bodySecondary,
-                ),
-              ],
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Date created: ${data.createdAt}',
+                    style: AppTextStyles.body,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Modified: ${data.subtitle}',
+                    style: AppTextStyles.bodySecondary,
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
