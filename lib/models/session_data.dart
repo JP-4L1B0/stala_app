@@ -1,19 +1,28 @@
+import 'tablature_result.dart';
+
 class SessionData {
   final String id;
   final String projectName;
 
+  // Images
   final String originalImagePath;
   final String? croppedImagePath;
   final String? detectionImagePath;
   final String? segmentationImagePath;
 
-  final List<dynamic> detectedSymbols;
-  final List<dynamic> pitchMappingResult;
-  final List<dynamic> tablatureResult;
-  final List<dynamic> fretboardEvents;
+  // Optional pipeline snapshot
+  final List<Map<String, dynamic>> detectedSymbols;
+  final List<Map<String, dynamic>> segmentationData;
+  final List<Map<String, dynamic>> pitchMappingData;
+  final List<Map<String, dynamic>> fretboardEvents;
 
+  // Final source-of-truth result
+  final List<TablatureResult> tablatureResults;
+
+  // Metadata
   final DateTime processingTimestamp;
   final String modelVersion;
+  final bool hasPipelineSnapshot;
 
   const SessionData({
     required this.id,
@@ -23,11 +32,13 @@ class SessionData {
     this.detectionImagePath,
     this.segmentationImagePath,
     this.detectedSymbols = const [],
-    this.pitchMappingResult = const [],
-    this.tablatureResult = const [],
+    this.segmentationData = const [],
+    this.pitchMappingData = const [],
     this.fretboardEvents = const [],
+    this.tablatureResults = const [],
     required this.processingTimestamp,
     required this.modelVersion,
+    this.hasPipelineSnapshot = false,
   });
 
   SessionData copyWith({
@@ -37,12 +48,14 @@ class SessionData {
     String? croppedImagePath,
     String? detectionImagePath,
     String? segmentationImagePath,
-    List<dynamic>? detectedSymbols,
-    List<dynamic>? pitchMappingResult,
-    List<dynamic>? tablatureResult,
-    List<dynamic>? fretboardEvents,
+    List<Map<String, dynamic>>? detectedSymbols,
+    List<Map<String, dynamic>>? segmentationData,
+    List<Map<String, dynamic>>? pitchMappingData,
+    List<Map<String, dynamic>>? fretboardEvents,
+    List<TablatureResult>? tablatureResults,
     DateTime? processingTimestamp,
     String? modelVersion,
+    bool? hasPipelineSnapshot,
   }) {
     return SessionData(
       id: id ?? this.id,
@@ -52,11 +65,13 @@ class SessionData {
       detectionImagePath: detectionImagePath ?? this.detectionImagePath,
       segmentationImagePath: segmentationImagePath ?? this.segmentationImagePath,
       detectedSymbols: detectedSymbols ?? this.detectedSymbols,
-      pitchMappingResult: pitchMappingResult ?? this.pitchMappingResult,
-      tablatureResult: tablatureResult ?? this.tablatureResult,
+      segmentationData: segmentationData ?? this.segmentationData,
+      pitchMappingData: pitchMappingData ?? this.pitchMappingData,
       fretboardEvents: fretboardEvents ?? this.fretboardEvents,
+      tablatureResults: tablatureResults ?? this.tablatureResults,
       processingTimestamp: processingTimestamp ?? this.processingTimestamp,
       modelVersion: modelVersion ?? this.modelVersion,
+      hasPipelineSnapshot: hasPipelineSnapshot ?? this.hasPipelineSnapshot,
     );
   }
 
@@ -68,29 +83,58 @@ class SessionData {
       'cropped_image_path': croppedImagePath,
       'detection_image_path': detectionImagePath,
       'segmentation_image_path': segmentationImagePath,
+
       'detected_symbols': detectedSymbols,
-      'pitch_mapping_result': pitchMappingResult,
-      'tablature_result': tablatureResult,
+      'segmentation_data': segmentationData,
+      'pitch_mapping_data': pitchMappingData,
       'fretboard_events': fretboardEvents,
+
+      'tablature_results': tablatureResults.map((r) => r.toJson()).toList(),
+
       'processing_timestamp': processingTimestamp.toIso8601String(),
       'model_version': modelVersion,
+      'has_pipeline_snapshot': hasPipelineSnapshot,
     };
   }
 
   factory SessionData.fromJson(Map<String, dynamic> json) {
     return SessionData(
-      id: json['id'] as String,
-      projectName: json['project_name'] as String,
-      originalImagePath: json['original_image_path'] as String,
-      croppedImagePath: json['cropped_image_path'] as String?,
-      detectionImagePath: json['detection_image_path'] as String?,
-      segmentationImagePath: json['segmentation_image_path'] as String?,
-      detectedSymbols: List<dynamic>.from(json['detected_symbols'] ?? const []),
-      pitchMappingResult: List<dynamic>.from(json['pitch_mapping_result'] ?? const []),
-      tablatureResult: List<dynamic>.from(json['tablature_result'] ?? const []),
-      fretboardEvents: List<dynamic>.from(json['fretboard_events'] ?? const []),
-      processingTimestamp: DateTime.parse(json['processing_timestamp'] as String),
-      modelVersion: json['model_version'] as String,
+      id: json['id']?.toString() ?? '',
+      projectName: json['project_name']?.toString() ?? 'Untitled',
+      originalImagePath: json['original_image_path']?.toString() ?? '',
+      croppedImagePath: json['cropped_image_path']?.toString(),
+      detectionImagePath: json['detection_image_path']?.toString(),
+      segmentationImagePath: json['segmentation_image_path']?.toString(),
+
+      detectedSymbols: _mapList(json['detected_symbols']),
+      segmentationData: _mapList(json['segmentation_data']),
+      pitchMappingData: _mapList(json['pitch_mapping_data']),
+      fretboardEvents: _mapList(json['fretboard_events']),
+
+      tablatureResults: (json['tablature_results'] as List? ?? const [])
+          .map((item) {
+            return TablatureResult.fromJson(
+              Map<String, dynamic>.from(item as Map),
+            );
+          })
+          .toList(),
+
+      processingTimestamp: DateTime.tryParse(
+            json['processing_timestamp']?.toString() ?? '',
+          ) ??
+          DateTime.now(),
+
+      modelVersion: json['model_version']?.toString() ?? 'unknown',
+      hasPipelineSnapshot: json['has_pipeline_snapshot'] == true,
     );
+  }
+
+  static List<Map<String, dynamic>> _mapList(dynamic value) {
+    if (value is! List) return const [];
+
+    return value
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
   }
 }

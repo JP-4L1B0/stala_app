@@ -1,48 +1,104 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
+
 import '../models/saved_item_data.dart';
 import '../models/session_data.dart';
 
 class RecentItemsRepository {
   RecentItemsRepository._();
 
-  static List<SavedItemData> getTemporaryRecentItems() {
-    return List.generate(
-      10,
-          (index) => SavedItemData(
-        id: 'recent_$index',
-        title: 'Unnamed_${(index + 1).toString().padLeft(2, '0')}',
-        subtitle: _generateModifiedText(index),
-        fileType: index.isEven ? '.stala' : '.zip',
-        createdAt: _generatePlaceholderDate(index),
-      ),
+  static Future<Directory> _documentsDirectory() {
+    return getApplicationDocumentsDirectory();
+  }
+
+  static Future<List<SavedItemData>> getRecentItems() async {
+    final directory = await _documentsDirectory();
+
+    if (!await directory.exists()) {
+      return const [];
+    }
+
+    final files = directory
+        .listSync()
+        .whereType<File>()
+        .where((file) => file.path.toLowerCase().endsWith('.stala'))
+        .toList();
+
+    files.sort((a, b) {
+      return b.lastModifiedSync().compareTo(a.lastModifiedSync());
+    });
+
+    final items = <SavedItemData>[];
+
+    for (final file in files) {
+      try {
+        final session = await loadSessionFromFile(file);
+        items.add(
+          SavedItemData.fromFile(
+            file: file,
+            session: session,
+          ),
+        );
+      } catch (_) {
+        // Skip corrupted or old-format files.
+      }
+    }
+
+    return items;
+  }
+
+  static Future<SessionData> loadSessionFromFile(File file) async {
+    final content = await file.readAsString();
+    final decoded = jsonDecode(content);
+
+    final sessionJson = decoded['session'];
+
+    if (sessionJson is! Map) {
+      throw const FormatException('Invalid .stala file: missing session data.');
+    }
+
+    return SessionData.fromJson(
+      Map<String, dynamic>.from(sessionJson),
     );
   }
 
-  static List<SavedItemData> fromSessions(
-      List<SessionData> sessions, {
-        String fileType = '.stala',
-      }) {
-    return sessions
-        .map(
-          (session) => SavedItemData.fromSession(
-        session,
-        fileType: fileType,
-      ),
-    )
-        .toList();
-  }
+  static Future<void> deleteItem(SavedItemData item) async {
+    final file = File(item.filePath);
 
-  static String _generatePlaceholderDate(int index) {
-    final now = DateTime.now().subtract(Duration(days: index));
-    final day = now.day.toString().padLeft(2, '0');
-    final month = now.month.toString().padLeft(2, '0');
-    final year = now.year.toString();
-    return '$day/$month/$year';
-  }
-
-  static String _generateModifiedText(int index) {
-    if (index < 5) {
-      return '${(index + 1) * 7} min ago';
+    if (await file.exists()) {
+      await file.delete();
     }
-    return '${index - 3} h ago';
+  }
+
+  static Future<List<SavedItemData>> togglePinned(
+      List<SavedItemData> items,
+      SavedItemData target,
+      ) async {
+    return items.map((item) {
+      if (item.id == target.id) {
+        return item.copyWith(isPinned: !item.isPinned);
+      }
+      return item;
+    }).toList()
+      ..sort((a, b) {
+        if (a.isPinned != b.isPinned) {
+          return a.isPinned ? -1 : 1;
+        }
+        return b.modifiedAt.compareTo(a.modifiedAt);
+      });
+  }
+
+  static Future<List<SavedItemData>> searchItems(String query) async {
+    final items = await getRecentItems();
+    final normalized = query.trim().toLowerCase();
+
+    if (normalized.isEmpty) return items;
+
+    return items.where((item) {
+      return item.title.toLowerCase().contains(normalized) ||
+          item.fileType.toLowerCase().contains(normalized);
+    }).toList();
   }
 }
