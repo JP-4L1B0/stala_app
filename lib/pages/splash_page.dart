@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import '../panel01.dart';
+import '../menu_page.dart';
 
 /// SplashPage
 ///
