@@ -14,6 +14,10 @@ import android.graphics.Matrix
 import androidx.exifinterface.media.ExifInterface
 import android.graphics.Canvas
 import android.graphics.Color
+import org.opencv.android.Utils
+import org.opencv.core.Mat
+import org.opencv.imgproc.Imgproc
+import org.opencv.core.Core
 
 class OnnxDetector(private val context: Context) {
 
@@ -70,11 +74,17 @@ class OnnxDetector(private val context: Context) {
         )
 
         return try {
+            val enhancedBitmap = applyClaheEnhancement(originalBitmap)
+
             val resizedBitmap = letterboxBitmap(
-                originalBitmap,
+                enhancedBitmap,
                 MODEL_INPUT_WIDTH,
                 MODEL_INPUT_HEIGHT
             )
+
+            if (enhancedBitmap != originalBitmap) {
+                enhancedBitmap.recycle()
+            }
 
             val preprocessedImagePath = saveBitmapToCache(
                 resizedBitmap,
@@ -162,6 +172,7 @@ class OnnxDetector(private val context: Context) {
                     )
                 }
 
+                @Suppress("UNCHECKED_CAST")
                 val boxes = output[0].value as Array<FloatArray>
                 val labels = output[1].value as LongArray
                 val scores = output[2].value as FloatArray
@@ -360,6 +371,55 @@ class OnnxDetector(private val context: Context) {
         Log.d(TAG, "letterboxBitmap: source=${source.width}x${source.height} resized=${resizedWidth}x${resizedHeight} placedAt=($left,$top)")
 
         return outputBitmap
+    }
+
+    private fun applyClaheEnhancement(source: Bitmap): Bitmap {
+        return try {
+            val srcMat = Mat()
+            val labMat = Mat()
+            val enhancedLabMat = Mat()
+            val dstMat = Mat()
+
+            Utils.bitmapToMat(source, srcMat)
+
+            Imgproc.cvtColor(srcMat, labMat, Imgproc.COLOR_RGB2Lab)
+
+            val channels = mutableListOf<Mat>()
+            Core.split(labMat, channels)
+
+            val clahe = Imgproc.createCLAHE(
+                2.0, // clipLimit
+                org.opencv.core.Size(8.0, 8.0)
+            )
+
+            clahe.apply(channels[0], channels[0])
+
+            Core.merge(channels, enhancedLabMat)
+
+            Imgproc.cvtColor(enhancedLabMat, dstMat, Imgproc.COLOR_Lab2RGB)
+
+            val output = Bitmap.createBitmap(
+                source.width,
+                source.height,
+                Bitmap.Config.ARGB_8888
+            )
+
+            Utils.matToBitmap(dstMat, output)
+
+            srcMat.release()
+            labMat.release()
+            enhancedLabMat.release()
+            dstMat.release()
+            channels.forEach { it.release() }
+            clahe.collectGarbage()
+
+            Log.d(TAG, "applyClaheEnhancement: success")
+
+            output
+        } catch (e: Exception) {
+            Log.e(TAG, "applyClaheEnhancement: failed, using original bitmap", e)
+            source
+        }
     }
 
     private fun saveBitmapToCache(bitmap: Bitmap, fileName: String): String {
