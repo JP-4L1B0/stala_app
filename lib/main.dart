@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'pages/splash_page.dart';
+import 'app_restart_widget.dart';
 
 void main() {
-  runApp(const STALAApp());
+  runApp(
+    const RestartWidget(
+      child: STALAApp(),
+    ),
+  );
 }
 
 class STALAApp extends StatelessWidget {
