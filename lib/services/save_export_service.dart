@@ -310,7 +310,18 @@ class SaveExportService {
 
     final zipPath = '${directory.path}/${safeTitle}_$timestamp.zip';
 
-    final stalaFile = await saveStalaFile(session: session);
+    final tempStalaFile = File('${directory.path}/${safeTitle}_temp_$timestamp.stala');
+
+    final data = {
+      'format': 'stala',
+      'formatVersion': 2,
+      'exportedAt': DateTime.now().toIso8601String(),
+      'session': session.toJson(),
+    };
+
+    await tempStalaFile.writeAsString(
+      const JsonEncoder.withIndent('  ').convert(data),
+    );
 
     final generatedTabs = GenerationService().generateAll(
       results: session.tablatureResults,
@@ -327,7 +338,7 @@ class SaveExportService {
     encoder.create(zipPath);
 
     encoder.addFile(
-      stalaFile,
+      tempStalaFile,
       'project.stala',
     );
 
@@ -339,6 +350,10 @@ class SaveExportService {
     }
 
     encoder.close();
+
+    if (await tempStalaFile.exists()) {
+      await tempStalaFile.delete();
+    }
 
     return File(zipPath);
   }

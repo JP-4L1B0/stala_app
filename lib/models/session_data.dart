@@ -24,6 +24,11 @@ class SessionData {
   final String modelVersion;
   final bool hasPipelineSnapshot;
 
+  // Auto-save
+  final String? autoSavedFilePath;
+  final DateTime? autoSavedAt;
+  final bool autoSaveFailed;
+
   const SessionData({
     required this.id,
     required this.projectName,
@@ -39,6 +44,9 @@ class SessionData {
     required this.processingTimestamp,
     required this.modelVersion,
     this.hasPipelineSnapshot = false,
+    this.autoSavedFilePath,
+    this.autoSavedAt,
+    this.autoSaveFailed = false,
   });
 
   SessionData copyWith({
@@ -56,6 +64,9 @@ class SessionData {
     DateTime? processingTimestamp,
     String? modelVersion,
     bool? hasPipelineSnapshot,
+    String? autoSavedFilePath,
+    DateTime? autoSavedAt,
+    bool? autoSaveFailed,
   }) {
     return SessionData(
       id: id ?? this.id,
@@ -72,6 +83,9 @@ class SessionData {
       processingTimestamp: processingTimestamp ?? this.processingTimestamp,
       modelVersion: modelVersion ?? this.modelVersion,
       hasPipelineSnapshot: hasPipelineSnapshot ?? this.hasPipelineSnapshot,
+      autoSavedFilePath: autoSavedFilePath ?? this.autoSavedFilePath,
+      autoSavedAt: autoSavedAt ?? this.autoSavedAt,
+      autoSaveFailed: autoSaveFailed ?? this.autoSaveFailed,
     );
   }
 
@@ -94,6 +108,10 @@ class SessionData {
       'processing_timestamp': processingTimestamp.toIso8601String(),
       'model_version': modelVersion,
       'has_pipeline_snapshot': hasPipelineSnapshot,
+
+      'auto_saved_file_path': autoSavedFilePath,
+      'auto_saved_at': autoSavedAt?.toIso8601String(),
+      'auto_save_failed': autoSaveFailed,
     };
   }
 
@@ -126,6 +144,10 @@ class SessionData {
 
       modelVersion: json['model_version']?.toString() ?? 'unknown',
       hasPipelineSnapshot: json['has_pipeline_snapshot'] == true,
+
+      autoSavedFilePath: json['auto_saved_file_path']?.toString(),
+      autoSavedAt: DateTime.tryParse(json['auto_saved_at']?.toString() ?? ''),
+      autoSaveFailed: json['auto_save_failed'] == true,
     );
   }
 

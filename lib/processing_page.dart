@@ -21,6 +21,8 @@ import 'services/event_manager_service.dart';
 import 'services/chord_voicing_service.dart';
 import 'services/tablature_result_adapter.dart';
 import 'services/generation_service.dart';
+import 'services/save_export_service.dart';
+import 'data/app_settings_repository.dart';
 
 /// Processing screen shown after the image crop is confirmed.
 ///
@@ -113,6 +115,10 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
   final ChordVoicingService _chordVoicingService =
   ChordVoicingService();
+
+  final SaveExportService _saveExportService = const SaveExportService();
+  final AppSettingsRepository _appSettingsRepository =
+  const AppSettingsRepository();
 
   Map<String, dynamic>? _processingResult;
 
@@ -554,7 +560,33 @@ class _ProcessingPageState extends State<ProcessingPage> {
             );
           }).toList();
 
-          response['sessionData'] = session;
+          /// Apply an auto-save to the session data
+          SessionData finalSession = session;
+
+          try {
+            final autoSaveEnabled =
+            await _appSettingsRepository.getAutoSaveEnabled();
+
+            if (autoSaveEnabled) {
+              final savedFile = await _saveExportService.saveStalaFile(
+                session: session,
+              );
+
+              finalSession = session.copyWith(
+                autoSavedFilePath: savedFile.path,
+                autoSavedAt: DateTime.now(),
+                autoSaveFailed: false,
+              );
+            }
+          } catch (error) {
+            finalSession = session.copyWith(
+              autoSaveFailed: true,
+            );
+
+            debugPrint('AUTO_SAVE_FAILED: $error');
+          }
+
+          response['sessionData'] = finalSession;
           response['generatedTabResults'] = generatedTabs;
           response['generatedTabViewItems'] = generatedTabViewItems;
 
@@ -755,7 +787,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
         ),
       );
     } else {
-      Navigator.push(
+      final shouldRefreshHome = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
           builder: (_) => ResultPage(
@@ -764,6 +796,12 @@ class _ProcessingPageState extends State<ProcessingPage> {
           ),
         ),
       );
+
+      if (!mounted) return;
+
+      if (shouldRefreshHome == true) {
+        Navigator.pop(context, true);
+      }
     }
   }
 

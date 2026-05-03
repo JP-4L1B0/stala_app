@@ -28,6 +28,7 @@ class _ResultPageState extends State<ResultPage> {
   int _currentColumnIndex = 0;
   bool _isPlaying = false;
   Timer? _timer;
+  bool _didSave = false;
 
   GeneratedTabResult get _currentTab => widget.generatedTabs[_selectedModeIndex];
 
@@ -123,6 +124,14 @@ class _ResultPageState extends State<ResultPage> {
     );
   }
 
+  bool get _shouldRefreshRecent {
+    return _didSave || widget.session.autoSavedAt != null;
+  }
+
+  void _exitResultPage() {
+    Navigator.pop(context, _shouldRefreshRecent);
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.generatedTabs.isEmpty) {
@@ -142,6 +151,10 @@ class _ResultPageState extends State<ResultPage> {
       appBar: AppBar(
         backgroundColor: AppColors.surface,
         elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_rounded),
+          onPressed: _exitResultPage,
+        ),
         title: Text(
           'Result',
           style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
@@ -151,6 +164,7 @@ class _ResultPageState extends State<ResultPage> {
         child: Column(
           children: [
             _buildTopDropdown(),
+            _buildAutoSaveStatus(),
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.all(16),
@@ -221,6 +235,40 @@ class _ResultPageState extends State<ResultPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildAutoSaveStatus() {
+    final session = widget.session;
+
+    if (session.autoSavedAt == null && !session.autoSaveFailed) {
+      return const SizedBox.shrink();
+    }
+
+    final isFailed = session.autoSaveFailed;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isFailed ? AppColors.warning : AppColors.success,
+          ),
+        ),
+        child: Text(
+          isFailed
+              ? 'Auto-save failed. Manual export is still available.'
+              : 'Auto-saved successfully.',
+          style: AppTextStyles.caption.copyWith(
+            color: isFailed ? AppColors.warning : AppColors.success,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
       ),
     );
   }
@@ -316,7 +364,7 @@ class _ResultPageState extends State<ResultPage> {
       children: [
         Expanded(
           child: OutlinedButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: _exitResultPage,
             child: const Text('Back'),
           ),
         ),
@@ -381,9 +429,12 @@ class _ResultPageState extends State<ResultPage> {
 
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('Saved ${files.length} PNG page(s).'),
+                      content: Text('Saved PNG page(s) successfully.'),
                     ),
                   );
+                  setState(() {
+                    _didSave = true;
+                  });
                 },
               ),
               ListTile(
@@ -400,9 +451,12 @@ class _ResultPageState extends State<ResultPage> {
 
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('Saved .stala file: ${file.path}'),
+                      content: Text('Saved .stala file successfully.'),
                     ),
                   );
+                  setState(() {
+                    _didSave = true;
+                  });
                 },
               ),
               ListTile(
@@ -420,9 +474,12 @@ class _ResultPageState extends State<ResultPage> {
 
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('Saved ZIP: ${file.path}'),
+                      content: Text('Saved ZIP package successfully.'),
                     ),
                   );
+                  setState(() {
+                    _didSave = true;
+                  });
                 },
               ),
             ],

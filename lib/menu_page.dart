@@ -105,13 +105,21 @@ class _MainPanel01PageState extends State<MainPanel01Page>
     });
   }
 
-  /// Opens Panel 02, which now contains the live camera workflow.
-  void _openCameraPanel() {
-    Navigator.of(context).push(
+  /// Opens the camera section.
+  Future<void> _openCameraPanel() async {
+    final shouldRefreshHome = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => const CameraPanelPage(),
       ),
     );
+
+    if (!mounted) return;
+
+    if (shouldRefreshHome == true) {
+      setState(() {
+        _selectedTab = PanelTab.home;
+      });
+    }
   }
 
   @override
@@ -438,7 +446,7 @@ class _HomeTabViewState extends State<_HomeTabView> {
 
       if (!mounted) return;
 
-      Navigator.push(
+      final didSave = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
           builder: (_) => ResultPage(
@@ -447,6 +455,10 @@ class _HomeTabViewState extends State<_HomeTabView> {
           ),
         ),
       );
+
+      if (didSave == true) {
+        await _loadItems();
+      }
     } catch (error) {
       if (!mounted) return;
 
@@ -820,7 +832,7 @@ class _SearchTabViewState extends State<_SearchTabView> {
                   border: Border.all(color: AppColors.border),
                 ),
                 child: Text(
-                  'Internal Storage / STALA / saved, photo, zip',
+                  'App Storage / STALA / saved, photo, zip',
                   style: AppTextStyles.bodySecondary,
                 ),
               ),

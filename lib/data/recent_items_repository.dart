@@ -9,12 +9,19 @@ import '../models/session_data.dart';
 class RecentItemsRepository {
   RecentItemsRepository._();
 
-  static Future<Directory> _documentsDirectory() {
-    return getApplicationDocumentsDirectory();
+  static Future<Directory> _savedDirectory() async {
+    final baseDir = await getApplicationDocumentsDirectory();
+    final savedDir = Directory('${baseDir.path}/Stala/saved');
+
+    if (!await savedDir.exists()) {
+      await savedDir.create(recursive: true);
+    }
+
+    return savedDir;
   }
 
   static Future<List<SavedItemData>> getRecentItems() async {
-    final directory = await _documentsDirectory();
+    final directory = await _savedDirectory();
 
     if (!await directory.exists()) {
       return const [];
