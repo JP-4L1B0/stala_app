@@ -327,27 +327,7 @@ object DocumentProcessor {
         val canvas = android.graphics.Canvas(outputBitmap)
         canvas.drawBitmap(bitmap, matrix, null)
 
-        val finalBitmap =
-            if (outputBitmap.width > outputBitmap.height) {
-                val rotationMatrix = android.graphics.Matrix().apply {
-                    postRotate(90f)
-                }
-
-                val rotatedBitmap = Bitmap.createBitmap(
-                    outputBitmap,
-                    0,
-                    0,
-                    outputBitmap.width,
-                    outputBitmap.height,
-                    rotationMatrix,
-                    true
-                )
-
-                outputBitmap.recycle()
-                rotatedBitmap
-            } else {
-                outputBitmap
-            }
+        val finalBitmap = outputBitmap
 
         val outputFile = File(
             sourceFile.parentFile,
