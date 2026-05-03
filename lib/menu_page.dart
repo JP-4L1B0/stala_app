@@ -8,9 +8,12 @@ import 'camera_panel.dart';
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_text_styles.dart';
 import 'data/recent_items_repository.dart';
+import 'data/debug_settings_repository.dart';
 import 'models/saved_item_data.dart';
 import 'result_page.dart';
 import 'services/generation_service.dart';
+import 'app_restart_widget.dart';
+import 'data/app_settings_repository.dart';
 
 class AccessibilityServiceHelper {
   static const MethodChannel _channel =
@@ -339,6 +342,10 @@ class _HomeTabViewState extends State<_HomeTabView> {
   }
 
   Future<void> _loadItems() async {
+    setState(() {
+      _isLoading = true;
+    });
+
     final items = await RecentItemsRepository.getRecentItems();
 
     if (!mounted) return;
@@ -518,28 +525,42 @@ class _HomeTabViewState extends State<_HomeTabView> {
         ),
         const SizedBox(height: 14),
         Expanded(
-          child: _isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : _visibleItems.isEmpty
-              ? Center(
-            child: Text(
-              'No saved items yet.',
-              style: AppTextStyles.bodySecondary,
+          child: RefreshIndicator(
+            onRefresh: _loadItems,
+            child: _isLoading
+                ? ListView.separated(
+              physics: const AlwaysScrollableScrollPhysics(),
+              itemCount: 4,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (_, __) => const _SavedItemSkeletonCard(),
+            )
+                : _visibleItems.isEmpty
+                ? ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                const SizedBox(height: 120),
+                Center(
+                  child: Text(
+                    'No saved items yet.',
+                    style: AppTextStyles.bodySecondary,
+                  ),
+                ),
+              ],
+            )
+                : ListView.separated(
+              physics: const AlwaysScrollableScrollPhysics(),
+              itemCount: _visibleItems.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (context, index) {
+                return SavedListCard(
+                  data: _visibleItems[index],
+                  onEdit: () => _handleRename(index),
+                  onDelete: () => _handleDelete(_visibleItems[index]),
+                  onPin: () => _handlePin(_visibleItems[index]),
+                  onTap: () => _openSavedItem(_visibleItems[index]),
+                );
+              },
             ),
-          )
-              : ListView.separated(
-            physics: const BouncingScrollPhysics(),
-            itemCount: _visibleItems.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 10),
-            itemBuilder: (context, index) {
-              return SavedListCard(
-                data: _visibleItems[index],
-                onEdit: () => _handleRename(index),
-                onDelete: () => _handleDelete(_visibleItems[index]),
-                onPin: () => _handlePin(_visibleItems[index]),
-                onTap: () => _openSavedItem(_visibleItems[index]),
-              );
-            },
           ),
         ),
       ],
@@ -679,41 +700,267 @@ class SavedListCard extends StatelessWidget {
   }
 }
 
-/// ------------------------------------------------------------
-/// SEARCH TAB CONTENT
-/// ------------------------------------------------------------
-class _SearchTabView extends StatelessWidget {
+class _SavedItemSkeletonCard extends StatelessWidget {
+  const _SavedItemSkeletonCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 112,
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      decoration: BoxDecoration(
+        color: AppColors.card.withOpacity(0.55),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 90,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppColors.backgroundSecondary,
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _SkeletonLine(widthFactor: 0.75),
+                const SizedBox(height: 12),
+                _SkeletonLine(widthFactor: 0.55),
+                const SizedBox(height: 12),
+                _SkeletonLine(widthFactor: 0.40),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SkeletonLine extends StatelessWidget {
+  final double widthFactor;
+
+  const _SkeletonLine({
+    required this.widthFactor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return FractionallySizedBox(
+      widthFactor: widthFactor,
+      alignment: Alignment.centerLeft,
+      child: Container(
+        height: 12,
+        decoration: BoxDecoration(
+          color: AppColors.backgroundSecondary,
+          borderRadius: BorderRadius.circular(999),
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchTabView extends StatefulWidget {
   const _SearchTabView({super.key});
+
+  @override
+  State<_SearchTabView> createState() => _SearchTabViewState();
+}
+
+class _SearchTabViewState extends State<_SearchTabView> {
+  _SearchPanel? _openPanel = _SearchPanel.local;
+
+  String _cloudProvider = 'Google Drive';
+
+  void _togglePanel(_SearchPanel panel) {
+    setState(() {
+      _openPanel = _openPanel == panel ? null : panel;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return ListView(
       key: const ValueKey('search-content'),
       physics: const BouncingScrollPhysics(),
-      children: const [
-        _SectionHeader(
+      children: [
+        const _SectionHeader(
           title: 'Local and Online',
           actionText: 'Browse',
         ),
-        SizedBox(height: 14),
-        _InfoCard(
+        const SizedBox(height: 14),
+
+        _ExpandableSettingsCard(
           title: 'Local Storage',
-          subtitle: 'Browse files stored directly on this device.',
+          subtitle: 'Manage where STALA saves local files.',
           icon: Icons.phone_android_outlined,
+          isExpanded: _openPanel == _SearchPanel.local,
+          onTap: () => _togglePanel(_SearchPanel.local),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Default Save Directory',
+                style: AppTextStyles.body.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.card,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Text(
+                  'Internal Storage / STALA / saved, photo, zip',
+                  style: AppTextStyles.bodySecondary,
+                ),
+              ),
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Custom folder picker will be added later.'),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.folder_open_rounded),
+                label: const Text('Browse Folder'),
+              ),
+            ],
+          ),
         ),
-        SizedBox(height: 10),
-        _InfoCard(
+
+        const SizedBox(height: 10),
+
+        _ExpandableSettingsCard(
           title: 'Cloud Backup',
-          subtitle: 'Open synced documents and online backups.',
+          subtitle: 'Prepare cloud storage connection settings.',
           icon: Icons.cloud_outlined,
-        ),
-        SizedBox(height: 10),
-        _InfoCard(
-          title: 'Shared Vaults',
-          subtitle: 'Access folders shared between local and cloud sources.',
-          icon: Icons.folder_shared_outlined,
+          isExpanded: _openPanel == _SearchPanel.cloud,
+          onTap: () => _togglePanel(_SearchPanel.cloud),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Cloud Provider',
+                style: AppTextStyles.body.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.card,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _cloudProvider,
+                    dropdownColor: AppColors.card,
+                    style: AppTextStyles.body,
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'Google Drive',
+                        child: Text('Google Drive'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'OneDrive',
+                        child: Text('OneDrive'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'Dropbox',
+                        child: Text('Dropbox'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'Custom Link',
+                        child: Text('Custom Link'),
+                      ),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() {
+                        _cloudProvider = value;
+                      });
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _StorageTextField(
+                label: 'Account / Email',
+                hint: 'example@email.com',
+              ),
+              const SizedBox(height: 10),
+              _StorageTextField(
+                label: 'Folder / Link',
+                hint: 'Paste cloud folder link or path',
+              ),
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Cloud connection will be added later.'),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.cloud_sync_outlined),
+                label: const Text('Save Cloud Settings'),
+              ),
+            ],
+          ),
         ),
       ],
+    );
+  }
+}
+
+enum _SearchPanel {
+  local,
+  cloud,
+}
+
+class _StorageTextField extends StatelessWidget {
+  final String label;
+  final String hint;
+
+  const _StorageTextField({
+    required this.label,
+    required this.hint,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      style: AppTextStyles.body,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hint,
+        labelStyle: AppTextStyles.caption,
+        hintStyle: AppTextStyles.bodySecondary,
+        filled: true,
+        fillColor: AppColors.card,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: AppColors.border),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: AppColors.border),
+        ),
+      ),
     );
   }
 }
@@ -751,11 +998,20 @@ class _SettingsTabViewState extends State<_SettingsTabView>
   bool _notificationPermission = false;
   bool _accessibilityEnabled = false;
 
+  int _aboutTapCount = 0;
+  bool _showDebugControl = false;
+  bool _debugPageEnabled = false;
+
+  final DebugSettingsRepository _debugSettingsRepository =
+  const DebugSettingsRepository();
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadPermissionStates();
+    _loadDebugSettings();
+    _loadAppSettings();
   }
 
   @override
@@ -944,6 +1200,64 @@ class _SettingsTabViewState extends State<_SettingsTabView>
     );
   }
 
+  /// This load the debug settings
+  Future<void> _loadDebugSettings() async {
+    final enabled = await _debugSettingsRepository.isDebugPageEnabled();
+
+    if (!mounted) return;
+
+    setState(() {
+      _debugPageEnabled = enabled;
+      _showDebugControl = enabled;
+    });
+  }
+
+  Future<void> _toggleDebugPage(bool value) async {
+    // 1. Save setting (persistent)
+    await _debugSettingsRepository.setDebugPageEnabled(value);
+
+    if (!mounted) return;
+
+    // 2. Update UI state
+    setState(() {
+      _debugPageEnabled = value;
+      _showDebugControl = true;
+    });
+
+    // 3. Restart app (apply change globally)
+    RestartWidget.restartApp(context);
+  }
+
+  void _handleAboutTap() {
+    _aboutTapCount++;
+
+    if (_aboutTapCount >= 7) {
+      setState(() {
+        _showDebugControl = true;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Developer debug option unlocked.'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _loadAppSettings() async {
+    final autoSaveEnabled = await _appSettingsRepository.getAutoSaveEnabled();
+    final autoSaveToCloud = await _appSettingsRepository.getAutoSaveToCloud();
+    final saveFormat = await _appSettingsRepository.getSaveFormat();
+
+    if (!mounted) return;
+
+    setState(() {
+      _autoSaveEnabled = autoSaveEnabled;
+      _autoSaveToCloud = autoSaveToCloud;
+      _selectedSaveFormat = saveFormat;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -967,7 +1281,11 @@ class _SettingsTabViewState extends State<_SettingsTabView>
             children: [
               SwitchListTile(
                 value: _autoSaveEnabled,
-                onChanged: (value) {
+                onChanged: (value) async {
+                  await _appSettingsRepository.setAutoSaveEnabled(value);
+
+                  if (!mounted) return;
+
                   setState(() {
                     _autoSaveEnabled = value;
                   });
@@ -989,35 +1307,39 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                       style: AppTextStyles.body,
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    decoration: BoxDecoration(
-                      color: AppColors.backgroundSecondary,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: DropdownButton<String>(
-                      value: _selectedSaveFormat,
-                      dropdownColor: AppColors.backgroundSecondary,
-                      underline: const SizedBox(),
-                      iconEnabledColor: AppColors.textPrimary,
-                      style: AppTextStyles.body,
-                      items: const [
-                        DropdownMenuItem(
-                          value: 'zip',
-                          child: Text('zip'),
+                  Opacity(
+                    opacity: _autoSaveEnabled ? 1.0 : 0.5,
+                    child: IgnorePointer(
+                      ignoring: !_autoSaveEnabled,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          color: AppColors.backgroundSecondary,
+                          borderRadius: BorderRadius.circular(10),
                         ),
-                        DropdownMenuItem(
-                          value: 'stala',
-                          child: Text('stala'),
+                        child: DropdownButton<String>(
+                          value: _selectedSaveFormat,
+                          dropdownColor: AppColors.backgroundSecondary,
+                          underline: const SizedBox(),
+                          iconEnabledColor: AppColors.textPrimary,
+                          style: AppTextStyles.body,
+                          items: const [
+                            DropdownMenuItem(value: 'zip', child: Text('zip')),
+                            DropdownMenuItem(value: 'stala', child: Text('stala')),
+                          ],
+                          onChanged: (value) async {
+                            if (value == null) return;
+
+                            await _appSettingsRepository.setSaveFormat(value);
+
+                            if (!mounted) return;
+
+                            setState(() {
+                              _selectedSaveFormat = value;
+                            });
+                          },
                         ),
-                      ],
-                      onChanged: (value) {
-                        if (value != null) {
-                          setState(() {
-                            _selectedSaveFormat = value;
-                          });
-                        }
-                      },
+                      ),
                     ),
                   ),
                 ],
@@ -1025,11 +1347,17 @@ class _SettingsTabViewState extends State<_SettingsTabView>
               const SizedBox(height: 8),
               SwitchListTile(
                 value: _autoSaveToCloud,
-                onChanged: (value) {
+                onChanged: _autoSaveEnabled
+                    ? (value) async {
+                  await _appSettingsRepository.setAutoSaveToCloud(value);
+
+                  if (!mounted) return;
+
                   setState(() {
                     _autoSaveToCloud = value;
                   });
-                },
+                }
+                    : null, // disables switch
                 contentPadding: EdgeInsets.zero,
                 activeColor: AppColors.accent,
                 title: Text(
@@ -1037,8 +1365,30 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                   style: AppTextStyles.body,
                 ),
               ),
+
+              // DEBUG SWITCH (CORRECT POSITION)
+              if (_showDebugControl) ...[
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  value: _debugPageEnabled,
+                  onChanged: _toggleDebugPage,
+                  contentPadding: EdgeInsets.zero,
+                  activeColor: AppColors.accent,
+                  title: Text(
+                    'Enable Debug Page',
+                    style: AppTextStyles.body,
+                  ),
+                  subtitle: Text(
+                    _debugPageEnabled
+                        ? 'Debug page will appear before the Result page.'
+                        : 'Processing will go directly to the Result page.',
+                    style: AppTextStyles.bodySecondary,
+                  ),
+                ),
+              ],
             ],
           ),
+
         ),
         const SizedBox(height: 10),
 
@@ -1150,7 +1500,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
           icon: Icons.info_outline,
           isExpanded: _openPanel == _SettingsPanel.information,
           onTap: () => _togglePanel(_SettingsPanel.information),
-          child: const Column(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               _InfoDetailRow(
@@ -1164,10 +1514,13 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                 'A musical application for a GrandStaff (Piano) to Tablature (Guitar) translation.',
               ),
               SizedBox(height: 10),
-              _InfoDetailRow(
-                label: 'About Us',
-                value:
-                'A team of college students developing STALA as a music translation support application.',
+              GestureDetector(
+                onTap: _handleAboutTap,
+                child: const _InfoDetailRow(
+                  label: 'About Us',
+                  value:
+                  'A team of college students developing STALA as a music translation support application.',
+                ),
               ),
             ],
           ),
@@ -1175,6 +1528,9 @@ class _SettingsTabViewState extends State<_SettingsTabView>
       ],
     );
   }
+
+  final AppSettingsRepository _appSettingsRepository =
+  const AppSettingsRepository();
 }
 
 enum _SettingsPanel {

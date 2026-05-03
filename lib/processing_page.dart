@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'models/session_data.dart';
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_text_styles.dart';
+import 'data/debug_settings_repository.dart';
+import 'result_page.dart';
 import 'dummy_page.dart';
 import 'services/staff_segmentation_service.dart';
 import 'models/translation_group_models.dart';
@@ -645,7 +647,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
   }
 
   /// This helps verify that the response from native side is really being received.
-  void _showNextStepMessage() {
+  Future<void> _showNextStepMessage() async {
     if (_processingResult == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -722,33 +724,49 @@ class _ProcessingPageState extends State<ProcessingPage> {
       translateGroups,
     );
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => DummyPage(
-          croppedImagePath: croppedImagePath ?? widget.imagePath,
-          detectedImagePath:
-          detectedImagePath ?? croppedImagePath ?? widget.imagePath,
-          segmentedImagePath: segmentedImagePath,
-          detections: detections,
-          classItems: classItems,
-          translateGroups: translateGroups,
-          noteGroups: noteGroups,
-          grandStaffPairs: grandStaffPairs,
-          polyMonoResults: polyMonoResults,
-          musicInterpretations: musicInterpretations,
-          fretboardMappings: fretboardMappings,
-          eventManagerResults: eventManagerResults,
-          chordVoicingResults: chordVoicingResults,
-          session: session,
-          generatedTabResults: generatedTabResults,
-          generatedTabs: generatedTabs,
-          ledgerLines: ledgerLines,
-          generateOutputs: const [],
+    final isDebugEnabled =
+        await const DebugSettingsRepository().isDebugPageEnabled();
+
+    if (isDebugEnabled) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => DummyPage(
+            croppedImagePath: croppedImagePath ?? widget.imagePath,
+            detectedImagePath:
+            detectedImagePath ?? croppedImagePath ?? widget.imagePath,
+            segmentedImagePath: segmentedImagePath,
+            detections: detections,
+            classItems: classItems,
+            translateGroups: translateGroups,
+            noteGroups: noteGroups,
+            grandStaffPairs: grandStaffPairs,
+            polyMonoResults: polyMonoResults,
+            musicInterpretations: musicInterpretations,
+            fretboardMappings: fretboardMappings,
+            eventManagerResults: eventManagerResults,
+            chordVoicingResults: chordVoicingResults,
+            session: session,
+            generatedTabResults: generatedTabResults,
+            generatedTabs: generatedTabs,
+            ledgerLines: ledgerLines,
+            generateOutputs: const [],
+          ),
         ),
-      ),
-    );
+      );
+    } else {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ResultPage(
+            session: session,
+            generatedTabs: generatedTabResults,
+          ),
+        ),
+      );
+    }
   }
+
 
   String? _pickFirstNonEmptyString(
       Map<String, dynamic> source,

@@ -1505,6 +1505,16 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragEnd: triggerPostAdjustValidation,
 
                                         ),
+                                        if (cropValidationMessage != null)
+                                          Positioned(
+                                            left: 14,
+                                            right: 14,
+                                            bottom: 14,
+                                            child: _FloatingValidationMessage(
+                                              message: cropValidationMessage,
+                                              state: detectionState,
+                                            ),
+                                          ),
                                         if (isProcessing)
                                           Container(
                                             color: const Color(0x66000000),
@@ -1536,39 +1546,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (cropValidationMessage != null) ...[
-                            Container(
-                              width: double.infinity,
-                              margin: const EdgeInsets.only(bottom: 12),
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                color: AppColors.background,
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(color: AppColors.accentSoft),
-                              ),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Icon(
-                                    Icons.warning_amber_rounded,
-                                    color: AppColors.accentSoft,
-                                    size: 18,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      cropValidationMessage,
-                                      style:
-                                      AppTextStyles.bodySecondary.copyWith(
-                                        fontSize: 12.5,
-                                        color: AppColors.textPrimary,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
+
                           Row(
                             children: [
                               Expanded(
@@ -2309,4 +2287,71 @@ class _CameraGridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _FloatingValidationMessage extends StatelessWidget {
+  final String message;
+  final SheetValidationState state;
+
+  const _FloatingValidationMessage({
+    required this.message,
+    required this.state,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final Color accentColor;
+
+    switch (state) {
+      case SheetValidationState.strong:
+        accentColor = AppColors.success;
+        break;
+      case SheetValidationState.weak:
+        accentColor = AppColors.warning;
+        break;
+      case SheetValidationState.fail:
+        accentColor = AppColors.accentSoft;
+        break;
+    }
+
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 180),
+      opacity: 1,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.background.withOpacity(0.90),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: accentColor),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x66000000),
+              blurRadius: 12,
+              offset: Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.warning_amber_rounded,
+              color: accentColor,
+              size: 18,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                message,
+                style: AppTextStyles.bodySecondary.copyWith(
+                  fontSize: 12.5,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
