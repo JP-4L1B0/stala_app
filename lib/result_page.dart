@@ -5,6 +5,7 @@ import 'core/theme/app_colors.dart';
 import 'core/theme/app_text_styles.dart';
 import 'services/generation_service.dart';
 import 'services/save_export_service.dart';
+import 'services/audio_playback_service.dart';
 import 'models/session_data.dart';
 
 class ResultPage extends StatefulWidget {
@@ -22,6 +23,30 @@ class ResultPage extends StatefulWidget {
 }
 
 class _ResultPageState extends State<ResultPage> {
+  final AudioPlaybackService _audioService = AudioPlaybackService();
+
+  bool _isMuted = false;
+  List<int> _activeMidiNotes = [];
+
+  int _toMidiNote({
+    required int stringNumber,
+    required int fret,
+  }) {
+    const openStringMidi = {
+      6: 40, // E2
+      5: 45, // A2
+      4: 50, // D3
+      3: 55, // G3
+      2: 59, // B3
+      1: 64, // E4
+    };
+
+    final openNote = openStringMidi[stringNumber];
+    if (openNote == null) return 64;
+
+    return openNote + fret;
+  }
+
   final ScrollController _tabScrollController = ScrollController();
 
   int _selectedModeIndex = 0;
@@ -38,28 +63,53 @@ class _ResultPageState extends State<ResultPage> {
   @override
   void dispose() {
     _timer?.cancel();
+    _audioService.stopAll();
     _tabScrollController.dispose();
     super.dispose();
   }
 
-  void _changeMode(int index) {
+  Future<void> _changeMode(int index) async {
     _timer?.cancel();
+    await _stopActiveAudio();
+
+    if (!mounted) return;
+
     setState(() {
       _selectedModeIndex = index;
       _currentColumnIndex = 0;
       _isPlaying = false;
     });
+
     _scrollToCurrent();
   }
 
-  void _jumpToColumn(int index) {
+  Future<void> _jumpToColumn(int index) async {
     if (index < 0 || index >= _currentTab.columns.length) return;
+
+    _timer?.cancel();
+    await _stopActiveAudio();
+
+    if (!mounted) return;
 
     setState(() {
       _currentColumnIndex = index;
+      _isPlaying = false;
     });
 
     _scrollToCurrent();
+
+    // Play tapped note/chord once, unless muted.
+    await _playCurrentColumnAudio();
+
+    await Future.delayed(
+      Duration(
+        milliseconds: (_currentColumn.durationSeconds * 1000)
+            .round()
+            .clamp(250, 900),
+      ),
+    );
+
+    await _stopActiveAudio();
   }
 
   void _previous() {
@@ -70,14 +120,24 @@ class _ResultPageState extends State<ResultPage> {
     _jumpToColumn(_currentColumnIndex + 1);
   }
 
-  void _togglePlay() {
+  Future<void> _togglePlay() async {
+    print('Play pressed');
     if (_isPlaying) {
       _timer?.cancel();
-      setState(() => _isPlaying = false);
+      await _stopActiveAudio();
+
+      if (!mounted) return;
+
+      setState(() {
+        _isPlaying = false;
+      });
+
       return;
     }
 
     setState(() => _isPlaying = true);
+
+    await _playCurrentColumnAudio();
     _scheduleNext();
   }
 
@@ -88,16 +148,30 @@ class _ResultPageState extends State<ResultPage> {
       milliseconds: (_currentColumn.durationSeconds * 1000).round(),
     );
 
-    _timer = Timer(duration, () {
+    _timer = Timer(duration, () async {
       if (!mounted || !_isPlaying) return;
 
+      await _stopActiveAudio();
+
       if (_currentColumnIndex >= _currentTab.columns.length - 1) {
-        setState(() => _isPlaying = false);
+        _timer?.cancel();
+        await _stopActiveAudio();
+
+        if (!mounted) return;
+
+        setState(() {
+          _isPlaying = false;
+        });
+
         return;
       }
 
       setState(() => _currentColumnIndex++);
       _scrollToCurrent();
+
+      await _playCurrentColumnAudio();
+
+      if (!mounted || !_isPlaying) return;
       _scheduleNext();
     });
   }
@@ -129,6 +203,8 @@ class _ResultPageState extends State<ResultPage> {
   }
 
   void _exitResultPage() {
+    _timer?.cancel();
+    _stopActiveAudio();
     Navigator.pop(context, _shouldRefreshRecent);
   }
 
@@ -152,7 +228,8 @@ class _ResultPageState extends State<ResultPage> {
         backgroundColor: AppColors.surface,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_rounded),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded),
+          color: AppColors.surface,
           onPressed: _exitResultPage,
         ),
         title: Text(
@@ -306,6 +383,24 @@ class _ResultPageState extends State<ResultPage> {
                     ? null
                     : _next,
               ),
+              const SizedBox(width: 10),
+              _RoundControlButton(
+                icon: _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                onTap: () async {
+                  final nextMuted = !_isMuted;
+
+                  setState(() {
+                    _isMuted = nextMuted;
+                  });
+
+                  if (nextMuted) {
+                    await _stopActiveAudio();
+                  } else if (_isPlaying) {
+                    await _playCurrentColumnAudio();
+                  }
+                },
+              ),
+
               const SizedBox(width: 14),
               Expanded(
                 child: LinearProgressIndicator(
@@ -354,6 +449,20 @@ class _ResultPageState extends State<ResultPage> {
               ],
             ),
           ),
+          /// Commented out, but helps for sound debugging
+          /*
+          ElevatedButton(
+            onPressed: () async {
+              print('Manual test note');
+              await _audioService.playNote(64); // E4
+            },
+            child: const Text('Test Sound'),
+          ),
+          ElevatedButton(
+            onPressed: () => _audioService.scanPrograms(),
+            child: const Text('Scan Instruments'),
+          ),
+          */
         ],
       ),
     );
@@ -500,6 +609,51 @@ class _ResultPageState extends State<ResultPage> {
       default:
         return raw;
     }
+  }
+
+  /// This is the audio helper block
+  Future<void> _playCurrentColumnAudio() async {
+    if (_isMuted) {
+      print('AUDIO: muted, skipping column $_currentColumnIndex');
+      return;
+    }
+
+    print('--- PLAY COLUMN ---');
+    print('Column Index: $_currentColumnIndex');
+
+    final notes = _currentColumn.numbers.map((number) {
+      final midi = _toMidiNote(
+        stringNumber: number.stringNumber,
+        fret: number.fret,
+      );
+
+      print('String ${number.stringNumber}, Fret ${number.fret} → MIDI $midi');
+
+      return midi;
+    }).toList();
+
+    print('Total notes: ${notes.length}');
+    print('--------------------');
+
+    if (notes.isEmpty) {
+      print('No notes to play');
+      return;
+    }
+
+    _activeMidiNotes = notes;
+
+    await _audioService.playChord(notes);
+  }
+
+  Future<void> _stopActiveAudio() async {
+    final notes = List<int>.from(_activeMidiNotes);
+    _activeMidiNotes = [];
+
+    if (notes.isNotEmpty) {
+      await _audioService.stopChord(notes);
+    }
+
+    await _audioService.stopAll();
   }
 }
 
