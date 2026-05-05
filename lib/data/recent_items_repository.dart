@@ -108,4 +108,35 @@ class RecentItemsRepository {
           item.fileType.toLowerCase().contains(normalized);
     }).toList();
   }
+
+  static Future<void> renameItem(
+      SavedItemData item,
+      String newTitle,
+      ) async {
+    final file = File(item.filePath);
+
+    final content = await file.readAsString();
+    final decoded = jsonDecode(content);
+
+    final sessionJson = decoded['session'];
+
+    if (sessionJson is! Map) {
+      throw const FormatException('Invalid .stala file: missing session data.');
+    }
+
+    final session = SessionData.fromJson(
+      Map<String, dynamic>.from(sessionJson),
+    );
+
+    final updatedSession = session.copyWith(
+      projectName: newTitle,
+    );
+
+    decoded['session'] = updatedSession.toJson();
+    decoded['exportedAt'] = DateTime.now().toIso8601String();
+
+    await file.writeAsString(
+      const JsonEncoder.withIndent('  ').convert(decoded),
+    );
+  }
 }

@@ -409,22 +409,21 @@ class _HomeTabViewState extends State<_HomeTabView> {
                 backgroundColor: AppColors.accent,
                 foregroundColor: AppColors.textPrimary,
               ),
-              onPressed: () {
+              onPressed: () async {
                 final updatedTitle = controller.text.trim();
 
-                if (updatedTitle.isNotEmpty) {
-                  setState(() {
-                    final originalIndex =
-                    _items.indexWhere((saved) => saved.id == item.id);
+                if (updatedTitle.isEmpty) return;
 
-                    if (originalIndex != -1) {
-                      _items[originalIndex] =
-                          _items[originalIndex].copyWith(title: updatedTitle);
-                    }
-                  });
-                }
+                await RecentItemsRepository.renameItem(
+                  item,
+                  updatedTitle,
+                );
+
+                if (!mounted) return;
 
                 Navigator.pop(context);
+
+                await _loadItems();
               },
               child: Text('Save', style: AppTextStyles.button),
             ),
@@ -838,13 +837,7 @@ class _SearchTabViewState extends State<_SearchTabView> {
               ),
               const SizedBox(height: 12),
               ElevatedButton.icon(
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Custom folder picker will be added later.'),
-                    ),
-                  );
-                },
+                onPressed: _openLocalSavedFiles,
                 icon: const Icon(Icons.folder_open_rounded),
                 label: const Text('Browse Folder'),
               ),
@@ -924,7 +917,7 @@ class _SearchTabViewState extends State<_SearchTabView> {
                 onPressed: () {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('Cloud connection will be added later.'),
+                      content: Text('Cloud backup is coming soon.'),
                     ),
                   );
                 },
@@ -935,6 +928,55 @@ class _SearchTabViewState extends State<_SearchTabView> {
           ),
         ),
       ],
+    );
+  }
+
+  Future<void> _openLocalSavedFiles() async {
+    final items = await RecentItemsRepository.getRecentItems();
+
+    if (!mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.card,
+      builder: (context) {
+        if (items.isEmpty) {
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(18),
+              child: Text(
+                'No saved STALA files found.',
+                style: AppTextStyles.bodySecondary,
+              ),
+            ),
+          );
+        }
+
+        return SafeArea(
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: items.length,
+            separatorBuilder: (_, __) => const Divider(),
+            itemBuilder: (context, index) {
+              final item = items[index];
+
+              return ListTile(
+                title: Text(item.title, style: AppTextStyles.body),
+                subtitle: Text(
+                  item.filePath,
+                  style: AppTextStyles.caption,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                leading: const Icon(Icons.insert_drive_file_rounded),
+                onTap: () {
+                  Navigator.pop(context);
+                },
+              );
+            },
+          ),
+        );
+      },
     );
   }
 }
