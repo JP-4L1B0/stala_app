@@ -65,7 +65,7 @@ class OnnxDetector(private val context: Context) {
 
         Log.d(TAG, "detectFromImagePath: input file size=${imageFile.length()}")
 
-        val originalBitmap = decodeBitmapWithCorrectOrientation(imagePath)
+        val originalBitmap = BitmapFactory.decodeFile(imagePath)
             ?: return errorResponse("Failed to decode image.", imagePath)
 
         Log.d(
