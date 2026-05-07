@@ -18,6 +18,8 @@ import org.opencv.android.Utils
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
 import org.opencv.core.Core
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class OnnxDetector(private val context: Context) {
 
@@ -26,6 +28,8 @@ class OnnxDetector(private val context: Context) {
         const val MODEL_INPUT_HEIGHT = 1024
         const val DEFAULT_SCORE_THRESHOLD = 0.5f
         private const val TAG = "STALA_ONNX"
+
+        private const val ENABLE_VERBOSE_LOGS = false
     }
 
     private val environment: OrtEnvironment = OrtEnvironment.getEnvironment()
@@ -42,8 +46,17 @@ class OnnxDetector(private val context: Context) {
         Log.d(TAG, "loadModel: model file path=${modelFile.absolutePath}")
         Log.d(TAG, "loadModel: model file exists=${modelFile.exists()} size=${modelFile.length()}")
 
-        val options = OrtSession.SessionOptions()
+        // perf(onnx): enable graph optimization and limit runtime threads
+        val options = OrtSession.SessionOptions().apply {
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+
+            // Safer for low-mid devices.
+            setIntraOpNumThreads(2)
+            setInterOpNumThreads(1)
+        }
+
         session = environment.createSession(modelFile.absolutePath, options)
+        // perf(onnx): enable graph optimization and limit runtime threads
 
         val activeSession = session
         Log.d(TAG, "loadModel: ONNX session created")
@@ -65,16 +78,20 @@ class OnnxDetector(private val context: Context) {
 
         Log.d(TAG, "detectFromImagePath: input file size=${imageFile.length()}")
 
-        val originalBitmap = BitmapFactory.decodeFile(imagePath)
+        // fix(onnx): decode input image with exif orientation
+        val originalBitmap = decodeBitmapWithCorrectOrientation(imagePath)
             ?: return errorResponse("Failed to decode image.", imagePath)
+        // fix(onnx): decode input image with exif orientation
 
-        Log.d(
-            TAG,
-            "detectFromImagePath: original bitmap width=${originalBitmap.width} height=${originalBitmap.height}"
-        )
+        if (ENABLE_VERBOSE_LOGS) {
+            Log.d(
+                TAG,
+                "detectFromImagePath: original bitmap width=${originalBitmap.width} height=${originalBitmap.height}"
+            )
+        }
 
         return try {
-            val enhancedBitmap = applyClaheEnhancement(originalBitmap)
+            val enhancedBitmap = originalBitmap // perf(onnx): skip clahe enhancement during normal inference
 
             val resizedBitmap = letterboxBitmap(
                 enhancedBitmap,
@@ -82,14 +99,12 @@ class OnnxDetector(private val context: Context) {
                 MODEL_INPUT_HEIGHT
             )
 
-            if (enhancedBitmap != originalBitmap) {
+            // perf(onnx): skip clahe enhancement during normal inference
+            if (enhancedBitmap !== originalBitmap) {
                 enhancedBitmap.recycle()
             }
 
-            val preprocessedImagePath = saveBitmapToCache(
-                resizedBitmap,
-                "onnx_preprocessed_${System.currentTimeMillis()}.png"
-            )
+            val preprocessedImagePath = imagePath // perf(onnx): avoid saving preprocessed image during release detection
 
             Log.d(
                 TAG,
@@ -98,12 +113,12 @@ class OnnxDetector(private val context: Context) {
 
             Log.d(TAG, "detectFromImagePath: preprocessedImagePath=$preprocessedImagePath")
 
-            val inputData = bitmapToFloatArray(resizedBitmap)
-            Log.d(TAG, "detectFromImagePath: inputData size=${inputData.size}")
+            val inputBuffer = bitmapToFloatBuffer(resizedBitmap)
+            Log.d(TAG, "detectFromImagePath: inputBuffer capacity=${inputBuffer.capacity()}")
             Log.d(TAG, "detectFromImagePath: bitmap loaded width=${originalBitmap.width} height=${originalBitmap.height}")
 
             val detections = run(
-                inputData = inputData,
+                inputBuffer = inputBuffer,
                 inputWidth = MODEL_INPUT_WIDTH,
                 inputHeight = MODEL_INPUT_HEIGHT,
                 scoreThreshold = scoreThreshold
@@ -111,8 +126,13 @@ class OnnxDetector(private val context: Context) {
 
             Log.d(TAG, "detectFromImagePath: detections count=${detections.size}")
 
-            resizedBitmap.recycle()
-            originalBitmap.recycle()
+            if (resizedBitmap !== originalBitmap && !resizedBitmap.isRecycled) {
+                resizedBitmap.recycle()
+            }
+
+            if (!originalBitmap.isRecycled) {
+                originalBitmap.recycle()
+            }
 
             mapOf(
                 "status" to "success",
@@ -131,13 +151,15 @@ class OnnxDetector(private val context: Context) {
             )
         } catch (e: Exception) {
             Log.e(TAG, "detectFromImagePath: ONNX detection failed", e)
-            originalBitmap.recycle()
+            if (!originalBitmap.isRecycled) {
+                originalBitmap.recycle()
+            }
             errorResponse("ONNX detection failed: ${e.message}", imagePath)
         }
     }
 
     fun run(
-        inputData: FloatArray,
+        inputBuffer: FloatBuffer,
         inputWidth: Int,
         inputHeight: Int,
         scoreThreshold: Float = DEFAULT_SCORE_THRESHOLD
@@ -146,40 +168,21 @@ class OnnxDetector(private val context: Context) {
             ?: throw IllegalStateException("ONNX model session is not loaded.")
 
         val inputName = activeSession.inputNames.first()
-        val inputShape = longArrayOf(3, inputHeight.toLong(), inputWidth.toLong())
 
-        Log.d(TAG, "run: inputName=$inputName")
-        Log.d(TAG, "run: inputShape=${inputShape.joinToString(prefix = "[", postfix = "]")}")
-        Log.d(TAG, "run: scoreThreshold=$scoreThreshold")
+        // Keep this as [3, H, W] if your current model works with it.
+        val inputShape = longArrayOf(3, inputHeight.toLong(), inputWidth.toLong())
 
         OnnxTensor.createTensor(
             environment,
-            FloatBuffer.wrap(inputData),
+            inputBuffer,
             inputShape
         ).use { inputTensor ->
 
-            Log.d(TAG, "run: input tensor created")
-
             activeSession.run(mapOf(inputName to inputTensor)).use { output ->
-                Log.d(TAG, "run: session.run completed")
-                Log.d(TAG, "run: output size=${output.size()}")
-
-                for (i in 0 until output.size()) {
-                    val value = output[i].value
-                    Log.d(
-                        TAG,
-                        "run: output[$i] type=${value?.javaClass?.name}"
-                    )
-                }
-
                 @Suppress("UNCHECKED_CAST")
                 val boxes = output[0].value as Array<FloatArray>
                 val labels = output[1].value as LongArray
                 val scores = output[2].value as FloatArray
-
-                Log.d(TAG, "run: boxes size=${boxes.size}")
-                Log.d(TAG, "run: labels size=${labels.size}")
-                Log.d(TAG, "run: scores size=${scores.size}")
 
                 val detections = mutableListOf<Map<String, Any>>()
 
@@ -197,12 +200,6 @@ class OnnxDetector(private val context: Context) {
                             "bbox" to boxValue
                         )
                     )
-                }
-
-                Log.d(TAG, "run: filtered detections count=${detections.size}")
-
-                if (detections.isNotEmpty()) {
-                    Log.d(TAG, "run: first detection=${detections.first()}")
                 }
 
                 return detections
@@ -238,6 +235,30 @@ class OnnxDetector(private val context: Context) {
         return floatArray
     }
 
+    private fun bitmapToFloatBuffer(bitmap: Bitmap): FloatBuffer {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixelCount = width * height
+
+        val buffer = ByteBuffer
+            .allocateDirect(4 * 3 * pixelCount)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+
+        val pixels = IntArray(pixelCount)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        for (i in pixels.indices) {
+            val pixel = pixels[i]
+            buffer.put(i, ((pixel shr 16) and 0xFF) / 255.0f)
+            buffer.put(pixelCount + i, ((pixel shr 8) and 0xFF) / 255.0f)
+            buffer.put((2 * pixelCount) + i, (pixel and 0xFF) / 255.0f)
+        }
+
+        buffer.rewind()
+        return buffer
+    }
+
     private fun labelToClassName(label: Int): String {
         return when (label) {
             1 -> "bass_clef"
@@ -250,9 +271,18 @@ class OnnxDetector(private val context: Context) {
         }
     }
 
+    // perf(onnx): reuse copied model asset during startup
     private fun copyAssetToInternalFile(assetPath: String): File {
         val fileName = assetPath.substringAfterLast("/")
         val outFile = File(context.filesDir, fileName)
+
+        if (outFile.exists() && outFile.length() > 1024 * 1024) {
+            Log.d(
+                TAG,
+                "copyAssetToInternalFile: using existing model file size=${outFile.length()}"
+            )
+            return outFile
+        }
 
         Log.d(TAG, "copyAssetToInternalFile: copying asset=$assetPath to ${outFile.absolutePath}")
 
@@ -263,6 +293,11 @@ class OnnxDetector(private val context: Context) {
         }
 
         Log.d(TAG, "copyAssetToInternalFile: copy complete size=${outFile.length()}")
+
+        if (outFile.length() <= 1024 * 1024) {
+            Log.e(TAG, "copyAssetToInternalFile: copied model is suspiciously small")
+        }
+
         return outFile
     }
 
@@ -286,7 +321,7 @@ class OnnxDetector(private val context: Context) {
     }
 
     private fun decodeBitmapWithCorrectOrientation(imagePath: String): Bitmap? {
-        val bitmap = BitmapFactory.decodeFile(imagePath) ?: return null
+        val bitmap = decodeSampledBitmap(imagePath, 1600, 1600) ?: return null  // perf(onnx): downsample large input images before inference
 
         return try {
             val exif = ExifInterface(imagePath)
@@ -295,7 +330,9 @@ class OnnxDetector(private val context: Context) {
                 ExifInterface.ORIENTATION_NORMAL
             )
 
-            Log.d(TAG, "decodeBitmap: EXIF orientation=$orientation")
+            if (ENABLE_VERBOSE_LOGS) {
+                Log.d(TAG, "decodeBitmap: EXIF orientation=$orientation")
+            }
 
             val matrix = Matrix()
 
@@ -328,6 +365,60 @@ class OnnxDetector(private val context: Context) {
         } catch (e: Exception) {
             bitmap
         }
+    }
+
+    // perf(onnx): downsample large input images before inference
+    private fun decodeSampledBitmap(
+        imagePath: String,
+        reqWidth: Int,
+        reqHeight: Int
+    ): Bitmap? {
+        val boundsOptions = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+
+        BitmapFactory.decodeFile(imagePath, boundsOptions)
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = calculateInSampleSize(
+                boundsOptions.outWidth,
+                boundsOptions.outHeight,
+                reqWidth,
+                reqHeight
+            )
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+
+        Log.d(
+            TAG,
+            "decodeSampledBitmap: original=${boundsOptions.outWidth}x${boundsOptions.outHeight} " +
+                    "sampleSize=${decodeOptions.inSampleSize}"
+        )
+
+        return BitmapFactory.decodeFile(imagePath, decodeOptions)
+    }
+
+    private fun calculateInSampleSize(
+        width: Int,
+        height: Int,
+        reqWidth: Int,
+        reqHeight: Int
+    ): Int {
+        var inSampleSize = 1
+
+        if (height > reqHeight || width > reqWidth) {
+            var halfHeight = height / 2
+            var halfWidth = width / 2
+
+            while (
+                (halfHeight / inSampleSize) >= reqHeight &&
+                (halfWidth / inSampleSize) >= reqWidth
+            ) {
+                inSampleSize *= 2
+            }
+        }
+
+        return inSampleSize
     }
 
     private fun letterboxBitmap(

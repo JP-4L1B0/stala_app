@@ -55,7 +55,10 @@ class _ResultPageState extends State<ResultPage> {
   Timer? _timer;
   bool _didSave = false;
 
-  GeneratedTabResult get _currentTab => widget.generatedTabs[_selectedModeIndex];
+  List<GeneratedTabResult> get _availableTabs =>                             // fix(result): handle empty generated tablature modes
+      widget.generatedTabs.where((tab) => tab.columns.isNotEmpty).toList();  // fix(result): handle empty generated tablature modes
+
+  GeneratedTabResult get _currentTab => _availableTabs[_selectedModeIndex];  // fix(result): handle empty generated tablature modes
 
   GeneratedTabColumn get _currentColumn =>
       _currentTab.columns[_currentColumnIndex];
@@ -210,7 +213,11 @@ class _ResultPageState extends State<ResultPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.generatedTabs.isEmpty) {
+    final availableTabs = widget.generatedTabs
+        .where((tab) => tab.columns.isNotEmpty)
+        .toList();
+
+    if (availableTabs.isEmpty) {
       return Scaffold(
         backgroundColor: AppColors.background,
         body: Center(
@@ -297,8 +304,8 @@ class _ResultPageState extends State<ResultPage> {
                   dropdownColor: AppColors.card,
                   iconEnabledColor: AppColors.textPrimary,
                   style: AppTextStyles.button,
-                  items: List.generate(widget.generatedTabs.length, (index) {
-                    final tab = widget.generatedTabs[index];
+                  items: List.generate(_availableTabs.length, (index) { // fix(result): handle empty generated tablature modes
+                    final tab = _availableTabs[index];                  // fix(result): handle empty generated tablature modes
                     return DropdownMenuItem(
                       value: index,
                       child: Text(_formatMode(tab.mode.name)),

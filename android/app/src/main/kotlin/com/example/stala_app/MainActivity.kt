@@ -9,8 +9,11 @@ import io.flutter.plugin.common.MethodChannel
 import android.os.Bundle
 import android.util.Log
 import org.opencv.android.OpenCVLoader
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : FlutterActivity() {
+    private val isProcessingImage = AtomicBoolean(false)
+    private val isSegmentingStaff = AtomicBoolean(false)
     private val accessibilityChannel = "stala_app/accessibility"
     private val pythonBridgeChannel = "stala/python_bridge"
 
@@ -54,6 +57,7 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+
     private fun handleSegmentStaffLines(call: MethodCall, result: MethodChannel.Result) {
         val imagePath = call.argument<String>("imagePath")
 
@@ -65,7 +69,23 @@ class MainActivity : FlutterActivity() {
                     "segmentedImagePath" to null,
                     "staffLineCount" to 0,
                     "staffLines" to emptyList<Any>(),
-                    "validatedStaffs" to emptyList<Any>()
+                    "validatedStaffs" to emptyList<Any>(),
+                    "ledgerLines" to emptyList<Any>()
+                )
+            )
+            return
+        }
+
+        if (!isSegmentingStaff.compareAndSet(false, true)) {
+            result.success(
+                mapOf(
+                    "status" to "error",
+                    "message" to "Staff segmentation is still running. Please wait.",
+                    "segmentedImagePath" to null,
+                    "staffLineCount" to 0,
+                    "staffLines" to emptyList<Any>(),
+                    "validatedStaffs" to emptyList<Any>(),
+                    "ledgerLines" to emptyList<Any>()
                 )
             )
             return
@@ -90,10 +110,13 @@ class MainActivity : FlutterActivity() {
                             "segmentedImagePath" to null,
                             "staffLineCount" to 0,
                             "staffLines" to emptyList<Any>(),
-                            "validatedStaffs" to emptyList<Any>()
+                            "validatedStaffs" to emptyList<Any>(),
+                            "ledgerLines" to emptyList<Any>()
                         )
                     )
                 }
+            } finally {
+                isSegmentingStaff.set(false)
             }
         }.start()
     }
@@ -217,12 +240,35 @@ class MainActivity : FlutterActivity() {
             return
         }
 
+        if (!isProcessingImage.compareAndSet(false, true)) {
+            result.success(
+                mapOf(
+                    "status" to "error",
+                    "message" to "Another image is still being processed. Please wait.",
+                    "modelVersion" to "unavailable",
+                    "inputImagePath" to imagePath,
+                    "preprocessedImagePath" to "",
+                    "detectionImagePath" to "",
+                    "imageWidth" to 0,
+                    "imageHeight" to 0,
+                    "detections" to emptyList<Map<String, Any?>>(),
+                    "staffMap" to emptyList<Any>(),
+                    "translationResult" to emptyList<Any>(),
+                    "tablature" to emptyList<Any>(),
+                    "errors" to listOf("Another image is still being processed.")
+                )
+            )
+            return
+        }
+
         Thread {
             try {
                 android.util.Log.d("STALA_ONNX", "handleProcessImage called")
                 android.util.Log.d("STALA_ONNX", "imagePath=$imagePath")
 
-                val detector = onnxDetector ?: OnnxDetector(this).also { onnxDetector = it }
+                val detector = onnxDetector ?: OnnxDetector(this).also {
+                    onnxDetector = it
+                }
 
                 android.util.Log.d("STALA_ONNX", "loading model")
                 detector.loadModel("models/stala_multiclass_detector.onnx")
@@ -258,6 +304,8 @@ class MainActivity : FlutterActivity() {
                         )
                     )
                 }
+            } finally {
+                isProcessingImage.set(false)
             }
         }.start()
     }

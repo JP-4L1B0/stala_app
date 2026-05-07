@@ -177,6 +177,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
   /// - note translation
   /// - result generation
   Future<void> _startProcessingPipeline() async {
+    final isDebugEnabled =
+    await const DebugSettingsRepository().isDebugPageEnabled();
+
     print('DEBUG: _startProcessingPipeline started');
     try {
       if (!mounted) return;
@@ -695,71 +698,72 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
     final result = _processingResult!;
 
-    final croppedImagePath = _pickFirstNonEmptyString(result, const [
-      'croppedImagePath',
-      'preprocessedImagePath',
-      'processedImagePath',
-      'outputImagePath',
-    ]);
-
-    final detectedImagePath = _pickFirstNonEmptyString(result, const [
-      'detectedImagePath',
-      'annotatedImagePath',
-      'visualizedImagePath',
-      'detectionImagePath',
-    ]);
-
-    final segmentedImagePath = _pickFirstNonEmptyString(result, const [
-      'segmentedImagePath',
-    ]);
-
-    final detections = _parseDetectionPoints(result['detections']);
-    final classItems = _parseClassItems(result['detections']);
-    final translateGroups =
-        (result['translateGroups'] as List<StaffTranslateGroup>?) ?? const [];
-
-    final noteGroups =
-        (result['noteGroups'] as List<NoteGroupViewItem>?) ?? const [];
-
-    final grandStaffPairs =
-        (result['grandStaffPairs'] as List<GrandStaffPairViewItem>?) ?? const [];
-
-    final polyMonoResults =
-        (result['polyMonoResults'] as List<PolyMonoViewItem>?) ?? const [];
-
-    final musicInterpretations =
-        (result['musicInterpretations'] as List<MusicInterpretationViewItem>?) ??
-            const [];
-
-    final fretboardMappings =
-        (result['fretboardMappings'] as List<FretboardMappingViewItem>?) ??
-            const [];
-
-    final eventManagerResults =
-        (result['eventManagerResults'] as List<EventManagerViewItem>?) ??
-            const [];
-
-    final chordVoicingResults =
-        (result['chordVoicingResults'] as List<ChordVoicingViewItem>?) ??
-            const [];
-
     final session = result['sessionData'] as SessionData;
     final generatedTabResults =
         (result['generatedTabResults'] as List<GeneratedTabResult>?) ?? const [];
 
-    final generatedTabs =
-        (result['generatedTabViewItems'] as List<GeneratedTabViewItem>?) ??
-            const [];
-
-    final ledgerLines = _parseConfirmedLedgerLines(
-      result['ledgerLines'],
-      translateGroups,
-    );
-
     final isDebugEnabled =
-        await const DebugSettingsRepository().isDebugPageEnabled();
+    await const DebugSettingsRepository().isDebugPageEnabled();
 
     if (isDebugEnabled) {
+      final croppedImagePath = _pickFirstNonEmptyString(result, const [
+        'croppedImagePath',
+        'preprocessedImagePath',
+        'processedImagePath',
+        'outputImagePath',
+      ]);
+
+      final detectedImagePath = _pickFirstNonEmptyString(result, const [
+        'detectedImagePath',
+        'annotatedImagePath',
+        'visualizedImagePath',
+        'detectionImagePath',
+      ]);
+
+      final segmentedImagePath = _pickFirstNonEmptyString(result, const [
+        'segmentedImagePath',
+      ]);
+
+      final detections = _parseDetectionPoints(result['detections']);
+      final classItems = _parseClassItems(result['detections']);
+
+      final translateGroups =
+          (result['translateGroups'] as List<StaffTranslateGroup>?) ?? const [];
+
+      final noteGroups =
+          (result['noteGroups'] as List<NoteGroupViewItem>?) ?? const [];
+
+      final grandStaffPairs =
+          (result['grandStaffPairs'] as List<GrandStaffPairViewItem>?) ?? const [];
+
+      final polyMonoResults =
+          (result['polyMonoResults'] as List<PolyMonoViewItem>?) ?? const [];
+
+      final musicInterpretations =
+          (result['musicInterpretations'] as List<MusicInterpretationViewItem>?) ??
+              const [];
+
+      final fretboardMappings =
+          (result['fretboardMappings'] as List<FretboardMappingViewItem>?) ??
+              const [];
+
+      final eventManagerResults =
+          (result['eventManagerResults'] as List<EventManagerViewItem>?) ??
+              const [];
+
+      final chordVoicingResults =
+          (result['chordVoicingResults'] as List<ChordVoicingViewItem>?) ??
+              const [];
+
+      final generatedTabs =
+          (result['generatedTabViewItems'] as List<GeneratedTabViewItem>?) ??
+              const [];
+
+      final ledgerLines = _parseConfirmedLedgerLines(
+        result['ledgerLines'],
+        translateGroups,
+      );
+
       Navigator.push(
         context,
         MaterialPageRoute(
