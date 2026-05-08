@@ -52,6 +52,9 @@ class MainActivity : FlutterActivity() {
                 "cropDocumentImage" -> handleCropDocumentImage(call, result)
                 "processImage" -> handleProcessImage(call, result)
                 "segmentStaffLines" -> handleSegmentStaffLines(call, result)
+                "appendRuntimeLog" -> handleAppendRuntimeLog(call, result)
+                "clearRuntimeLog" -> handleClearRuntimeLog(result)
+                "exportRuntimeLog" -> handleExportRuntimeLog(result)
                 else -> result.notImplemented()
             }
         }
@@ -60,6 +63,8 @@ class MainActivity : FlutterActivity() {
 
     private fun handleSegmentStaffLines(call: MethodCall, result: MethodChannel.Result) {
         val imagePath = call.argument<String>("imagePath")
+        RuntimeFileLogger.log(this, "Segmentation started: $imagePath")
+        RuntimeFileLogger.log(this, "Segmentation finished")
 
         if (imagePath.isNullOrBlank()) {
             result.success(
@@ -102,6 +107,7 @@ class MainActivity : FlutterActivity() {
                     result.success(response)
                 }
             } catch (e: Exception) {
+                RuntimeFileLogger.log(this, "Segmentation ERROR: ${e.message ?: "Unknown error"}")
                 runOnUiThread {
                     result.success(
                         mapOf(
@@ -218,6 +224,7 @@ class MainActivity : FlutterActivity() {
 
     private fun handleProcessImage(call: MethodCall, result: MethodChannel.Result) {
         val imagePath = call.argument<String>("imagePath")
+        RuntimeFileLogger.log(this, "ONNX processImage started: $imagePath")
 
         if (imagePath.isNullOrBlank()) {
             result.success(
@@ -266,6 +273,8 @@ class MainActivity : FlutterActivity() {
                 android.util.Log.d("STALA_ONNX", "handleProcessImage called")
                 android.util.Log.d("STALA_ONNX", "imagePath=$imagePath")
 
+                RuntimeFileLogger.log(this, "ONNX loading model")
+
                 val detector = onnxDetector ?: OnnxDetector(this).also {
                     onnxDetector = it
                 }
@@ -273,16 +282,22 @@ class MainActivity : FlutterActivity() {
                 android.util.Log.d("STALA_ONNX", "loading model")
                 detector.loadModel("models/stala_multiclass_detector.onnx")
 
+                RuntimeFileLogger.log(this, "ONNX inference started")
+
                 android.util.Log.d("STALA_ONNX", "running detectFromImagePath")
                 val response = detector.detectFromImagePath(imagePath)
 
                 android.util.Log.d("STALA_ONNX", "detection finished")
                 android.util.Log.d("STALA_ONNX", "response status=${response["status"]}")
 
+                RuntimeFileLogger.log(this, "ONNX inference finished: ${response["status"]}")
+
                 runOnUiThread {
                     result.success(response)
                 }
             } catch (e: Exception) {
+                RuntimeFileLogger.log(this, "ONNX ERROR: ${e.message ?: "Unknown error"}")
+
                 android.util.Log.e("STALA_ONNX", "ONNX processing failed", e)
 
                 runOnUiThread {
@@ -329,6 +344,36 @@ class MainActivity : FlutterActivity() {
             Log.d("OpenCV", "OpenCV loaded successfully")
         } else {
             Log.e("OpenCV", "OpenCV failed to load")
+        }
+    }
+
+    private fun handleAppendRuntimeLog(call: MethodCall, result: MethodChannel.Result) {
+        val message = call.argument<String>("message") ?: "Empty log message"
+        RuntimeFileLogger.log(this, message)
+        result.success(true)
+    }
+
+    private fun handleClearRuntimeLog(result: MethodChannel.Result) {
+        RuntimeFileLogger.clear(this)
+        result.success(true)
+    }
+
+    private fun handleExportRuntimeLog(result: MethodChannel.Result) {
+        try {
+            val path = RuntimeFileLogger.exportToDownloads(this)
+            result.success(
+                mapOf(
+                    "status" to "success",
+                    "path" to path
+                )
+            )
+        } catch (e: Exception) {
+            result.success(
+                mapOf(
+                    "status" to "error",
+                    "message" to (e.message ?: "Failed to export runtime log.")
+                )
+            )
         }
     }
 }

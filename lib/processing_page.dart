@@ -23,6 +23,7 @@ import 'services/tablature_result_adapter.dart';
 import 'services/generation_service.dart';
 import 'services/save_export_service.dart';
 import 'data/app_settings_repository.dart';
+import 'services/runtime_logger.dart';
 
 /// Processing screen shown after the image crop is confirmed.
 ///
@@ -177,12 +178,17 @@ class _ProcessingPageState extends State<ProcessingPage> {
   /// - note translation
   /// - result generation
   Future<void> _startProcessingPipeline() async {
+    await RuntimeLogger.log('==== NEW PROCESSING RUN ====');
+    await RuntimeLogger.log('Input image: ${widget.imagePath}');
+
     final isDebugEnabled =
     await const DebugSettingsRepository().isDebugPageEnabled();
 
     print('DEBUG: _startProcessingPipeline started');
     try {
       if (!mounted) return;
+
+      await RuntimeLogger.log('Calling native processImage');
 
       setState(() {
         print('DEBUG: activating stage 0');
@@ -225,6 +231,8 @@ class _ProcessingPageState extends State<ProcessingPage> {
         _statusMessage = 'Native processImage returned.';
       });
 
+      await RuntimeLogger.log('Native processImage returned');
+
       if (!mounted) return;
 
       final response = Map<String, dynamic>.from(result as Map);
@@ -235,6 +243,8 @@ class _ProcessingPageState extends State<ProcessingPage> {
       final errors = (response['errors'] as List?)?.cast<dynamic>() ?? const [];
 
       if (status == 'success') {
+        await RuntimeLogger.log('Calling staff segmentation');
+
         setState(() {
           _stages[1] = _stages[1].copyWith(
             status: ProcessingStageStatus.completed,
@@ -263,6 +273,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
         );
 
         print('DEBUG: segmentedImagePath = ${segmentationResult['segmentedImagePath']}');
+        await RuntimeLogger.log('Staff segmentation returned: ${segmentationResult['status']}');
 
         if (segmentationResult['status'] == 'success') {
           response['segmentedImagePath'] =
@@ -580,6 +591,8 @@ class _ProcessingPageState extends State<ProcessingPage> {
                 autoSavedAt: DateTime.now(),
                 autoSaveFailed: false,
               );
+
+              await RuntimeLogger.log('Processing completed successfully');
             }
           } catch (error) {
             finalSession = session.copyWith(
@@ -587,6 +600,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
             );
 
             debugPrint('AUTO_SAVE_FAILED: $error');
+            await RuntimeLogger.log('Auto-save failed: $error');
           }
 
           response['sessionData'] = finalSession;
@@ -627,6 +641,11 @@ class _ProcessingPageState extends State<ProcessingPage> {
         });
       }
     } on PlatformException catch (error) {
+
+      await RuntimeLogger.log(
+        'PlatformException: ${error.message ?? error.code}',
+      );
+
       if (!mounted) return;
 
       setState(() {
@@ -640,6 +659,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
         'Bridge error: ${error.message ?? error.code}';
       });
     } catch (error) {
+
+      await RuntimeLogger.log('Processing error: $error');
+
       if (!mounted) return;
 
       setState(() {
@@ -758,6 +780,10 @@ class _ProcessingPageState extends State<ProcessingPage> {
       final generatedTabs =
           (result['generatedTabViewItems'] as List<GeneratedTabViewItem>?) ??
               const [];
+
+      await RuntimeLogger.log(
+        'Generated tabs: ${generatedTabs.length}',
+      );
 
       final ledgerLines = _parseConfirmedLedgerLines(
         result['ledgerLines'],

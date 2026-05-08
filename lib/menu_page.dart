@@ -14,6 +14,7 @@ import 'result_page.dart';
 import 'services/generation_service.dart';
 import 'app_restart_widget.dart';
 import 'data/app_settings_repository.dart';
+import 'services/runtime_logger.dart';
 
 class AccessibilityServiceHelper {
   static const MethodChannel _channel =
@@ -1440,6 +1441,24 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                   ),
                 ),
               ],
+              ElevatedButton(
+                onPressed: () async {
+                  final path = await RuntimeLogger.export();
+
+                  if (!context.mounted) return;
+
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        path == null
+                            ? 'Failed to export runtime log.'
+                            : 'Runtime log exported to $path',
+                      ),
+                    ),
+                  );
+                },
+                child: const Text('Export Runtime Log'),
+              )
             ],
           ),
 
