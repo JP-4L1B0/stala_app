@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:path/path.dart' as p;
 import 'package:gallery_saver_plus/gallery_saver.dart';
@@ -9,13 +10,17 @@ import 'package:archive/archive_io.dart';
 
 import '../services/generation_service.dart';
 import '../models/session_data.dart';
+import '../models/saved_item_data.dart';
+import '../data/recent_items_repository.dart';
+import 'storage_access_service.dart';
 
 class SaveExportService {
   const SaveExportService();
 
-  Future<File> saveStalaFile({
-    required SessionData session,
-  }) async {
+  static const StorageAccessService _storageAccessService =
+      StorageAccessService();
+
+  Future<File> saveStalaFile({required SessionData session}) async {
     final directory = await _getExportDirectory('saved');
 
     final safeTitle = _safeFileName(
@@ -33,8 +38,14 @@ class SaveExportService {
       'session': session.toJson(),
     };
 
-    await file.writeAsString(
-      const JsonEncoder.withIndent('  ').convert(data),
+    final content = const JsonEncoder.withIndent('  ').convert(data);
+
+    await file.writeAsString(content);
+    await _writeSafTextIfAvailable(
+      relativeDir: 'saved',
+      fileName: p.basename(file.path),
+      mimeType: 'application/json',
+      content: content,
     );
 
     return file;
@@ -76,9 +87,7 @@ class SaveExportService {
         totalPages: tab.exportPages.length,
       );
 
-      final byteData = await image.toByteData(
-        format: ui.ImageByteFormat.png,
-      );
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
 
       if (byteData == null) continue;
 
@@ -88,6 +97,13 @@ class SaveExportService {
 
       await file.writeAsBytes(byteData.buffer.asUint8List());
       files.add(file);
+
+      await _writeSafBytesIfAvailable(
+        relativeDir: 'photo/${p.basename(exportDir.path)}',
+        fileName: p.basename(file.path),
+        mimeType: 'image/png',
+        bytes: byteData.buffer.asUint8List(),
+      );
 
       // Save to gallery (VISIBLE TO USER)
       await GallerySaver.saveImage(file.path);
@@ -129,12 +145,12 @@ class SaveExportService {
     final textPainter = TextPainter(textDirection: TextDirection.ltr);
 
     void drawText(
-        String text,
-        Offset offset, {
-          double fontSize = 24,
-          FontWeight fontWeight = FontWeight.normal,
-          Color color = Colors.black,
-        }) {
+      String text,
+      Offset offset, {
+      double fontSize = 24,
+      FontWeight fontWeight = FontWeight.normal,
+      Color color = Colors.black,
+    }) {
       textPainter.text = TextSpan(
         text: text,
         style: TextStyle(
@@ -241,10 +257,7 @@ class SaveExportService {
           const Radius.circular(8),
         );
 
-        canvas.drawRRect(
-          bgRect,
-          Paint()..color = Colors.white,
-        );
+        canvas.drawRRect(bgRect, Paint()..color = Colors.white);
 
         canvas.drawRRect(
           bgRect,
@@ -273,35 +286,14 @@ class SaveExportService {
 
     final picture = recorder.endRecording();
 
-    return picture.toImage(
-      pageWidth.ceil(),
-      pageHeight.ceil(),
-    );
-  }
-
-  Future<void> _copyPngToPublicPictures(File sourceFile) async {
-    try {
-      final publicDir = Directory('/storage/emulated/0/Pictures/Stala/photo');
-
-      if (!await publicDir.exists()) {
-        await publicDir.create(recursive: true);
-      }
-
-      final targetFile = File(
-        p.join(publicDir.path, p.basename(sourceFile.path)),
-      );
-
-      await sourceFile.copy(targetFile.path);
-    } catch (_) {
-      // If public gallery save fails, private app save still succeeds.
-    }
+    return picture.toImage(pageWidth.ceil(), pageHeight.ceil());
   }
 
   Future<File> saveZipPackage({
     required SessionData session,
     required int selectedModeIndex,
   }) async {
-    final directory = await _getExportDirectory('zip');;
+    final directory = await _getExportDirectory('zip');
 
     final safeTitle = _safeFileName(
       session.projectName.isEmpty ? 'stala_output' : session.projectName,
@@ -310,7 +302,9 @@ class SaveExportService {
 
     final zipPath = '${directory.path}/${safeTitle}_$timestamp.zip';
 
-    final tempStalaFile = File('${directory.path}/${safeTitle}_temp_$timestamp.stala');
+    final tempStalaFile = File(
+      '${directory.path}/${safeTitle}_temp_$timestamp.stala',
+    );
 
     final data = {
       'format': 'stala',
@@ -337,10 +331,7 @@ class SaveExportService {
     final encoder = ZipFileEncoder();
     encoder.create(zipPath);
 
-    encoder.addFile(
-      tempStalaFile,
-      'project.stala',
-    );
+    encoder.addFile(tempStalaFile, 'project.stala');
 
     for (int i = 0; i < pngFiles.length; i++) {
       encoder.addFile(
@@ -351,11 +342,118 @@ class SaveExportService {
 
     encoder.close();
 
+    final zipFile = File(zipPath);
+
+    if (await zipFile.exists()) {
+      await _writeSafBytesIfAvailable(
+        relativeDir: 'zip',
+        fileName: p.basename(zipFile.path),
+        mimeType: 'application/zip',
+        bytes: await zipFile.readAsBytes(),
+      );
+    }
+
     if (await tempStalaFile.exists()) {
       await tempStalaFile.delete();
     }
 
-    return File(zipPath);
+    return zipFile;
+  }
+
+  Future<File> saveBulkStalaZip({required List<SavedItemData> items}) async {
+    final directory = await _getExportDirectory('zip');
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final zipFile = File('${directory.path}/stala_bulk_export_$timestamp.zip');
+    final exportedAt = DateTime.now().toIso8601String();
+
+    final archive = Archive();
+    final manifestFiles = <Map<String, dynamic>>[];
+
+    for (int i = 0; i < items.length; i++) {
+      final item = items[i];
+      final content = await RecentItemsRepository.readItemContent(item);
+      final fileName = _safeBulkFileName(item, i);
+      final archivePath = 'saved/$fileName';
+      final bytes = utf8.encode(content);
+
+      archive.addFile(ArchiveFile(archivePath, bytes.length, bytes));
+      manifestFiles.add({
+        'path': archivePath,
+        'title': item.title,
+        'originalFileName': item.fileName ?? p.basename(item.filePath),
+        'exportedAt': exportedAt,
+      });
+    }
+
+    final manifest = const JsonEncoder.withIndent('  ').convert({
+      'format': 'stala_bulk_zip',
+      'formatVersion': 1,
+      'exportedAt': exportedAt,
+      'fileCount': manifestFiles.length,
+      'files': manifestFiles,
+    });
+    final manifestBytes = utf8.encode(manifest);
+
+    archive.addFile(
+      ArchiveFile('manifest.json', manifestBytes.length, manifestBytes),
+    );
+
+    final zipBytes = ZipEncoder().encode(archive);
+
+    await zipFile.writeAsBytes(zipBytes);
+
+    await _writeSafBytesIfAvailable(
+      relativeDir: 'zip',
+      fileName: p.basename(zipFile.path),
+      mimeType: 'application/zip',
+      bytes: Uint8List.fromList(zipBytes),
+    );
+
+    return zipFile;
+  }
+
+  Future<void> _writeSafTextIfAvailable({
+    required String relativeDir,
+    required String fileName,
+    required String mimeType,
+    required String content,
+  }) async {
+    try {
+      final folder = await _storageAccessService.getStorageFolder();
+      if (!folder.granted) return;
+
+      await _storageAccessService.writeTextFile(
+        relativeDir: relativeDir,
+        fileName: fileName,
+        mimeType: mimeType,
+        content: content,
+      );
+    } catch (_) {
+      // App-private export still succeeds if the selected SAF folder is missing
+      // or the provider rejects the write.
+    }
+  }
+
+  Future<void> _writeSafBytesIfAvailable({
+    required String relativeDir,
+    required String fileName,
+    required String mimeType,
+    required Uint8List bytes,
+  }) async {
+    try {
+      final folder = await _storageAccessService.getStorageFolder();
+      if (!folder.granted) return;
+
+      await _storageAccessService.writeBinaryFile(
+        relativeDir: relativeDir,
+        fileName: fileName,
+        mimeType: mimeType,
+        bytes: bytes,
+      );
+    } catch (_) {
+      // App-private export still succeeds if the selected SAF folder is missing
+      // or the provider rejects the write.
+    }
   }
 
   String _safeFileName(String input) {
@@ -364,6 +462,15 @@ class SaveExportService {
         .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
         .replaceAll(RegExp(r'\s+'), '_')
         .toLowerCase();
+  }
+
+  String _safeBulkFileName(SavedItemData item, int index) {
+    final title = _safeFileName(item.title);
+    final fallback = 'stala_project_${(index + 1).toString().padLeft(3, '0')}';
+    final base = title.isEmpty ? fallback : title;
+    final suffix = (index + 1).toString().padLeft(3, '0');
+
+    return '${base}_$suffix.stala';
   }
 
   Future<Directory> _getStalaRootDirectory() async {

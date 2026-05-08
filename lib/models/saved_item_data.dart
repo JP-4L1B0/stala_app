@@ -11,6 +11,9 @@ class SavedItemData {
   final String modifiedAt;
   final String? thumbnailPath;
   final String filePath;
+  final bool isSafDocument;
+  final String? storageUri;
+  final String? fileName;
   final bool isPinned;
 
   const SavedItemData({
@@ -22,6 +25,9 @@ class SavedItemData {
     required this.modifiedAt,
     required this.filePath,
     this.thumbnailPath,
+    this.isSafDocument = false,
+    this.storageUri,
+    this.fileName,
     this.isPinned = false,
   });
 
@@ -34,6 +40,9 @@ class SavedItemData {
     String? modifiedAt,
     String? thumbnailPath,
     String? filePath,
+    bool? isSafDocument,
+    String? storageUri,
+    String? fileName,
     bool? isPinned,
   }) {
     return SavedItemData(
@@ -45,16 +54,22 @@ class SavedItemData {
       modifiedAt: modifiedAt ?? this.modifiedAt,
       thumbnailPath: thumbnailPath ?? this.thumbnailPath,
       filePath: filePath ?? this.filePath,
+      isSafDocument: isSafDocument ?? this.isSafDocument,
+      storageUri: storageUri ?? this.storageUri,
+      fileName: fileName ?? this.fileName,
       isPinned: isPinned ?? this.isPinned,
     );
   }
 
   factory SavedItemData.fromSession(
-      SessionData session, {
-        required String filePath,
-        String fileType = '.stala',
-        DateTime? modifiedAt,
-      }) {
+    SessionData session, {
+    required String filePath,
+    String fileType = '.stala',
+    DateTime? modifiedAt,
+    bool isSafDocument = false,
+    String? storageUri,
+    String? fileName,
+  }) {
     return SavedItemData(
       id: session.id,
       title: session.projectName,
@@ -64,6 +79,9 @@ class SavedItemData {
       modifiedAt: (modifiedAt ?? DateTime.now()).toIso8601String(),
       thumbnailPath: session.croppedImagePath ?? session.originalImagePath,
       filePath: filePath,
+      isSafDocument: isSafDocument,
+      storageUri: storageUri,
+      fileName: fileName,
     );
   }
 
@@ -76,6 +94,9 @@ class SavedItemData {
       filePath: file.path,
       fileType: '.stala',
       modifiedAt: file.lastModifiedSync(),
+      fileName: file.uri.pathSegments.isEmpty
+          ? file.path
+          : file.uri.pathSegments.last,
     );
   }
 }

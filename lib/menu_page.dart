@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/services.dart';
@@ -12,17 +10,21 @@ import 'data/debug_settings_repository.dart';
 import 'models/saved_item_data.dart';
 import 'result_page.dart';
 import 'services/generation_service.dart';
+import 'services/save_export_service.dart';
+import 'services/storage_access_service.dart';
 import 'app_restart_widget.dart';
 import 'data/app_settings_repository.dart';
 
 class AccessibilityServiceHelper {
-  static const MethodChannel _channel =
-  MethodChannel('stala_app/accessibility');
+  static const MethodChannel _channel = MethodChannel(
+    'stala_app/accessibility',
+  );
 
   static Future<bool> isAccessibilityEnabled() async {
     try {
-      final bool? result =
-      await _channel.invokeMethod<bool>('isAccessibilityEnabled');
+      final bool? result = await _channel.invokeMethod<bool>(
+        'isAccessibilityEnabled',
+      );
       return result ?? false;
     } catch (_) {
       return false;
@@ -39,12 +41,7 @@ class AccessibilityServiceHelper {
 }
 
 /// Defines the available bottom navigation tabs.
-enum PanelTab {
-  search,
-  camera,
-  home,
-  settings,
-}
+enum PanelTab { search, camera, home, settings }
 
 /// Main screen for Panel 01.
 ///
@@ -80,10 +77,7 @@ class _MainPanel01PageState extends State<MainPanel01Page>
     )..repeat(reverse: true);
 
     _cameraFloatAnimation = Tween<double>(begin: -2, end: 4).animate(
-      CurvedAnimation(
-        parent: _cameraButtonController,
-        curve: Curves.easeInOut,
-      ),
+      CurvedAnimation(parent: _cameraButtonController, curve: Curves.easeInOut),
     );
   }
 
@@ -107,11 +101,9 @@ class _MainPanel01PageState extends State<MainPanel01Page>
 
   /// Opens the camera section.
   Future<void> _openCameraPanel() async {
-    final shouldRefreshHome = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => const CameraPanelPage(),
-      ),
-    );
+    final shouldRefreshHome = await Navigator.of(
+      context,
+    ).push<bool>(MaterialPageRoute(builder: (_) => const CameraPanelPage()));
 
     if (!mounted) return;
 
@@ -220,9 +212,7 @@ class _PanelHeader extends StatelessWidget {
               children: [
                 Text(
                   'STALA',
-                  style: AppTextStyles.cardTitle.copyWith(
-                    letterSpacing: 0.2,
-                  ),
+                  style: AppTextStyles.cardTitle.copyWith(letterSpacing: 0.2),
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -241,9 +231,7 @@ class _PanelHeader extends StatelessWidget {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: AppColors.card,
-              border: Border.all(
-                color: Colors.white.withOpacity(0.08),
-              ),
+              border: Border.all(color: Colors.white.withOpacity(0.08)),
             ),
             child: const Icon(
               Icons.person_outline,
@@ -284,10 +272,7 @@ class _PanelMidContent extends StatelessWidget {
 
         return FadeTransition(
           opacity: animation,
-          child: SlideTransition(
-            position: offsetAnimation,
-            child: child,
-          ),
+          child: SlideTransition(position: offsetAnimation, child: child),
         );
       },
       child: _buildSelectedContent(),
@@ -297,7 +282,7 @@ class _PanelMidContent extends StatelessWidget {
   Widget _buildSelectedContent() {
     switch (selectedTab) {
       case PanelTab.search:
-        return const _SearchTabView(key: ValueKey('search-tab'));
+        return const _ImportTabView(key: ValueKey('import-tab'));
       case PanelTab.home:
         return const _HomeTabView(key: ValueKey('home-tab'));
       case PanelTab.settings:
@@ -307,7 +292,6 @@ class _PanelMidContent extends StatelessWidget {
     }
   }
 }
-
 
 /// ============================================================
 /// MID SECTION CONTENT
@@ -361,6 +345,12 @@ class _HomeTabViewState extends State<_HomeTabView> {
     setState(() {
       _items = items;
       _isLoading = false;
+      _selectedItemKeys.removeWhere(
+        (key) => !_items.any((item) => _itemKey(item) == key),
+      );
+      if (_selectedItemKeys.isEmpty) {
+        _isSelectionMode = false;
+      }
     });
   }
 
@@ -368,6 +358,8 @@ class _HomeTabViewState extends State<_HomeTabView> {
 
   List<SavedItemData> _items = [];
   bool _isLoading = true;
+  bool _isSelectionMode = false;
+  final Set<String> _selectedItemKeys = <String>{};
 
   List<SavedItemData> get _visibleItems {
     return _showAll ? _items : _items.take(4).toList();
@@ -376,9 +368,7 @@ class _HomeTabViewState extends State<_HomeTabView> {
   void _handleRename(int index) {
     final item = _visibleItems[index];
 
-    final controller = TextEditingController(
-      text: item.title,
-    );
+    final controller = TextEditingController(text: item.title);
 
     showDialog(
       context: context,
@@ -414,10 +404,7 @@ class _HomeTabViewState extends State<_HomeTabView> {
 
                 if (updatedTitle.isEmpty) return;
 
-                await RecentItemsRepository.renameItem(
-                  item,
-                  updatedTitle,
-                );
+                await RecentItemsRepository.renameItem(item, updatedTitle);
 
                 if (!mounted) return;
 
@@ -433,11 +420,51 @@ class _HomeTabViewState extends State<_HomeTabView> {
     );
   }
 
+  String _itemKey(SavedItemData item) {
+    return item.storageUri ?? item.filePath;
+  }
+
+  List<SavedItemData> get _selectedItems {
+    return _items
+        .where((item) => _selectedItemKeys.contains(_itemKey(item)))
+        .toList();
+  }
+
+  void _toggleSelectionMode() {
+    setState(() {
+      _isSelectionMode = !_isSelectionMode;
+      _selectedItemKeys.clear();
+    });
+  }
+
+  void _toggleItemSelection(SavedItemData item) {
+    final key = _itemKey(item);
+
+    setState(() {
+      if (_selectedItemKeys.contains(key)) {
+        _selectedItemKeys.remove(key);
+      } else {
+        _selectedItemKeys.add(key);
+      }
+
+      if (_selectedItemKeys.isEmpty) {
+        _isSelectionMode = false;
+      }
+    });
+  }
+
+  void _selectAllVisible() {
+    setState(() {
+      _isSelectionMode = true;
+      _selectedItemKeys
+        ..clear()
+        ..addAll(_visibleItems.map(_itemKey));
+    });
+  }
+
   Future<void> _openSavedItem(SavedItemData item) async {
     try {
-      final file = File(item.filePath);
-
-      final session = await RecentItemsRepository.loadSessionFromFile(file);
+      final session = await RecentItemsRepository.loadSessionFromItem(item);
 
       final generatedTabs = const GenerationService().generateAll(
         results: session.tablatureResults,
@@ -448,10 +475,8 @@ class _HomeTabViewState extends State<_HomeTabView> {
       final didSave = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
-          builder: (_) => ResultPage(
-            session: session,
-            generatedTabs: generatedTabs,
-          ),
+          builder: (_) =>
+              ResultPage(session: session, generatedTabs: generatedTabs),
         ),
       );
 
@@ -462,9 +487,7 @@ class _HomeTabViewState extends State<_HomeTabView> {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to open saved item: $error'),
-        ),
+        SnackBar(content: Text('Failed to open saved item: $error')),
       );
     }
   }
@@ -505,8 +528,86 @@ class _HomeTabViewState extends State<_HomeTabView> {
     if (!mounted) return;
 
     setState(() {
-      _items.removeWhere((saved) => saved.id == item.id);
+      _items.removeWhere((saved) => _itemKey(saved) == _itemKey(item));
     });
+  }
+
+  Future<void> _handleBulkDelete() async {
+    final selectedItems = _selectedItems;
+    if (selectedItems.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: AppColors.card,
+          title: Text('Delete Files', style: AppTextStyles.cardTitle),
+          content: Text(
+            'Delete ${selectedItems.length} selected STALA file(s)?',
+            style: AppTextStyles.bodySecondary,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text('Cancel', style: AppTextStyles.button),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: AppColors.textPrimary,
+              ),
+              onPressed: () => Navigator.pop(context, true),
+              child: Text('Delete', style: AppTextStyles.button),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    for (final item in selectedItems) {
+      await RecentItemsRepository.deleteItem(item);
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _selectedItemKeys.clear();
+      _isSelectionMode = false;
+    });
+
+    await _loadItems();
+  }
+
+  Future<void> _handleBulkExport() async {
+    final selectedItems = _selectedItems;
+    if (selectedItems.isEmpty) return;
+
+    try {
+      await const SaveExportService().saveBulkStalaZip(items: selectedItems);
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Exported ${selectedItems.length} STALA file(s) as ZIP.',
+          ),
+        ),
+      );
+
+      setState(() {
+        _selectedItemKeys.clear();
+        _isSelectionMode = false;
+      });
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Bulk export failed: $error')));
+    }
   }
 
   Future<void> _handlePin(SavedItemData item) async {
@@ -527,54 +628,158 @@ class _HomeTabViewState extends State<_HomeTabView> {
       children: [
         _SectionHeader(
           title: 'Recent',
-          actionText: _showAll ? 'Show Less' : 'View All',
+          actionText: _isSelectionMode
+              ? 'Cancel'
+              : _showAll
+              ? 'Show Less'
+              : 'View All',
           onActionTap: () {
+            if (_isSelectionMode) {
+              _toggleSelectionMode();
+              return;
+            }
+
             setState(() {
               _showAll = !_showAll;
             });
           },
         ),
         const SizedBox(height: 14),
+        if (!_isLoading && _items.isNotEmpty) ...[
+          _HomeBulkActionBar(
+            isSelectionMode: _isSelectionMode,
+            selectedCount: _selectedItemKeys.length,
+            onSelect: _toggleSelectionMode,
+            onSelectAll: _selectAllVisible,
+            onDelete: _handleBulkDelete,
+            onExport: _handleBulkExport,
+          ),
+          const SizedBox(height: 10),
+        ],
         Expanded(
           child: RefreshIndicator(
             onRefresh: _loadItems,
             child: _isLoading
                 ? ListView.separated(
-              physics: const AlwaysScrollableScrollPhysics(),
-              itemCount: 4,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
-              itemBuilder: (_, __) => const _SavedItemSkeletonCard(),
-            )
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    itemCount: 4,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (_, __) => const _SavedItemSkeletonCard(),
+                  )
                 : _visibleItems.isEmpty
                 ? ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              children: [
-                const SizedBox(height: 120),
-                Center(
-                  child: Text(
-                    'No saved items yet.',
-                    style: AppTextStyles.bodySecondary,
-                  ),
-                ),
-              ],
-            )
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      const SizedBox(height: 120),
+                      Center(
+                        child: Text(
+                          'No saved items yet.',
+                          style: AppTextStyles.bodySecondary,
+                        ),
+                      ),
+                    ],
+                  )
                 : ListView.separated(
-              physics: const AlwaysScrollableScrollPhysics(),
-              itemCount: _visibleItems.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
-              itemBuilder: (context, index) {
-                return SavedListCard(
-                  data: _visibleItems[index],
-                  onEdit: () => _handleRename(index),
-                  onDelete: () => _handleDelete(_visibleItems[index]),
-                  onPin: () => _handlePin(_visibleItems[index]),
-                  onTap: () => _openSavedItem(_visibleItems[index]),
-                );
-              },
-            ),
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    itemCount: _visibleItems.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      return SavedListCard(
+                        data: _visibleItems[index],
+                        onEdit: () => _handleRename(index),
+                        onDelete: () => _handleDelete(_visibleItems[index]),
+                        onPin: () => _handlePin(_visibleItems[index]),
+                        isSelectionMode: _isSelectionMode,
+                        isSelected: _selectedItemKeys.contains(
+                          _itemKey(_visibleItems[index]),
+                        ),
+                        onTap: () {
+                          if (_isSelectionMode) {
+                            _toggleItemSelection(_visibleItems[index]);
+                          } else {
+                            _openSavedItem(_visibleItems[index]);
+                          }
+                        },
+                        onLongPress: () {
+                          setState(() {
+                            _isSelectionMode = true;
+                            _selectedItemKeys.add(
+                              _itemKey(_visibleItems[index]),
+                            );
+                          });
+                        },
+                      );
+                    },
+                  ),
           ),
         ),
       ],
+    );
+  }
+}
+
+class _HomeBulkActionBar extends StatelessWidget {
+  final bool isSelectionMode;
+  final int selectedCount;
+  final VoidCallback onSelect;
+  final VoidCallback onSelectAll;
+  final VoidCallback onDelete;
+  final VoidCallback onExport;
+
+  const _HomeBulkActionBar({
+    required this.isSelectionMode,
+    required this.selectedCount,
+    required this.onSelect,
+    required this.onSelectAll,
+    required this.onDelete,
+    required this.onExport,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasSelection = selectedCount > 0;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Text(
+            isSelectionMode ? '$selectedCount selected' : 'Bulk actions',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textSecondary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const Spacer(),
+          TextButton.icon(
+            onPressed: isSelectionMode ? onSelectAll : onSelect,
+            icon: Icon(
+              isSelectionMode
+                  ? Icons.select_all_rounded
+                  : Icons.checklist_rounded,
+              size: 18,
+            ),
+            label: Text(isSelectionMode ? 'All' : 'Select'),
+          ),
+          IconButton(
+            tooltip: 'Export selected',
+            onPressed: hasSelection ? onExport : null,
+            icon: const Icon(Icons.archive_outlined),
+            color: AppColors.accent,
+          ),
+          IconButton(
+            tooltip: 'Delete selected',
+            onPressed: hasSelection ? onDelete : null,
+            icon: const Icon(Icons.delete_outline_rounded),
+            color: AppColors.warning,
+          ),
+        ],
+      ),
     );
   }
 }
@@ -586,6 +791,9 @@ class SavedListCard extends StatelessWidget {
   final VoidCallback onDelete;
   final VoidCallback onPin;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+  final bool isSelectionMode;
+  final bool isSelected;
 
   const SavedListCard({
     super.key,
@@ -594,12 +802,16 @@ class SavedListCard extends StatelessWidget {
     required this.onDelete,
     required this.onPin,
     this.onTap,
+    this.onLongPress,
+    this.isSelectionMode = false,
+    this.isSelected = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(10),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
@@ -614,15 +826,25 @@ class SavedListCard extends StatelessWidget {
             Container(
               width: 90,
               alignment: Alignment.center,
-              child: Text(
-                data.fileType.replaceAll('.', '').toUpperCase(),
-                textAlign: TextAlign.center,
-                style: AppTextStyles.sectionTitle.copyWith(
-                  fontSize: 24,
-                  letterSpacing: 1,
-                  color: AppColors.accent,
-                ),
-              ),
+              child: isSelectionMode
+                  ? Icon(
+                      isSelected
+                          ? Icons.check_circle_rounded
+                          : Icons.radio_button_unchecked_rounded,
+                      color: isSelected
+                          ? AppColors.accent
+                          : AppColors.textSecondary,
+                      size: 30,
+                    )
+                  : Text(
+                      data.fileType.replaceAll('.', '').toUpperCase(),
+                      textAlign: TextAlign.center,
+                      style: AppTextStyles.sectionTitle.copyWith(
+                        fontSize: 24,
+                        letterSpacing: 1,
+                        color: AppColors.accent,
+                      ),
+                    ),
             ),
             const SizedBox(width: 16),
             Expanded(
@@ -660,35 +882,36 @@ class SavedListCard extends StatelessWidget {
                           color: AppColors.accent,
                         ),
                       ],
-                      PopupMenuButton<String>(
-                        icon: const Icon(
-                          Icons.more_vert_rounded,
-                          color: AppColors.textSecondary,
-                        ),
-                        color: AppColors.card,
-                        onSelected: (value) {
-                          if (value == 'pin') onPin();
-                          if (value == 'edit') onEdit();
-                          if (value == 'delete') onDelete();
-                        },
-                        itemBuilder: (context) => [
-                          PopupMenuItem(
-                            value: 'pin',
-                            child: Text(
-                              data.isPinned ? 'Unpin' : 'Pin',
-                              style: AppTextStyles.body,
+                      if (!isSelectionMode)
+                        PopupMenuButton<String>(
+                          icon: const Icon(
+                            Icons.more_vert_rounded,
+                            color: AppColors.textSecondary,
+                          ),
+                          color: AppColors.card,
+                          onSelected: (value) {
+                            if (value == 'pin') onPin();
+                            if (value == 'edit') onEdit();
+                            if (value == 'delete') onDelete();
+                          },
+                          itemBuilder: (context) => [
+                            PopupMenuItem(
+                              value: 'pin',
+                              child: Text(
+                                data.isPinned ? 'Unpin' : 'Pin',
+                                style: AppTextStyles.body,
+                              ),
                             ),
-                          ),
-                          PopupMenuItem(
-                            value: 'edit',
-                            child: Text('Rename', style: AppTextStyles.body),
-                          ),
-                          PopupMenuItem(
-                            value: 'delete',
-                            child: Text('Delete', style: AppTextStyles.body),
-                          ),
-                        ],
-                      ),
+                            PopupMenuItem(
+                              value: 'edit',
+                              child: Text('Rename', style: AppTextStyles.body),
+                            ),
+                            PopupMenuItem(
+                              value: 'delete',
+                              child: Text('Delete', style: AppTextStyles.body),
+                            ),
+                          ],
+                        ),
                     ],
                   ),
                   const SizedBox(height: 6),
@@ -756,9 +979,7 @@ class _SavedItemSkeletonCard extends StatelessWidget {
 class _SkeletonLine extends StatelessWidget {
   final double widthFactor;
 
-  const _SkeletonLine({
-    required this.widthFactor,
-  });
+  const _SkeletonLine({required this.widthFactor});
 
   @override
   Widget build(BuildContext context) {
@@ -776,243 +997,322 @@ class _SkeletonLine extends StatelessWidget {
   }
 }
 
-class _SearchTabView extends StatefulWidget {
-  const _SearchTabView({super.key});
+class _ImportTabView extends StatefulWidget {
+  const _ImportTabView({super.key});
 
   @override
-  State<_SearchTabView> createState() => _SearchTabViewState();
+  State<_ImportTabView> createState() => _ImportTabViewState();
 }
 
-class _SearchTabViewState extends State<_SearchTabView> {
-  _SearchPanel? _openPanel = _SearchPanel.local;
+class _ImportTabViewState extends State<_ImportTabView> {
+  final StorageAccessService _storageAccessService =
+      const StorageAccessService();
 
-  String _cloudProvider = 'Google Drive';
+  StorageAccessInfo _storageInfo = const StorageAccessInfo(granted: false);
+  List<SavedItemData> _items = [];
+  bool _isLoading = true;
 
-  void _togglePanel(_SearchPanel panel) {
+  @override
+  void initState() {
+    super.initState();
+    _loadImportData();
+  }
+
+  Future<void> _loadImportData() async {
     setState(() {
-      _openPanel = _openPanel == panel ? null : panel;
+      _isLoading = true;
     });
+
+    final storageInfo = await _storageAccessService.getStorageFolder();
+    final items = await RecentItemsRepository.getRecentItems();
+
+    if (!mounted) return;
+
+    setState(() {
+      _storageInfo = storageInfo;
+      _items = items;
+      _isLoading = false;
+    });
+  }
+
+  Future<void> _chooseStorageFolder() async {
+    final shouldContinue = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: AppColors.card,
+          title: Text(
+            'Allow STALA File Access',
+            style: AppTextStyles.cardTitle,
+          ),
+          content: Text(
+            'Choose a folder STALA can use to save, import, export, rename, and delete .stala and .zip files.',
+            style: AppTextStyles.bodySecondary,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text('Cancel', style: AppTextStyles.button),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: AppColors.textPrimary,
+              ),
+              onPressed: () => Navigator.pop(context, true),
+              child: Text('Choose Folder', style: AppTextStyles.button),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldContinue != true) return;
+
+    final info = await _storageAccessService.pickStorageFolder();
+
+    if (!mounted) return;
+
+    setState(() {
+      _storageInfo = info;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          info.granted
+              ? 'Storage folder connected.'
+              : 'No folder selected. STALA will keep using app storage.',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openSavedItem(SavedItemData item) async {
+    try {
+      final session = await RecentItemsRepository.loadSessionFromItem(item);
+
+      final generatedTabs = const GenerationService().generateAll(
+        results: session.tablatureResults,
+      );
+
+      if (!mounted) return;
+
+      await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) =>
+              ResultPage(session: session, generatedTabs: generatedTabs),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to import file: $error')));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      key: const ValueKey('search-content'),
-      physics: const BouncingScrollPhysics(),
+    return Column(
+      key: const ValueKey('import-content'),
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(
-          title: 'Local and Online',
-          actionText: 'Browse',
+        _SectionHeader(
+          title: 'Import',
+          actionText: 'Refresh',
+          onActionTap: _loadImportData,
         ),
         const SizedBox(height: 14),
-
-        _ExpandableSettingsCard(
-          title: 'Local Storage',
-          subtitle: 'Manage where STALA saves local files.',
-          icon: Icons.phone_android_outlined,
-          isExpanded: _openPanel == _SearchPanel.local,
-          onTap: () => _togglePanel(_SearchPanel.local),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Default Save Directory',
-                style: AppTextStyles.body.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppColors.card,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: Text(
-                  'App Storage / STALA / saved, photo, zip',
-                  style: AppTextStyles.bodySecondary,
-                ),
-              ),
-              const SizedBox(height: 12),
-              ElevatedButton.icon(
-                onPressed: _openLocalSavedFiles,
-                icon: const Icon(Icons.folder_open_rounded),
-                label: const Text('Browse Folder'),
-              ),
-            ],
-          ),
+        _StorageLocationCard(
+          storageInfo: _storageInfo,
+          onChooseFolder: _chooseStorageFolder,
         ),
-
         const SizedBox(height: 10),
-
-        _ExpandableSettingsCard(
-          title: 'Cloud Backup',
-          subtitle: 'Prepare cloud storage connection settings.',
-          icon: Icons.cloud_outlined,
-          isExpanded: _openPanel == _SearchPanel.cloud,
-          onTap: () => _togglePanel(_SearchPanel.cloud),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Cloud Provider',
-                style: AppTextStyles.body.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                decoration: BoxDecoration(
-                  color: AppColors.card,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: _cloudProvider,
-                    dropdownColor: AppColors.card,
-                    style: AppTextStyles.body,
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'Google Drive',
-                        child: Text('Google Drive'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'OneDrive',
-                        child: Text('OneDrive'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'Dropbox',
-                        child: Text('Dropbox'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'Custom Link',
-                        child: Text('Custom Link'),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _loadImportData,
+            child: _isLoading
+                ? ListView.separated(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    itemCount: 4,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (_, __) => const _SavedItemSkeletonCard(),
+                  )
+                : _items.isEmpty
+                ? ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      const SizedBox(height: 110),
+                      Center(
+                        child: Text(
+                          'No local STALA files found.',
+                          style: AppTextStyles.bodySecondary,
+                        ),
                       ),
                     ],
-                    onChanged: (value) {
-                      if (value == null) return;
-                      setState(() {
-                        _cloudProvider = value;
-                      });
+                  )
+                : ListView.separated(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    itemCount: _items.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    itemBuilder: (context, index) {
+                      final item = _items[index];
+
+                      return _ImportFileTile(
+                        data: item,
+                        onTap: () => _openSavedItem(item),
+                      );
                     },
                   ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              _StorageTextField(
-                label: 'Account / Email',
-                hint: 'example@email.com',
-              ),
-              const SizedBox(height: 10),
-              _StorageTextField(
-                label: 'Folder / Link',
-                hint: 'Paste cloud folder link or path',
-              ),
-              const SizedBox(height: 12),
-              ElevatedButton.icon(
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Cloud backup is coming soon.'),
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.cloud_sync_outlined),
-                label: const Text('Save Cloud Settings'),
-              ),
-            ],
           ),
         ),
       ],
     );
   }
-
-  Future<void> _openLocalSavedFiles() async {
-    final items = await RecentItemsRepository.getRecentItems();
-
-    if (!mounted) return;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppColors.card,
-      builder: (context) {
-        if (items.isEmpty) {
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Text(
-                'No saved STALA files found.',
-                style: AppTextStyles.bodySecondary,
-              ),
-            ),
-          );
-        }
-
-        return SafeArea(
-          child: ListView.separated(
-            shrinkWrap: true,
-            itemCount: items.length,
-            separatorBuilder: (_, __) => const Divider(),
-            itemBuilder: (context, index) {
-              final item = items[index];
-
-              return ListTile(
-                title: Text(item.title, style: AppTextStyles.body),
-                subtitle: Text(
-                  item.filePath,
-                  style: AppTextStyles.caption,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                leading: const Icon(Icons.insert_drive_file_rounded),
-                onTap: () {
-                  Navigator.pop(context);
-                },
-              );
-            },
-          ),
-        );
-      },
-    );
-  }
 }
 
-enum _SearchPanel {
-  local,
-  cloud,
-}
+class _StorageLocationCard extends StatelessWidget {
+  final StorageAccessInfo storageInfo;
+  final VoidCallback onChooseFolder;
 
-class _StorageTextField extends StatelessWidget {
-  final String label;
-  final String hint;
-
-  const _StorageTextField({
-    required this.label,
-    required this.hint,
+  const _StorageLocationCard({
+    required this.storageInfo,
+    required this.onChooseFolder,
   });
 
   @override
   Widget build(BuildContext context) {
-    return TextField(
-      style: AppTextStyles.body,
-      decoration: InputDecoration(
-        labelText: label,
-        hintText: hint,
-        labelStyle: AppTextStyles.caption,
-        hintStyle: AppTextStyles.bodySecondary,
-        filled: true,
-        fillColor: AppColors.card,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.border),
+    final connected = storageInfo.granted;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: AppColors.backgroundSecondary,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              connected
+                  ? Icons.folder_shared_outlined
+                  : Icons.folder_open_outlined,
+              color: AppColors.accent,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  connected ? 'STALA Storage Connected' : 'App Storage',
+                  style: AppTextStyles.cardTitle.copyWith(fontSize: 15),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  connected
+                      ? (storageInfo.displayName ?? 'Selected folder')
+                      : 'Choose a folder to make exports visible outside the app.',
+                  style: AppTextStyles.bodySecondary,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: onChooseFolder,
+            child: Text(
+              connected ? 'Change' : 'Choose',
+              style: AppTextStyles.caption.copyWith(color: AppColors.accent),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ImportFileTile extends StatelessWidget {
+  final SavedItemData data;
+  final VoidCallback onTap;
+
+  const _ImportFileTile({required this.data, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppColors.border),
         ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppColors.border),
+        child: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: AppColors.backgroundSecondary,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'ST',
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.accent,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    data.title,
+                    style: AppTextStyles.body.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    data.filePath,
+                    style: AppTextStyles.caption,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(
+              Icons.file_open_outlined,
+              color: AppColors.textSecondary,
+              size: 20,
+            ),
+          ],
         ),
       ),
     );
@@ -1051,13 +1351,18 @@ class _SettingsTabViewState extends State<_SettingsTabView>
 
   bool _notificationPermission = false;
   bool _accessibilityEnabled = false;
+  StorageAccessInfo _storageAccessInfo = const StorageAccessInfo(
+    granted: false,
+  );
 
   int _aboutTapCount = 0;
   bool _showDebugControl = false;
   bool _debugPageEnabled = false;
 
   final DebugSettingsRepository _debugSettingsRepository =
-  const DebugSettingsRepository();
+      const DebugSettingsRepository();
+  final StorageAccessService _storageAccessService =
+      const StorageAccessService();
 
   @override
   void initState() {
@@ -1066,6 +1371,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
     _loadPermissionStates();
     _loadDebugSettings();
     _loadAppSettings();
+    _loadStorageAccessInfo();
   }
 
   @override
@@ -1074,12 +1380,12 @@ class _SettingsTabViewState extends State<_SettingsTabView>
     super.dispose();
   }
 
-
   /// Refresh permission states after returning from settings.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _loadPermissionStates();
+      _loadStorageAccessInfo();
     }
   }
 
@@ -1095,7 +1401,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
     final photosStatus = await Permission.photos.status;
     final notificationStatus = await Permission.notification.status;
     final accessibilityStatus =
-    await AccessibilityServiceHelper.isAccessibilityEnabled();
+        await AccessibilityServiceHelper.isAccessibilityEnabled();
 
     if (!mounted) return;
 
@@ -1136,6 +1442,69 @@ class _SettingsTabViewState extends State<_SettingsTabView>
     }
   }
 
+  Future<void> _loadStorageAccessInfo() async {
+    final info = await _storageAccessService.getStorageFolder();
+
+    if (!mounted) return;
+
+    setState(() {
+      _storageAccessInfo = info;
+    });
+  }
+
+  Future<void> _chooseStorageFolder() async {
+    final shouldContinue = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: AppColors.card,
+          title: Text(
+            'Allow STALA File Access',
+            style: AppTextStyles.cardTitle,
+          ),
+          content: Text(
+            'Choose a folder STALA can use to save, import, export, rename, and delete .stala and .zip files.',
+            style: AppTextStyles.bodySecondary,
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text('Cancel', style: AppTextStyles.button),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: AppColors.textPrimary,
+              ),
+              onPressed: () => Navigator.pop(context, true),
+              child: Text('Choose Folder', style: AppTextStyles.button),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldContinue != true) return;
+
+    final info = await _storageAccessService.pickStorageFolder();
+
+    if (!mounted) return;
+
+    setState(() {
+      _storageAccessInfo = info;
+    });
+  }
+
+  Future<void> _resetStorageFolder() async {
+    await _storageAccessService.clearStorageFolder();
+
+    if (!mounted) return;
+
+    setState(() {
+      _storageAccessInfo = const StorageAccessInfo(granted: false);
+    });
+  }
+
   Future<void> _requestNotificationPermission() async {
     final status = await Permission.notification.request();
 
@@ -1151,9 +1520,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
   }
 
   /// Open app settings when user tries to turn OFF a permission.
-  Future<void> _openPermissionSettings({
-    required String permissionName,
-  }) async {
+  Future<void> _openPermissionSettings({required String permissionName}) async {
     await showDialog(
       context: context,
       builder: (context) {
@@ -1165,7 +1532,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
           ),
           content: Text(
             '$permissionName permission cannot usually be disabled directly from inside the app. '
-                'You will be redirected to App Settings to change it manually.',
+            'You will be redirected to App Settings to change it manually.',
             style: AppTextStyles.bodySecondary,
           ),
           actions: [
@@ -1187,10 +1554,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                 Navigator.pop(context);
                 await openAppSettings();
               },
-              child: Text(
-                'Open Settings',
-                style: AppTextStyles.button,
-              ),
+              child: Text('Open Settings', style: AppTextStyles.button),
             ),
           ],
         );
@@ -1205,13 +1569,10 @@ class _SettingsTabViewState extends State<_SettingsTabView>
       builder: (context) {
         return AlertDialog(
           backgroundColor: AppColors.card,
-          title: Text(
-            'Enable Accessibility',
-            style: AppTextStyles.cardTitle,
-          ),
+          title: Text('Enable Accessibility', style: AppTextStyles.cardTitle),
           content: Text(
             'Accessibility access cannot be granted from a normal permission popup. '
-                'You will be redirected to device settings where you can enable it manually.',
+            'You will be redirected to device settings where you can enable it manually.',
             style: AppTextStyles.bodySecondary,
           ),
           actions: [
@@ -1236,17 +1597,14 @@ class _SettingsTabViewState extends State<_SettingsTabView>
 
                 if (!mounted) return;
                 final enabled =
-                await AccessibilityServiceHelper.isAccessibilityEnabled();
+                    await AccessibilityServiceHelper.isAccessibilityEnabled();
 
                 if (!mounted) return;
                 setState(() {
                   _accessibilityEnabled = enabled;
                 });
               },
-              child: Text(
-                'Open Settings',
-                style: AppTextStyles.button,
-              ),
+              child: Text('Open Settings', style: AppTextStyles.button),
             ),
           ],
         );
@@ -1291,9 +1649,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Developer debug option unlocked.'),
-        ),
+        const SnackBar(content: Text('Developer debug option unlocked.')),
       );
     }
   }
@@ -1318,10 +1674,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
       key: const ValueKey('settings-content'),
       physics: const BouncingScrollPhysics(),
       children: [
-        const _SectionHeader(
-          title: 'Settings',
-          actionText: 'Manage',
-        ),
+        const _SectionHeader(title: 'Settings', actionText: 'Manage'),
         const SizedBox(height: 14),
 
         /// Controls
@@ -1346,10 +1699,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                 },
                 contentPadding: EdgeInsets.zero,
                 activeColor: AppColors.accent,
-                title: Text(
-                  'Enable Auto-save',
-                  style: AppTextStyles.body,
-                ),
+                title: Text('Enable Auto-save', style: AppTextStyles.body),
               ),
               const SizedBox(height: 4),
               Row(
@@ -1379,7 +1729,10 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                           style: AppTextStyles.body,
                           items: const [
                             DropdownMenuItem(value: 'zip', child: Text('zip')),
-                            DropdownMenuItem(value: 'stala', child: Text('stala')),
+                            DropdownMenuItem(
+                              value: 'stala',
+                              child: Text('stala'),
+                            ),
                           ],
                           onChanged: (value) async {
                             if (value == null) return;
@@ -1403,14 +1756,14 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                 value: _autoSaveToCloud,
                 onChanged: _autoSaveEnabled
                     ? (value) async {
-                  await _appSettingsRepository.setAutoSaveToCloud(value);
+                        await _appSettingsRepository.setAutoSaveToCloud(value);
 
-                  if (!mounted) return;
+                        if (!mounted) return;
 
-                  setState(() {
-                    _autoSaveToCloud = value;
-                  });
-                }
+                        setState(() {
+                          _autoSaveToCloud = value;
+                        });
+                      }
                     : null, // disables switch
                 contentPadding: EdgeInsets.zero,
                 activeColor: AppColors.accent,
@@ -1428,10 +1781,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                   onChanged: _toggleDebugPage,
                   contentPadding: EdgeInsets.zero,
                   activeColor: AppColors.accent,
-                  title: Text(
-                    'Enable Debug Page',
-                    style: AppTextStyles.body,
-                  ),
+                  title: Text('Enable Debug Page', style: AppTextStyles.body),
                   subtitle: Text(
                     _debugPageEnabled
                         ? 'Debug page will appear before the Result page.'
@@ -1442,7 +1792,6 @@ class _SettingsTabViewState extends State<_SettingsTabView>
               ],
             ],
           ),
-
         ),
         const SizedBox(height: 10),
 
@@ -1489,12 +1838,53 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                 contentPadding: EdgeInsets.zero,
                 activeColor: AppColors.accent,
                 title: Text(
-                  'Storage Access Permission',
+                  'Gallery / Photos Permission',
                   style: AppTextStyles.body,
                 ),
                 subtitle: Text(
-                  'Required for gallery photo access and local output access.',
+                  'Required for choosing source images from the gallery.',
                   style: AppTextStyles.bodySecondary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  _storageAccessInfo.granted
+                      ? Icons.folder_shared_outlined
+                      : Icons.folder_open_outlined,
+                  color: AppColors.accent,
+                ),
+                title: Text('STALA Storage Folder', style: AppTextStyles.body),
+                subtitle: Text(
+                  _storageAccessInfo.granted
+                      ? (_storageAccessInfo.displayName ?? 'Selected folder')
+                      : 'Choose a folder for visible .stala, .zip, and PNG exports.',
+                  style: AppTextStyles.bodySecondary,
+                ),
+                trailing: Wrap(
+                  spacing: 4,
+                  children: [
+                    if (_storageAccessInfo.granted)
+                      TextButton(
+                        onPressed: _resetStorageFolder,
+                        child: Text(
+                          'Reset',
+                          style: AppTextStyles.caption.copyWith(
+                            color: AppColors.textSecondary,
+                          ),
+                        ),
+                      ),
+                    TextButton(
+                      onPressed: _chooseStorageFolder,
+                      child: Text(
+                        _storageAccessInfo.granted ? 'Change' : 'Choose',
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.accent,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
               SwitchListTile(
@@ -1522,10 +1912,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
               const SizedBox(height: 8),
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                title: Text(
-                  'Accessibility Access',
-                  style: AppTextStyles.body,
-                ),
+                title: Text('Accessibility Access', style: AppTextStyles.body),
                 subtitle: Text(
                   _accessibilityEnabled
                       ? 'Accessibility service is enabled.'
@@ -1557,15 +1944,12 @@ class _SettingsTabViewState extends State<_SettingsTabView>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _InfoDetailRow(
-                label: 'Version',
-                value: 'stala-version-1',
-              ),
+              _InfoDetailRow(label: 'Version', value: 'stala-version-1'),
               SizedBox(height: 10),
               _InfoDetailRow(
                 label: 'Description',
                 value:
-                'A musical application for a GrandStaff (Piano) to Tablature (Guitar) translation.',
+                    'A musical application for a GrandStaff (Piano) to Tablature (Guitar) translation.',
               ),
               SizedBox(height: 10),
               GestureDetector(
@@ -1573,7 +1957,7 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                 child: const _InfoDetailRow(
                   label: 'About Us',
                   value:
-                  'A team of college students developing STALA as a music translation support application.',
+                      'A team of college students developing STALA as a music translation support application.',
                 ),
               ),
             ],
@@ -1584,14 +1968,10 @@ class _SettingsTabViewState extends State<_SettingsTabView>
   }
 
   final AppSettingsRepository _appSettingsRepository =
-  const AppSettingsRepository();
+      const AppSettingsRepository();
 }
 
-enum _SettingsPanel {
-  controls,
-  permissions,
-  information,
-}
+enum _SettingsPanel { controls, permissions, information }
 
 /// ------------------------------------------------------------
 /// SHARED SECTION HEADER
@@ -1613,10 +1993,7 @@ class _SectionHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Text(
-          title,
-          style: AppTextStyles.sectionTitle.copyWith(fontSize: 22),
-        ),
+        Text(title, style: AppTextStyles.sectionTitle.copyWith(fontSize: 22)),
         const SizedBox(width: 10),
         Container(
           width: 18,
@@ -1638,71 +2015,6 @@ class _SectionHeader extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-/// ------------------------------------------------------------
-/// SHARED INFO CARD
-/// ------------------------------------------------------------
-/// Used in Search tab cards.
-class _InfoCard extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final IconData icon;
-
-  const _InfoCard({
-    required this.title,
-    required this.subtitle,
-    required this.icon,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.card,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withOpacity(0.05)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: AppColors.backgroundSecondary,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              icon,
-              color: AppColors.accent,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: AppTextStyles.cardTitle.copyWith(fontSize: 15),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: AppTextStyles.bodySecondary.copyWith(
-                    fontSize: 12,
-                    height: 1.4,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -1754,10 +2066,7 @@ class _ExpandableSettingsCard extends StatelessWidget {
                     color: AppColors.backgroundSecondary,
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Icon(
-                    icon,
-                    color: AppColors.accent,
-                  ),
+                  child: Icon(icon, color: AppColors.accent),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -1817,10 +2126,7 @@ class _InfoDetailRow extends StatelessWidget {
   final String label;
   final String value;
 
-  const _InfoDetailRow({
-    required this.label,
-    required this.value,
-  });
+  const _InfoDetailRow({required this.label, required this.value});
 
   @override
   Widget build(BuildContext context) {
@@ -1830,9 +2136,7 @@ class _InfoDetailRow extends StatelessWidget {
         children: [
           TextSpan(
             text: '$label: ',
-            style: AppTextStyles.body.copyWith(
-              fontWeight: FontWeight.w700,
-            ),
+            style: AppTextStyles.body.copyWith(fontWeight: FontWeight.w700),
           ),
           TextSpan(
             text: value,
@@ -1885,16 +2189,14 @@ class _PanelFooter extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 decoration: BoxDecoration(
                   color: AppColors.backgroundSecondary,
-                  border: Border.all(
-                    color: Colors.white.withOpacity(0.04),
-                  ),
+                  border: Border.all(color: Colors.white.withOpacity(0.04)),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: [
                     _NavItem(
-                      icon: Icons.search,
-                      label: 'Search',
+                      icon: Icons.drive_folder_upload_outlined,
+                      label: 'Import',
                       isSelected: selectedTab == PanelTab.search,
                       onTap: () => onTabSelected(PanelTab.search),
                     ),
@@ -1934,10 +2236,7 @@ class _PanelFooter extends StatelessWidget {
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     gradient: const LinearGradient(
-                      colors: [
-                        Color(0xFFFFA36A),
-                        Color(0xFFFF6F4E),
-                      ],
+                      colors: [Color(0xFFFFA36A), Color(0xFFFF6F4E)],
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                     ),
@@ -1954,9 +2253,7 @@ class _PanelFooter extends StatelessWidget {
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: AppColors.accent,
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.18),
-                      ),
+                      border: Border.all(color: Colors.white.withOpacity(0.18)),
                     ),
                     child: const Icon(
                       Icons.camera_alt_outlined,
@@ -2012,8 +2309,7 @@ class _NavItem extends StatelessWidget {
               style: AppTextStyles.caption.copyWith(
                 color: isSelected ? activeColor : inactiveColor,
                 fontSize: 10.5,
-                fontWeight:
-                isSelected ? FontWeight.w600 : FontWeight.w400,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
               ),
             ),
           ],

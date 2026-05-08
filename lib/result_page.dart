@@ -28,10 +28,7 @@ class _ResultPageState extends State<ResultPage> {
   bool _isMuted = false;
   List<int> _activeMidiNotes = [];
 
-  int _toMidiNote({
-    required int stringNumber,
-    required int fret,
-  }) {
+  int _toMidiNote({required int stringNumber, required int fret}) {
     const openStringMidi = {
       6: 40, // E2
       5: 45, // A2
@@ -53,16 +50,39 @@ class _ResultPageState extends State<ResultPage> {
   int _currentColumnIndex = 0;
   bool _isPlaying = false;
   Timer? _timer;
+  Timer? _autoSaveStatusTimer;
   bool _didSave = false;
+  bool _showAutoSaveStatus = false;
 
-  GeneratedTabResult get _currentTab => widget.generatedTabs[_selectedModeIndex];
+  GeneratedTabResult get _currentTab =>
+      widget.generatedTabs[_selectedModeIndex];
 
   GeneratedTabColumn get _currentColumn =>
       _currentTab.columns[_currentColumnIndex];
 
   @override
+  void initState() {
+    super.initState();
+
+    final hasAutoSaveStatus =
+        widget.session.autoSavedAt != null || widget.session.autoSaveFailed;
+
+    if (hasAutoSaveStatus) {
+      _showAutoSaveStatus = true;
+      _autoSaveStatusTimer = Timer(const Duration(seconds: 4), () {
+        if (!mounted) return;
+
+        setState(() {
+          _showAutoSaveStatus = false;
+        });
+      });
+    }
+  }
+
+  @override
   void dispose() {
     _timer?.cancel();
+    _autoSaveStatusTimer?.cancel();
     _audioService.stopAll();
     _tabScrollController.dispose();
     super.dispose();
@@ -103,9 +123,10 @@ class _ResultPageState extends State<ResultPage> {
 
     await Future.delayed(
       Duration(
-        milliseconds: (_currentColumn.durationSeconds * 1000)
-            .round()
-            .clamp(250, 900),
+        milliseconds: (_currentColumn.durationSeconds * 1000).round().clamp(
+          250,
+          900,
+        ),
       ),
     );
 
@@ -183,8 +204,8 @@ class _ResultPageState extends State<ResultPage> {
 
     final target =
         (_currentColumnIndex * _currentTab.columnWidth) -
-            (viewportWidth / 2) +
-            (_currentTab.columnWidth / 2);
+        (viewportWidth / 2) +
+        (_currentTab.columnWidth / 2);
 
     final safeTarget = target.clamp(
       0.0,
@@ -229,13 +250,21 @@ class _ResultPageState extends State<ResultPage> {
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new_rounded),
-          color: AppColors.surface,
+          color: AppColors.textPrimary,
           onPressed: _exitResultPage,
         ),
         title: Text(
           'Result',
           style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
         ),
+        actions: [
+          IconButton(
+            tooltip: 'Save as PNG',
+            icon: const Icon(Icons.image_outlined),
+            color: AppColors.textPrimary,
+            onPressed: _saveCurrentTabAsPng,
+          ),
+        ],
       ),
       body: SafeArea(
         child: Column(
@@ -267,8 +296,6 @@ class _ResultPageState extends State<ResultPage> {
                       onPositionTap: _showFretDetail,
                     ),
                   ),
-                  const SizedBox(height: 18),
-                  _buildBottomActions(),
                 ],
               ),
             ),
@@ -317,6 +344,8 @@ class _ResultPageState extends State<ResultPage> {
   }
 
   Widget _buildAutoSaveStatus() {
+    if (!_showAutoSaveStatus) return const SizedBox.shrink();
+
     final session = widget.session;
 
     if (session.autoSavedAt == null && !session.autoSaveFailed) {
@@ -385,7 +414,9 @@ class _ResultPageState extends State<ResultPage> {
               ),
               const SizedBox(width: 10),
               _RoundControlButton(
-                icon: _isMuted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                icon: _isMuted
+                    ? Icons.volume_off_rounded
+                    : Icons.volume_up_rounded,
                 onTap: () async {
                   final nextMuted = !_isMuted;
 
@@ -449,6 +480,7 @@ class _ResultPageState extends State<ResultPage> {
               ],
             ),
           ),
+
           /// Commented out, but helps for sound debugging
           /*
           ElevatedButton(
@@ -465,26 +497,6 @@ class _ResultPageState extends State<ResultPage> {
           */
         ],
       ),
-    );
-  }
-
-  Widget _buildBottomActions() {
-    return Row(
-      children: [
-        Expanded(
-          child: OutlinedButton(
-            onPressed: _exitResultPage,
-            child: const Text('Back'),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: ElevatedButton(
-            onPressed: _showSaveOptions,
-            child: const Text('Save As'),
-          ),
-        ),
-      ],
     );
   }
 
@@ -515,87 +527,29 @@ class _ResultPageState extends State<ResultPage> {
     );
   }
 
-  void _showSaveOptions() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppColors.card,
-      builder: (_) {
-        return SafeArea(
-          child: Wrap(
-            children: [
-              ListTile(
-                title: const Text('Save as PNG', style: AppTextStyles.cardTitle),
-                subtitle: const Text('Export tablature image pages', style: AppTextStyles.caption),
-                onTap: () async {
-                  Navigator.pop(context);
+  Future<void> _saveCurrentTabAsPng() async {
+    try {
+      await const SaveExportService().saveTabPngPages(
+        title: _currentTab.title,
+        tab: _currentTab,
+      );
 
-                  final files = await const SaveExportService().saveTabPngPages(
-                    title: _currentTab.title,
-                    tab: _currentTab,
-                  );
+      if (!mounted) return;
 
-                  if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Saved PNG page(s) successfully.')),
+      );
 
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Saved PNG page(s) successfully.'),
-                    ),
-                  );
-                  setState(() {
-                    _didSave = true;
-                  });
-                },
-              ),
-              ListTile(
-                title: const Text('Save as .stala', style: AppTextStyles.cardTitle),
-                subtitle: const Text('Export structured project data', style: AppTextStyles.caption),
-                onTap: () async {
-                  Navigator.pop(context);
+      setState(() {
+        _didSave = true;
+      });
+    } catch (error) {
+      if (!mounted) return;
 
-                  final file = await const SaveExportService().saveStalaFile(
-                    session: widget.session,
-                  );
-
-                  if (!mounted) return;
-
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Saved .stala file successfully.'),
-                    ),
-                  );
-                  setState(() {
-                    _didSave = true;
-                  });
-                },
-              ),
-              ListTile(
-                title: const Text('Save as ZIP', style: AppTextStyles.cardTitle),
-                subtitle: const Text('Export PNG pages + .stala file', style: AppTextStyles.caption),
-                onTap: () async {
-                  Navigator.pop(context);
-
-                  final file = await const SaveExportService().saveZipPackage(
-                    session: widget.session,
-                    selectedModeIndex: _selectedModeIndex,
-                  );
-
-                  if (!mounted) return;
-
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Saved ZIP package successfully.'),
-                    ),
-                  );
-                  setState(() {
-                    _didSave = true;
-                  });
-                },
-              ),
-            ],
-          ),
-        );
-      },
-    );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to save PNG: $error')));
+    }
   }
 
   String _formatMode(String raw) {
@@ -684,7 +638,12 @@ class _ResultCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: AppTextStyles.body.copyWith(fontWeight: FontWeight.w700)),
+                Text(
+                  title,
+                  style: AppTextStyles.body.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
                 const SizedBox(height: 3),
                 Text(subtitle, style: AppTextStyles.caption),
               ],
@@ -744,10 +703,7 @@ class _TabPainter extends CustomPainter {
   final GeneratedTabResult tab;
   final int currentColumnIndex;
 
-  _TabPainter({
-    required this.tab,
-    required this.currentColumnIndex,
-  });
+  _TabPainter({required this.tab, required this.currentColumnIndex});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -768,8 +724,7 @@ class _TabPainter extends CustomPainter {
 
     final textPainter = TextPainter(textDirection: TextDirection.ltr);
 
-    final currentX =
-        leftLabelWidth + (currentColumnIndex * tab.columnWidth);
+    final currentX = leftLabelWidth + (currentColumnIndex * tab.columnWidth);
 
     canvas.drawRect(
       Rect.fromLTWH(currentX, 12, tab.columnWidth, 190),
@@ -822,7 +777,8 @@ class _TabPainter extends CustomPainter {
         );
 
         final bgPaint = Paint()
-          ..color = column.eventIndex == tab.columns[currentColumnIndex].eventIndex
+          ..color =
+              column.eventIndex == tab.columns[currentColumnIndex].eventIndex
               ? AppColors.accent
               : AppColors.surface;
 
@@ -834,7 +790,8 @@ class _TabPainter extends CustomPainter {
       }
     }
 
-    final progressX = leftLabelWidth +
+    final progressX =
+        leftLabelWidth +
         (currentColumnIndex * tab.columnWidth) +
         (tab.columnWidth / 2);
 
@@ -856,10 +813,7 @@ class _FretboardViewer extends StatelessWidget {
   final GeneratedTabColumn column;
   final ValueChanged<GeneratedTabNumber> onPositionTap;
 
-  const _FretboardViewer({
-    required this.column,
-    required this.onPositionTap,
-  });
+  const _FretboardViewer({required this.column, required this.onPositionTap});
 
   @override
   Widget build(BuildContext context) {
@@ -999,9 +953,7 @@ class _RoundControlButton extends StatelessWidget {
         ),
         child: Icon(
           icon,
-          color: onTap == null
-              ? AppColors.textMuted
-              : AppColors.textPrimary,
+          color: onTap == null ? AppColors.textMuted : AppColors.textPrimary,
         ),
       ),
     );
