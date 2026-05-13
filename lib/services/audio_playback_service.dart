@@ -11,19 +11,14 @@ class AudioPlaybackService {
 
   Future<void> init() async {
     if (_isInitialized) {
-      print('AUDIO: already initialized sfId=$_soundFontId');
       return;
     }
-
-    print('AUDIO: loading soundfont...');
 
     _soundFontId = await _midi.loadSoundfontAsset(
       assetPath: 'assets/soundfonts/acoustic_guitar.sf2',
       bank: _guitarBank,
       program: _guitarProgram,
     );
-
-    print('AUDIO: soundfont loaded sfId=$_soundFontId');
 
     await _midi.selectInstrument(
       sfId: _soundFontId,
@@ -32,15 +27,11 @@ class AudioPlaybackService {
       program: _guitarProgram,
     );
 
-    print('AUDIO: selected instrument program 24');
-
     _isInitialized = true;
   }
 
   Future<void> playNote(int midiNote, {int velocity = 120}) async {
     await init();
-
-    print('AUDIO: playNote key=$midiNote sfId=$_soundFontId velocity=$velocity');
 
     await _midi.playNote(
       sfId: _soundFontId,
@@ -53,11 +44,7 @@ class AudioPlaybackService {
   Future<void> stopNote(int midiNote) async {
     if (!_isInitialized) return;
 
-    await _midi.stopNote(
-      sfId: _soundFontId,
-      channel: 0,
-      key: midiNote,
-    );
+    await _midi.stopNote(sfId: _soundFontId, channel: 0, key: midiNote);
   }
 
   Future<void> playChord(List<int> notes, {int velocity = 95}) async {
@@ -74,8 +61,6 @@ class AudioPlaybackService {
     for (final note in notes) {
       await stopNote(note);
     }
-
-    await stopAll();
   }
 
   Future<void> stopAll() async {
@@ -96,11 +81,7 @@ class AudioPlaybackService {
 
     await Future.delayed(const Duration(milliseconds: 1200));
 
-    await _midi.stopNote(
-      sfId: _soundFontId,
-      channel: 0,
-      key: 64,
-    );
+    await _midi.stopNote(sfId: _soundFontId, channel: 0, key: 64);
   }
 
   /// For debugging sound
