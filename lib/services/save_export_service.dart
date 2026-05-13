@@ -2,17 +2,19 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
-import 'package:path/path.dart' as p;
-import 'package:gallery_saver_plus/gallery_saver.dart';
+
+import 'package:archive/archive.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:archive/archive_io.dart';
+import 'package:image/image.dart' as img;
+import 'package:path/path.dart' as p;
 
 import '../services/generation_service.dart';
 import '../models/session_data.dart';
 import '../models/saved_item_data.dart';
 import '../data/recent_items_repository.dart';
 import 'storage_access_service.dart';
+
+enum TablatureExportOrientation { portrait, landscape }
 
 class SaveExportService {
   const SaveExportService();
@@ -21,15 +23,13 @@ class SaveExportService {
       StorageAccessService();
 
   Future<File> saveStalaFile({required SessionData session}) async {
-    final directory = await _getExportDirectory('saved');
-
     final safeTitle = _safeFileName(
       session.projectName.isEmpty ? 'stala_output' : session.projectName,
     );
 
     final timestamp = DateTime.now().millisecondsSinceEpoch;
 
-    final file = File('${directory.path}/${safeTitle}_$timestamp.stala');
+    final fileName = '${safeTitle}_$timestamp.stala';
 
     final data = {
       'format': 'stala',
@@ -40,15 +40,19 @@ class SaveExportService {
 
     final content = const JsonEncoder.withIndent('  ').convert(data);
 
-    await file.writeAsString(content);
-    await _writeSafTextIfAvailable(
+    final storage = await _storageAccessService.getStorageFolder();
+    if (!storage.granted) {
+      throw const StoragePathRequiredException();
+    }
+
+    final writeResult = await _storageAccessService.writeTextFile(
       relativeDir: 'saved',
-      fileName: p.basename(file.path),
-      mimeType: 'application/json',
+      fileName: fileName,
+      mimeType: 'application/octet-stream',
       content: content,
     );
 
-    return file;
+    return File(writeResult.uri);
   }
 
   Future<SessionData> loadStalaFile(File file) async {
@@ -63,53 +67,137 @@ class SaveExportService {
   Future<List<File>> saveTabPngPages({
     required String title,
     required GeneratedTabResult tab,
+    TablatureExportOrientation orientation = TablatureExportOrientation.portrait,
   }) async {
-    final directory = await _getExportDirectory('photo');
-
+    await _requireStorageFolder();
     final safeTitle = _safeFileName(title.isEmpty ? 'tablature' : title);
     final timestamp = DateTime.now().millisecondsSinceEpoch;
-
-    final exportDir = Directory(
-      '${directory.path}/${safeTitle}_png_$timestamp',
+    final exportDirName = '${safeTitle}_png_$timestamp';
+    final files = <File>[];
+    final pngBytes = await _renderTabPngBytes(
+      title: title,
+      tab: tab,
+      orientation: orientation,
     );
 
-    if (!await exportDir.exists()) {
-      await exportDir.create(recursive: true);
-    }
+    for (int index = 0; index < pngBytes.length; index++) {
+      final fileName = 'tab_${(index + 1).toString().padLeft(3, '0')}.png';
+      final bytes = pngBytes[index];
 
-    final files = <File>[];
-
-    for (final page in tab.exportPages) {
-      final image = await _renderTabPageToImage(
-        title: title,
-        tab: tab,
-        page: page,
-        totalPages: tab.exportPages.length,
-      );
-
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-
-      if (byteData == null) continue;
-
-      final file = File(
-        '${exportDir.path}/tab_${(page.pageIndex + 1).toString().padLeft(3, '0')}.png',
-      );
-
-      await file.writeAsBytes(byteData.buffer.asUint8List());
-      files.add(file);
-
-      await _writeSafBytesIfAvailable(
-        relativeDir: 'photo/${p.basename(exportDir.path)}',
-        fileName: p.basename(file.path),
+      final writeResult = await _storageAccessService.writeBinaryFile(
+        relativeDir: 'photo/$exportDirName',
+        fileName: fileName,
         mimeType: 'image/png',
-        bytes: byteData.buffer.asUint8List(),
+        bytes: bytes,
       );
-
-      // Save to gallery (VISIBLE TO USER)
-      await GallerySaver.saveImage(file.path);
+      files.add(File(writeResult.uri));
     }
 
     return files;
+  }
+
+  Future<List<Uint8List>> _renderTabPngBytes({
+    required String title,
+    required GeneratedTabResult tab,
+    required TablatureExportOrientation orientation,
+  }) async {
+    final pagesToRender = orientation == TablatureExportOrientation.portrait
+        ? [
+            await _renderPortraitTabPagesToImage(
+              title: title,
+              tab: tab,
+            ),
+          ]
+        : <ui.Image>[];
+
+    if (orientation == TablatureExportOrientation.landscape) {
+      for (final page in tab.exportPages) {
+        pagesToRender.add(
+          await _renderTabPageToImage(
+            title: title,
+            tab: tab,
+            page: page,
+            totalPages: tab.exportPages.length,
+            orientation: orientation,
+          ),
+        );
+      }
+    }
+
+    final pngBytes = <Uint8List>[];
+    for (final image in pagesToRender) {
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) continue;
+
+      pngBytes.add(byteData.buffer.asUint8List());
+    }
+
+    return pngBytes;
+  }
+
+  Future<File> saveTabPdf({
+    required String title,
+    required GeneratedTabResult tab,
+    TablatureExportOrientation orientation = TablatureExportOrientation.portrait,
+  }) async {
+    await _requireStorageFolder();
+    final safeTitle = _safeFileName(title.isEmpty ? 'tablature' : title);
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final fileName = '${safeTitle}_$timestamp.pdf';
+
+    final pageImages = <_PdfImagePage>[];
+
+    final renderedPages = orientation == TablatureExportOrientation.portrait
+        ? [
+            await _renderPortraitTabPagesToImage(
+              title: title,
+              tab: tab,
+            ),
+          ]
+        : <ui.Image>[];
+
+    if (orientation == TablatureExportOrientation.landscape) {
+      for (final page in tab.exportPages) {
+        renderedPages.add(
+          await _renderTabPageToImage(
+            title: title,
+            tab: tab,
+            page: page,
+            totalPages: tab.exportPages.length,
+            orientation: orientation,
+          ),
+        );
+      }
+    }
+
+    for (final rendered in renderedPages) {
+      final byteData = await rendered.toByteData(
+        format: ui.ImageByteFormat.png,
+      );
+
+      if (byteData == null) continue;
+
+      final decoded = img.decodePng(byteData.buffer.asUint8List());
+      if (decoded == null) continue;
+
+      pageImages.add(
+        _PdfImagePage(
+          bytes: Uint8List.fromList(img.encodeJpg(decoded, quality: 92)),
+          width: rendered.width,
+          height: rendered.height,
+        ),
+      );
+    }
+
+    final pdfBytes = _buildImagePdf(pageImages);
+    final writeResult = await _storageAccessService.writeBinaryFile(
+      relativeDir: 'pdf',
+      fileName: fileName,
+      mimeType: 'application/pdf',
+      bytes: pdfBytes,
+    );
+
+    return File(writeResult.uri);
   }
 
   Future<ui.Image> _renderTabPageToImage({
@@ -117,22 +205,25 @@ class SaveExportService {
     required GeneratedTabResult tab,
     required TabExportPage page,
     required int totalPages,
+    required TablatureExportOrientation orientation,
   }) async {
-    const double pageWidth = 1400;
+    final pageWidth =
+        orientation == TablatureExportOrientation.landscape ? 2100.0 : 1400.0;
+    final pageHeight =
+        orientation == TablatureExportOrientation.landscape ? 1180.0 : 1980.0;
     const double margin = 80;
     const double titleHeight = 120;
     const double infoHeight = 54;
-    const double topPadding = titleHeight + infoHeight + 50;
+    final topPadding = orientation == TablatureExportOrientation.landscape
+        ? titleHeight + infoHeight + 110
+        : titleHeight + infoHeight + 360;
     const double rowHeight = 58;
-    const double bottomPadding = 100;
     const double labelWidth = 54;
 
     final usableWidth = pageWidth - (margin * 2) - labelWidth;
     final columnWidth = page.columns.isEmpty
         ? 52.0
         : (usableWidth / page.columns.length).clamp(42.0, 72.0);
-
-    final pageHeight = topPadding + (6 * rowHeight) + bottomPadding;
 
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
@@ -289,22 +380,227 @@ class SaveExportService {
     return picture.toImage(pageWidth.ceil(), pageHeight.ceil());
   }
 
+  Future<ui.Image> _renderPortraitTabPagesToImage({
+    required String title,
+    required GeneratedTabResult tab,
+  }) async {
+    const double pageWidth = 1400;
+    const double pageHeight = 1980;
+    const double margin = 80;
+    const double labelWidth = 54;
+    const double headerTop = 44;
+    const double firstTabTop = 210;
+    const double footerHeight = 80;
+    const double sectionGap = 26;
+
+    final pages = tab.exportPages;
+    if (pages.isEmpty) {
+      return _renderEmptyPortraitPage(title: title, tab: tab);
+    }
+
+    final usableHeight =
+        pageHeight - firstTabTop - footerHeight - (sectionGap * (pages.length - 1));
+    final sectionHeight = usableHeight / pages.length;
+    final rowHeight = ((sectionHeight - 84) / 6).clamp(24.0, 58.0);
+    final tabAreaHeight = (6 * rowHeight) + 72;
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+
+    canvas.drawRect(
+      const Rect.fromLTWH(0, 0, pageWidth, pageHeight),
+      Paint()..color = Colors.white,
+    );
+
+    final textPainter = TextPainter(textDirection: TextDirection.ltr);
+
+    void drawText(
+      String text,
+      Offset offset, {
+      double fontSize = 24,
+      FontWeight fontWeight = FontWeight.normal,
+      Color color = Colors.black,
+      double? maxWidth,
+    }) {
+      textPainter.text = TextSpan(
+        text: text,
+        style: TextStyle(
+          color: color,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+        ),
+      );
+      textPainter.layout(maxWidth: maxWidth ?? pageWidth - (margin * 2));
+      textPainter.paint(canvas, offset);
+    }
+
+    drawText(
+      title.isEmpty ? 'STALA Tablature Export' : title,
+      const Offset(margin, headerTop),
+      fontSize: 34,
+      fontWeight: FontWeight.w800,
+    );
+
+    drawText(
+      'Mode: ${tab.mode.name}   -   ${pages.length} tablature section(s)',
+      const Offset(margin, 92),
+      fontSize: 20,
+      color: Colors.black54,
+    );
+
+    final linePaint = Paint()
+      ..color = Colors.black87
+      ..strokeWidth = 1.5;
+
+    final borderPaint = Paint()
+      ..color = Colors.black26
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.1;
+
+    for (int sectionIndex = 0; sectionIndex < pages.length; sectionIndex++) {
+      final page = pages[sectionIndex];
+      final sectionTop =
+          firstTabTop + (sectionIndex * (sectionHeight + sectionGap));
+      final tabTop = sectionTop + 42;
+      final usableWidth = pageWidth - (margin * 2) - labelWidth;
+      final columnWidth = page.columns.isEmpty
+          ? 52.0
+          : (usableWidth / page.columns.length).clamp(34.0, 72.0);
+
+      drawText(
+        'Tablature ${sectionIndex + 1}',
+        Offset(margin, sectionTop),
+        fontSize: 18,
+        fontWeight: FontWeight.w700,
+        color: Colors.black54,
+      );
+
+      final tabArea = Rect.fromLTWH(
+        margin - 24,
+        tabTop - 36,
+        pageWidth - (margin * 2) + 48,
+        tabAreaHeight,
+      );
+
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(tabArea, const Radius.circular(16)),
+        borderPaint,
+      );
+
+      for (final row in GenerationService.standardGuitarRows) {
+        final y = tabTop + row.visualIndex * rowHeight;
+
+        drawText(
+          '${row.label}|',
+          Offset(margin, y - 14),
+          fontSize: 20,
+          fontWeight: FontWeight.w700,
+        );
+
+        canvas.drawLine(
+          Offset(margin + labelWidth, y),
+          Offset(pageWidth - margin, y),
+          linePaint,
+        );
+      }
+
+      for (int localIndex = 0; localIndex < page.columns.length; localIndex++) {
+        final column = page.columns[localIndex];
+        final columnCenterX =
+            margin + labelWidth + (localIndex * columnWidth) + (columnWidth / 2);
+
+        if (column.isChord && column.label.isNotEmpty && rowHeight >= 32) {
+          drawText(
+            column.label,
+            Offset(columnCenterX - 18, tabTop - 30),
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+            color: Colors.black54,
+            maxWidth: 48,
+          );
+        }
+
+        for (final number in column.numbers) {
+          final y = tabTop + number.visualRowIndex * rowHeight;
+
+          textPainter.text = TextSpan(
+            text: number.fret.toString(),
+            style: const TextStyle(
+              color: Colors.black,
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+            ),
+          );
+          textPainter.layout();
+
+          final bgRect = RRect.fromRectAndRadius(
+            Rect.fromCenter(
+              center: Offset(columnCenterX, y),
+              width: textPainter.width + 14,
+              height: 30,
+            ),
+            const Radius.circular(8),
+          );
+
+          canvas.drawRRect(bgRect, Paint()..color = Colors.white);
+          canvas.drawRRect(
+            bgRect,
+            Paint()
+              ..color = Colors.black12
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1,
+          );
+
+          textPainter.paint(
+            canvas,
+            Offset(
+              columnCenterX - textPainter.width / 2,
+              y - textPainter.height / 2,
+            ),
+          );
+        }
+      }
+    }
+
+    drawText(
+      'Generated by STALA',
+      const Offset(margin, pageHeight - 52),
+      fontSize: 18,
+      color: Colors.black45,
+    );
+
+    final picture = recorder.endRecording();
+    return picture.toImage(pageWidth.ceil(), pageHeight.ceil());
+  }
+
+  Future<ui.Image> _renderEmptyPortraitPage({
+    required String title,
+    required GeneratedTabResult tab,
+  }) {
+    return _renderTabPageToImage(
+      title: title,
+      tab: tab,
+      page: const TabExportPage(
+        pageIndex: 0,
+        startEventIndex: 0,
+        endEventIndex: 0,
+        columns: [],
+      ),
+      totalPages: 1,
+      orientation: TablatureExportOrientation.portrait,
+    );
+  }
+
   Future<File> saveZipPackage({
     required SessionData session,
     required int selectedModeIndex,
   }) async {
-    final directory = await _getExportDirectory('zip');
-
+    await _requireStorageFolder();
     final safeTitle = _safeFileName(
       session.projectName.isEmpty ? 'stala_output' : session.projectName,
     );
     final timestamp = DateTime.now().millisecondsSinceEpoch;
-
-    final zipPath = '${directory.path}/${safeTitle}_$timestamp.zip';
-
-    final tempStalaFile = File(
-      '${directory.path}/${safeTitle}_temp_$timestamp.stala',
-    );
+    final fileName = '${safeTitle}_$timestamp.zip';
 
     final data = {
       'format': 'stala',
@@ -312,8 +608,7 @@ class SaveExportService {
       'exportedAt': DateTime.now().toIso8601String(),
       'session': session.toJson(),
     };
-
-    await tempStalaFile.writeAsString(
+    final stalaBytes = utf8.encode(
       const JsonEncoder.withIndent('  ').convert(data),
     );
 
@@ -322,48 +617,44 @@ class SaveExportService {
     );
 
     final selectedTab = generatedTabs[selectedModeIndex];
-
-    final pngFiles = await saveTabPngPages(
+    final pngBytes = await _renderTabPngBytes(
       title: session.projectName,
       tab: selectedTab,
+      orientation: TablatureExportOrientation.portrait,
     );
 
-    final encoder = ZipFileEncoder();
-    encoder.create(zipPath);
+    final archive = Archive();
+    archive.addFile(ArchiveFile('project.stala', stalaBytes.length, stalaBytes));
 
-    encoder.addFile(tempStalaFile, 'project.stala');
-
-    for (int i = 0; i < pngFiles.length; i++) {
-      encoder.addFile(
-        pngFiles[i],
-        'tablature/tab_${(i + 1).toString().padLeft(3, '0')}.png',
+    for (int i = 0; i < pngBytes.length; i++) {
+      archive.addFile(
+        ArchiveFile(
+          'tablature/tab_${(i + 1).toString().padLeft(3, '0')}.png',
+          pngBytes[i].length,
+          pngBytes[i],
+        ),
       );
     }
 
-    encoder.close();
-
-    final zipFile = File(zipPath);
-
-    if (await zipFile.exists()) {
-      await _writeSafBytesIfAvailable(
-        relativeDir: 'zip',
-        fileName: p.basename(zipFile.path),
-        mimeType: 'application/zip',
-        bytes: await zipFile.readAsBytes(),
-      );
+    final zipBytes = ZipEncoder().encode(archive);
+    if (zipBytes == null) {
+      throw const FormatException('Unable to create ZIP package.');
     }
 
-    if (await tempStalaFile.exists()) {
-      await tempStalaFile.delete();
-    }
+    final writeResult = await _storageAccessService.writeBinaryFile(
+      relativeDir: 'zip',
+      fileName: fileName,
+      mimeType: 'application/zip',
+      bytes: Uint8List.fromList(zipBytes),
+    );
 
-    return zipFile;
+    return File(writeResult.uri);
   }
 
   Future<File> saveBulkStalaZip({required List<SavedItemData> items}) async {
-    final directory = await _getExportDirectory('zip');
+    await _requireStorageFolder();
     final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final zipFile = File('${directory.path}/stala_bulk_export_$timestamp.zip');
+    final fileName = 'stala_bulk_export_$timestamp.zip';
     final exportedAt = DateTime.now().toIso8601String();
 
     final archive = Archive();
@@ -399,61 +690,18 @@ class SaveExportService {
     );
 
     final zipBytes = ZipEncoder().encode(archive);
+    if (zipBytes == null) {
+      throw const FormatException('Unable to create ZIP package.');
+    }
 
-    await zipFile.writeAsBytes(zipBytes);
-
-    await _writeSafBytesIfAvailable(
+    final writeResult = await _storageAccessService.writeBinaryFile(
       relativeDir: 'zip',
-      fileName: p.basename(zipFile.path),
+      fileName: fileName,
       mimeType: 'application/zip',
       bytes: Uint8List.fromList(zipBytes),
     );
 
-    return zipFile;
-  }
-
-  Future<void> _writeSafTextIfAvailable({
-    required String relativeDir,
-    required String fileName,
-    required String mimeType,
-    required String content,
-  }) async {
-    try {
-      final folder = await _storageAccessService.getStorageFolder();
-      if (!folder.granted) return;
-
-      await _storageAccessService.writeTextFile(
-        relativeDir: relativeDir,
-        fileName: fileName,
-        mimeType: mimeType,
-        content: content,
-      );
-    } catch (_) {
-      // App-private export still succeeds if the selected SAF folder is missing
-      // or the provider rejects the write.
-    }
-  }
-
-  Future<void> _writeSafBytesIfAvailable({
-    required String relativeDir,
-    required String fileName,
-    required String mimeType,
-    required Uint8List bytes,
-  }) async {
-    try {
-      final folder = await _storageAccessService.getStorageFolder();
-      if (!folder.granted) return;
-
-      await _storageAccessService.writeBinaryFile(
-        relativeDir: relativeDir,
-        fileName: fileName,
-        mimeType: mimeType,
-        bytes: bytes,
-      );
-    } catch (_) {
-      // App-private export still succeeds if the selected SAF folder is missing
-      // or the provider rejects the write.
-    }
+    return File(writeResult.uri);
   }
 
   String _safeFileName(String input) {
@@ -473,27 +721,128 @@ class SaveExportService {
     return '${base}_$suffix.stala';
   }
 
-  Future<Directory> _getStalaRootDirectory() async {
-    final baseDir = await getApplicationDocumentsDirectory();
-
-    final rootDir = Directory('${baseDir.path}/Stala');
-
-    if (!await rootDir.exists()) {
-      await rootDir.create(recursive: true);
+  Future<void> _requireStorageFolder() async {
+    final storage = await _storageAccessService.getStorageFolder();
+    if (!storage.granted) {
+      throw const StoragePathRequiredException();
     }
-
-    return rootDir;
   }
 
-  Future<Directory> _getExportDirectory(String folderName) async {
-    final rootDir = await _getStalaRootDirectory();
-
-    final targetDir = Directory('${rootDir.path}/$folderName');
-
-    if (!await targetDir.exists()) {
-      await targetDir.create(recursive: true);
+  Uint8List _buildImagePdf(List<_PdfImagePage> pages) {
+    if (pages.isEmpty) {
+      throw const FormatException('No tablature pages available for PDF.');
     }
 
-    return targetDir;
+    final objects = <List<int>>[];
+    final pageObjectNumbers = <int>[];
+
+    List<int> ascii(String value) => latin1.encode(value);
+
+    for (int index = 0; index < pages.length; index++) {
+      final page = pages[index];
+      final imageObjectNumber = 4 + (index * 3);
+      final contentObjectNumber = imageObjectNumber + 1;
+      final pageObjectNumber = imageObjectNumber + 2;
+      final imageName = 'Im${index + 1}';
+
+      objects.add(
+        _pdfStreamObject(
+          dictionary:
+              '<< /Type /XObject /Subtype /Image /Width ${page.width} /Height ${page.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.bytes.length} >>',
+          bytes: page.bytes,
+        ),
+      );
+
+      final content =
+          'q\n${page.width} 0 0 ${page.height} 0 0 cm\n/$imageName Do\nQ\n';
+      final contentBytes = ascii(content);
+
+      objects.add(
+        _pdfStreamObject(
+          dictionary: '<< /Length ${contentBytes.length} >>',
+          bytes: Uint8List.fromList(contentBytes),
+        ),
+      );
+
+      objects.add(
+        ascii(
+          '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.width} ${page.height}] /Resources << /XObject << /$imageName $imageObjectNumber 0 R >> >> /Contents $contentObjectNumber 0 R >>',
+        ),
+      );
+
+      pageObjectNumbers.add(pageObjectNumber);
+    }
+
+    final kids = pageObjectNumbers.map((number) => '$number 0 R').join(' ');
+    final catalog = ascii('<< /Type /Catalog /Pages 2 0 R >>');
+    final pageTree = ascii(
+      '<< /Type /Pages /Kids [$kids] /Count ${pages.length} >>',
+    );
+    final metadata = ascii(
+      '<< /Producer (STALA) /CreationDate (D:${_pdfTimestamp(DateTime.now())}) >>',
+    );
+
+    final allObjects = <List<int>>[
+      catalog,
+      pageTree,
+      metadata,
+      ...objects,
+    ];
+
+    final output = BytesBuilder();
+    output.add(ascii('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n'));
+
+    final offsets = <int>[0];
+
+    for (int i = 0; i < allObjects.length; i++) {
+      offsets.add(output.length);
+      output.add(ascii('${i + 1} 0 obj\n'));
+      output.add(allObjects[i]);
+      output.add(ascii('\nendobj\n'));
+    }
+
+    final xrefOffset = output.length;
+    output.add(ascii('xref\n0 ${allObjects.length + 1}\n'));
+    output.add(ascii('0000000000 65535 f \n'));
+
+    for (int i = 1; i < offsets.length; i++) {
+      output.add(ascii('${offsets[i].toString().padLeft(10, '0')} 00000 n \n'));
+    }
+
+    output.add(
+      ascii(
+        'trailer\n<< /Size ${allObjects.length + 1} /Root 1 0 R /Info 3 0 R >>\nstartxref\n$xrefOffset\n%%EOF\n',
+      ),
+    );
+
+    return output.toBytes();
   }
+
+  List<int> _pdfStreamObject({
+    required String dictionary,
+    required Uint8List bytes,
+  }) {
+    final builder = BytesBuilder();
+    builder.add(latin1.encode('$dictionary\nstream\n'));
+    builder.add(bytes);
+    builder.add(latin1.encode('\nendstream'));
+    return builder.toBytes();
+  }
+
+  String _pdfTimestamp(DateTime value) {
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${value.year}${two(value.month)}${two(value.day)}${two(value.hour)}${two(value.minute)}${two(value.second)}';
+  }
+}
+
+class _PdfImagePage {
+  final Uint8List bytes;
+  final int width;
+  final int height;
+
+  const _PdfImagePage({
+    required this.bytes,
+    required this.width,
+    required this.height,
+  });
 }

@@ -7,6 +7,7 @@ class SessionData {
   // Images
   final String originalImagePath;
   final String? croppedImagePath;
+  final String? preprocessedImagePath;
   final String? detectionImagePath;
   final String? segmentationImagePath;
 
@@ -34,6 +35,7 @@ class SessionData {
     required this.projectName,
     required this.originalImagePath,
     this.croppedImagePath,
+    this.preprocessedImagePath,
     this.detectionImagePath,
     this.segmentationImagePath,
     this.detectedSymbols = const [],
@@ -54,6 +56,7 @@ class SessionData {
     String? projectName,
     String? originalImagePath,
     String? croppedImagePath,
+    String? preprocessedImagePath,
     String? detectionImagePath,
     String? segmentationImagePath,
     List<Map<String, dynamic>>? detectedSymbols,
@@ -73,8 +76,11 @@ class SessionData {
       projectName: projectName ?? this.projectName,
       originalImagePath: originalImagePath ?? this.originalImagePath,
       croppedImagePath: croppedImagePath ?? this.croppedImagePath,
+      preprocessedImagePath:
+          preprocessedImagePath ?? this.preprocessedImagePath,
       detectionImagePath: detectionImagePath ?? this.detectionImagePath,
-      segmentationImagePath: segmentationImagePath ?? this.segmentationImagePath,
+      segmentationImagePath:
+          segmentationImagePath ?? this.segmentationImagePath,
       detectedSymbols: detectedSymbols ?? this.detectedSymbols,
       segmentationData: segmentationData ?? this.segmentationData,
       pitchMappingData: pitchMappingData ?? this.pitchMappingData,
@@ -95,6 +101,7 @@ class SessionData {
       'project_name': projectName,
       'original_image_path': originalImagePath,
       'cropped_image_path': croppedImagePath,
+      'preprocessed_image_path': preprocessedImagePath,
       'detection_image_path': detectionImagePath,
       'segmentation_image_path': segmentationImagePath,
 
@@ -121,6 +128,7 @@ class SessionData {
       projectName: json['project_name']?.toString() ?? 'Untitled',
       originalImagePath: json['original_image_path']?.toString() ?? '',
       croppedImagePath: json['cropped_image_path']?.toString(),
+      preprocessedImagePath: json['preprocessed_image_path']?.toString(),
       detectionImagePath: json['detection_image_path']?.toString(),
       segmentationImagePath: json['segmentation_image_path']?.toString(),
 
@@ -129,17 +137,14 @@ class SessionData {
       pitchMappingData: _mapList(json['pitch_mapping_data']),
       fretboardEvents: _mapList(json['fretboard_events']),
 
-      tablatureResults: (json['tablature_results'] as List? ?? const [])
-          .map((item) {
-            return TablatureResult.fromJson(
-              Map<String, dynamic>.from(item as Map),
-            );
-          })
-          .toList(),
+      tablatureResults: (json['tablature_results'] as List? ?? const []).map((
+        item,
+      ) {
+        return TablatureResult.fromJson(Map<String, dynamic>.from(item as Map));
+      }).toList(),
 
-      processingTimestamp: DateTime.tryParse(
-            json['processing_timestamp']?.toString() ?? '',
-          ) ??
+      processingTimestamp:
+          DateTime.tryParse(json['processing_timestamp']?.toString() ?? '') ??
           DateTime.now(),
 
       modelVersion: json['model_version']?.toString() ?? 'unknown',
