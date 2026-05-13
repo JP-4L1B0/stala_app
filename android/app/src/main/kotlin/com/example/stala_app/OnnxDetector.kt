@@ -3,15 +3,13 @@ package com.example.stala_app
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import ai.onnxruntime.TensorInfo
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.FloatBuffer
-import android.graphics.Matrix
-import androidx.exifinterface.media.ExifInterface
 import android.graphics.Canvas
 import android.graphics.Color
 import org.opencv.android.Utils
@@ -65,7 +63,7 @@ class OnnxDetector(private val context: Context) {
 
         Log.d(TAG, "detectFromImagePath: input file size=${imageFile.length()}")
 
-        val originalBitmap = BitmapFactory.decodeFile(imagePath)
+        val originalBitmap = ImageDecodeUtils.decodeBitmapWithCorrectOrientation(imagePath)
             ?: return errorResponse("Failed to decode image.", imagePath)
 
         Log.d(
@@ -146,11 +144,52 @@ class OnnxDetector(private val context: Context) {
             ?: throw IllegalStateException("ONNX model session is not loaded.")
 
         val inputName = activeSession.inputNames.first()
-        val inputShape = longArrayOf(3, inputHeight.toLong(), inputWidth.toLong())
+        val candidateShapes = candidateInputShapes(
+            activeSession = activeSession,
+            inputName = inputName,
+            inputWidth = inputWidth,
+            inputHeight = inputHeight
+        )
 
         Log.d(TAG, "run: inputName=$inputName")
-        Log.d(TAG, "run: inputShape=${inputShape.joinToString(prefix = "[", postfix = "]")}")
+        Log.d(
+            TAG,
+            "run: candidateInputShapes=${candidateShapes.joinToString { it.joinToString(prefix = "[", postfix = "]") }}"
+        )
         Log.d(TAG, "run: scoreThreshold=$scoreThreshold")
+
+        var lastError: Exception? = null
+
+        for (inputShape in candidateShapes) {
+            try {
+                return runWithInputShape(
+                    activeSession = activeSession,
+                    inputName = inputName,
+                    inputData = inputData,
+                    inputShape = inputShape,
+                    scoreThreshold = scoreThreshold
+                )
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(
+                    TAG,
+                    "run: failed with inputShape=${inputShape.joinToString(prefix = "[", postfix = "]")}",
+                    e
+                )
+            }
+        }
+
+        throw lastError ?: IllegalStateException("ONNX inference failed for all candidate input shapes.")
+    }
+
+    private fun runWithInputShape(
+        activeSession: OrtSession,
+        inputName: String,
+        inputData: FloatArray,
+        inputShape: LongArray,
+        scoreThreshold: Float
+    ): List<Map<String, Any>> {
+        Log.d(TAG, "runWithInputShape: trying ${inputShape.joinToString(prefix = "[", postfix = "]")}")
 
         OnnxTensor.createTensor(
             environment,
@@ -172,10 +211,9 @@ class OnnxDetector(private val context: Context) {
                     )
                 }
 
-                @Suppress("UNCHECKED_CAST")
-                val boxes = output[0].value as Array<FloatArray>
-                val labels = output[1].value as LongArray
-                val scores = output[2].value as FloatArray
+                val boxes = parseBoxes(output[0].value)
+                val labels = parseLabels(output[1].value)
+                val scores = parseScores(output[2].value)
 
                 Log.d(TAG, "run: boxes size=${boxes.size}")
                 Log.d(TAG, "run: labels size=${labels.size}")
@@ -205,8 +243,106 @@ class OnnxDetector(private val context: Context) {
                     Log.d(TAG, "run: first detection=${detections.first()}")
                 }
 
+                Log.d(TAG, "runWithInputShape: success")
                 return detections
             }
+        }
+    }
+
+    private fun candidateInputShapes(
+        activeSession: OrtSession,
+        inputName: String,
+        inputWidth: Int,
+        inputHeight: Int
+    ): List<LongArray> {
+        val batchShape = longArrayOf(1, 3, inputHeight.toLong(), inputWidth.toLong())
+        val channelShape = longArrayOf(3, inputHeight.toLong(), inputWidth.toLong())
+        val fallbackShapes = listOf(batchShape, channelShape)
+
+        val declaredShape = try {
+            val info = activeSession.inputInfo[inputName]?.info
+            (info as? TensorInfo)?.shape
+        } catch (e: Exception) {
+            Log.w(TAG, "candidateInputShapes: failed to read input metadata", e)
+            null
+        }
+
+        if (declaredShape == null) return fallbackShapes
+
+        Log.d(
+            TAG,
+            "candidateInputShapes: declaredShape=${declaredShape.joinToString(prefix = "[", postfix = "]")}"
+        )
+
+        val metadataPreferred = when (declaredShape.size) {
+            4 -> batchShape
+            3 -> channelShape
+            else -> null
+        }
+
+        if (metadataPreferred == null) return fallbackShapes
+
+        return listOf(metadataPreferred) + fallbackShapes.filterNot {
+            it.contentEquals(metadataPreferred)
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun parseBoxes(value: Any?): Array<FloatArray> {
+        return when (value) {
+            is Array<*> -> {
+                val first = value.firstOrNull()
+                when (first) {
+                    is FloatArray -> value as Array<FloatArray>
+                    is Array<*> -> first as Array<FloatArray>
+                    else -> throw IllegalStateException(
+                        "Unsupported ONNX boxes output item type: ${first?.javaClass?.name}"
+                    )
+                }
+            }
+            else -> throw IllegalStateException(
+                "Unsupported ONNX boxes output type: ${value?.javaClass?.name}"
+            )
+        }
+    }
+
+    private fun parseLabels(value: Any?): LongArray {
+        return when (value) {
+            is LongArray -> value
+            is IntArray -> LongArray(value.size) { value[it].toLong() }
+            is Array<*> -> {
+                val first = value.firstOrNull()
+                when (first) {
+                    is LongArray -> first
+                    is IntArray -> LongArray(first.size) { first[it].toLong() }
+                    else -> throw IllegalStateException(
+                        "Unsupported ONNX labels output item type: ${first?.javaClass?.name}"
+                    )
+                }
+            }
+            else -> throw IllegalStateException(
+                "Unsupported ONNX labels output type: ${value?.javaClass?.name}"
+            )
+        }
+    }
+
+    private fun parseScores(value: Any?): FloatArray {
+        return when (value) {
+            is FloatArray -> value
+            is DoubleArray -> FloatArray(value.size) { value[it].toFloat() }
+            is Array<*> -> {
+                val first = value.firstOrNull()
+                when (first) {
+                    is FloatArray -> first
+                    is DoubleArray -> FloatArray(first.size) { first[it].toFloat() }
+                    else -> throw IllegalStateException(
+                        "Unsupported ONNX scores output item type: ${first?.javaClass?.name}"
+                    )
+                }
+            }
+            else -> throw IllegalStateException(
+                "Unsupported ONNX scores output type: ${value?.javaClass?.name}"
+            )
         }
     }
 
@@ -283,51 +419,6 @@ class OnnxDetector(private val context: Context) {
             "tablature" to emptyList<Any>(),
             "errors" to listOf(message)
         )
-    }
-
-    private fun decodeBitmapWithCorrectOrientation(imagePath: String): Bitmap? {
-        val bitmap = BitmapFactory.decodeFile(imagePath) ?: return null
-
-        return try {
-            val exif = ExifInterface(imagePath)
-            val orientation = exif.getAttributeInt(
-                ExifInterface.TAG_ORIENTATION,
-                ExifInterface.ORIENTATION_NORMAL
-            )
-
-            Log.d(TAG, "decodeBitmap: EXIF orientation=$orientation")
-
-            val matrix = Matrix()
-
-            when (orientation) {
-                ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-                ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-                ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-                ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.preScale(-1f, 1f)
-                ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.preScale(1f, -1f)
-                else -> return bitmap
-            }
-
-            val rotated = Bitmap.createBitmap(
-                bitmap,
-                0,
-                0,
-                bitmap.width,
-                bitmap.height,
-                matrix,
-                true
-            )
-
-            Log.d(TAG, "decodeBitmap: rotated width=${rotated.width} height=${rotated.height}")
-
-            if (rotated != bitmap) {
-                bitmap.recycle()
-            }
-
-            rotated
-        } catch (e: Exception) {
-            bitmap
-        }
     }
 
     private fun letterboxBitmap(

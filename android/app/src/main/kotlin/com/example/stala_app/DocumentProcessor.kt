@@ -1,7 +1,6 @@
 package com.example.stala_app
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.get
@@ -48,7 +47,7 @@ object DocumentProcessor {
             return detectionFailure("Image file does not exist.")
         }
 
-        val bitmap = BitmapFactory.decodeFile(imagePath)
+        val bitmap = ImageDecodeUtils.decodeBitmapWithCorrectOrientation(imagePath)
             ?: return detectionFailure("Failed to decode image.")
 
         if (bitmap.width < 200 || bitmap.height < 200) {
@@ -179,7 +178,7 @@ object DocumentProcessor {
             return validationFailure("Image file does not exist.")
         }
 
-        val bitmap = BitmapFactory.decodeFile(imagePath)
+        val bitmap = ImageDecodeUtils.decodeBitmapWithCorrectOrientation(imagePath)
             ?: return validationFailure("Failed to decode image.")
 
         try {
@@ -259,7 +258,7 @@ object DocumentProcessor {
         val sourceFile = File(imagePath)
         if (!sourceFile.exists()) return null
 
-        val bitmap = BitmapFactory.decodeFile(imagePath) ?: return null
+        val bitmap = ImageDecodeUtils.decodeBitmapWithCorrectOrientation(imagePath) ?: return null
 
         val width = bitmap.width.toFloat()
         val height = bitmap.height.toFloat()

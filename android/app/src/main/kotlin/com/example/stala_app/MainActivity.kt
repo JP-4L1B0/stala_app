@@ -3,26 +3,31 @@ package com.example.stala_app
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import android.os.Bundle
+import android.os.Environment
 import android.util.Log
 import org.opencv.android.OpenCVLoader
+import java.io.File
 import java.io.FileNotFoundException
 
 class MainActivity : FlutterActivity() {
     private val accessibilityChannel = "stala_app/accessibility"
-    private val pythonBridgeChannel = "stala/python_bridge"
+    private val visionPipelineChannel = "stala/python_bridge"
     private val storageAccessChannel = "stala/storage_access"
     private val storagePrefsName = "stala_storage_access"
     private val storageFolderUriKey = "storage_folder_uri"
     private val pickStorageFolderRequestCode = 4107
+    private val pickImportDocumentRequestCode = 4108
 
     private var onnxDetector: OnnxDetector? = null
     private var pendingStoragePickResult: MethodChannel.Result? = null
+    private var pendingImportPickResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -49,7 +54,7 @@ class MainActivity : FlutterActivity() {
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            pythonBridgeChannel
+            visionPipelineChannel
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "detectDocumentBounds" -> handleDetectDocumentBounds(call, result)
@@ -67,6 +72,13 @@ class MainActivity : FlutterActivity() {
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "pickStorageFolder" -> handlePickStorageFolder(result)
+                "pickImportDocument" -> handlePickImportDocument(result)
+                "getPublicStalaFolder" -> handleGetPublicStalaFolder(result)
+                "listPublicFiles" -> handleListPublicFiles(call, result)
+                "writePublicTextFile" -> handleWritePublicTextFile(call, result)
+                "writePublicBinaryFile" -> handleWritePublicBinaryFile(call, result)
+                "readPublicTextFile" -> handleReadPublicTextFile(call, result)
+                "deletePublicFile" -> handleDeletePublicFile(call, result)
                 "getStorageFolder" -> result.success(currentStorageFolderInfo())
                 "clearStorageFolder" -> {
                     clearStorageFolder()
@@ -76,6 +88,7 @@ class MainActivity : FlutterActivity() {
                 "writeBinaryFile" -> handleWriteBinaryFile(call, result)
                 "listFiles" -> handleListFiles(call, result)
                 "readTextFile" -> handleReadTextFile(call, result)
+                "writeTextToUri" -> handleWriteTextToUri(call, result)
                 "deleteDocument" -> handleDeleteDocument(call, result)
                 "renameDocument" -> handleRenameDocument(call, result)
                 else -> result.notImplemented()
@@ -106,8 +119,44 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun handlePickImportDocument(result: MethodChannel.Result) {
+        if (pendingImportPickResult != null) {
+            result.error("PICK_IN_PROGRESS", "An import picker is already open.", null)
+            return
+        }
+
+        pendingImportPickResult = result
+
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf(
+                    "application/zip",
+                    "application/json",
+                    "application/octet-stream",
+                    "text/plain"
+                )
+            )
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
+        try {
+            startActivityForResult(intent, pickImportDocumentRequestCode)
+        } catch (e: Exception) {
+            pendingImportPickResult = null
+            result.error("PICK_FAILED", e.message ?: "Unable to open import picker.", null)
+        }
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode == pickImportDocumentRequestCode) {
+            handleImportDocumentResult(resultCode, data)
+            return
+        }
 
         if (requestCode != pickStorageFolderRequestCode) return
 
@@ -149,6 +198,152 @@ class MainActivity : FlutterActivity() {
                 "displayName" to displayNameForTreeUri(uri)
             )
         )
+    }
+
+    private fun handleImportDocumentResult(resultCode: Int, data: Intent?) {
+        val result = pendingImportPickResult ?: return
+        pendingImportPickResult = null
+
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null) {
+            result.success(null)
+            return
+        }
+
+        try {
+            val bytes = contentResolver.openInputStream(uri)?.use { input ->
+                input.readBytes()
+            } ?: throw FileNotFoundException("Unable to open selected file.")
+
+            result.success(
+                mapOf(
+                    "fileName" to displayNameForDocumentUri(uri),
+                    "mimeType" to contentResolver.getType(uri),
+                    "bytes" to bytes
+                )
+            )
+        } catch (e: Exception) {
+            result.error("READ_FAILED", e.message ?: "Unable to read selected file.", null)
+        }
+    }
+
+    private fun handleGetPublicStalaFolder(result: MethodChannel.Result) {
+        try {
+            val dir = publicStalaDirectory("")
+            result.success(
+                mapOf(
+                    "granted" to true,
+                    "uri" to dir.absolutePath,
+                    "displayName" to dir.absolutePath
+                )
+            )
+        } catch (e: Exception) {
+            result.success(
+                mapOf(
+                    "granted" to false,
+                    "uri" to null,
+                    "displayName" to null
+                )
+            )
+        }
+    }
+
+    private fun handleListPublicFiles(call: MethodCall, result: MethodChannel.Result) {
+        val relativeDir = call.argument<String>("relativeDir") ?: ""
+        val extension = call.argument<String>("extension")?.lowercase()
+
+        try {
+            val dir = publicStalaDirectory(relativeDir)
+            val files = dir.listFiles()
+                ?.filter { it.isFile }
+                ?.filter { extension == null || it.name.lowercase().endsWith(extension) }
+                ?.map {
+                    mapOf(
+                        "uri" to it.absolutePath,
+                        "fileName" to it.name,
+                        "mimeType" to null,
+                        "lastModified" to it.lastModified(),
+                        "size" to it.length()
+                    )
+                }
+                ?: emptyList()
+
+            result.success(files)
+        } catch (e: Exception) {
+            result.error("LIST_FAILED", e.message ?: "Unable to list public STALA files.", null)
+        }
+    }
+
+    private fun handleWritePublicTextFile(call: MethodCall, result: MethodChannel.Result) {
+        val relativeDir = call.argument<String>("relativeDir") ?: ""
+        val fileName = call.argument<String>("fileName")
+        val content = call.argument<String>("content")
+
+        if (fileName.isNullOrBlank() || content == null) {
+            result.error("INVALID_ARGS", "File name and content are required.", null)
+            return
+        }
+
+        try {
+            val dir = publicStalaDirectory(relativeDir)
+            val file = File(dir, fileName)
+            file.writeText(content, Charsets.UTF_8)
+
+            result.success(writeResult(Uri.fromFile(file), relativeDir, fileName))
+        } catch (e: Exception) {
+            result.error("WRITE_FAILED", e.message ?: "Unable to write public STALA file.", null)
+        }
+    }
+
+    private fun handleWritePublicBinaryFile(call: MethodCall, result: MethodChannel.Result) {
+        val relativeDir = call.argument<String>("relativeDir") ?: ""
+        val fileName = call.argument<String>("fileName")
+        val bytes = call.argument<ByteArray>("bytes")
+
+        if (fileName.isNullOrBlank() || bytes == null) {
+            result.error("INVALID_ARGS", "File name and bytes are required.", null)
+            return
+        }
+
+        try {
+            val dir = publicStalaDirectory(relativeDir)
+            val file = File(dir, fileName)
+            file.writeBytes(bytes)
+
+            result.success(writeResult(Uri.fromFile(file), relativeDir, fileName))
+        } catch (e: Exception) {
+            result.error("WRITE_FAILED", e.message ?: "Unable to write public STALA file.", null)
+        }
+    }
+
+    private fun handleReadPublicTextFile(call: MethodCall, result: MethodChannel.Result) {
+        val path = call.argument<String>("path")
+
+        if (path.isNullOrBlank()) {
+            result.error("INVALID_ARGS", "Path is required.", null)
+            return
+        }
+
+        try {
+            result.success(File(path).readText(Charsets.UTF_8))
+        } catch (e: Exception) {
+            result.error("READ_FAILED", e.message ?: "Unable to read public STALA file.", null)
+        }
+    }
+
+    private fun handleDeletePublicFile(call: MethodCall, result: MethodChannel.Result) {
+        val path = call.argument<String>("path")
+
+        if (path.isNullOrBlank()) {
+            result.error("INVALID_ARGS", "Path is required.", null)
+            return
+        }
+
+        try {
+            result.success(File(path).delete())
+        } catch (e: Exception) {
+            result.error("DELETE_FAILED", e.message ?: "Unable to delete public STALA file.", null)
+        }
     }
 
     private fun handleWriteTextFile(call: MethodCall, result: MethodChannel.Result) {
@@ -280,6 +475,27 @@ class MainActivity : FlutterActivity() {
             result.success(text)
         } catch (e: Exception) {
             result.error("READ_FAILED", e.message ?: "Unable to read text file.", null)
+        }
+    }
+
+    private fun handleWriteTextToUri(call: MethodCall, result: MethodChannel.Result) {
+        val uriString = call.argument<String>("uri")
+        val content = call.argument<String>("content")
+
+        if (uriString.isNullOrBlank() || content == null) {
+            result.error("INVALID_ARGS", "Document URI and content are required.", null)
+            return
+        }
+
+        try {
+            val uri = Uri.parse(uriString)
+            contentResolver.openOutputStream(uri, "w")?.use { output ->
+                output.write(content.toByteArray(Charsets.UTF_8))
+            } ?: throw FileNotFoundException("Unable to open output stream.")
+
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("WRITE_FAILED", e.message ?: "Unable to update text file.", null)
         }
     }
 
@@ -454,6 +670,38 @@ class MainActivity : FlutterActivity() {
             ?: "Selected folder"
     }
 
+    private fun displayNameForDocumentUri(uri: Uri): String {
+        contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val name = cursor.getString(0)
+                if (!name.isNullOrBlank()) return name
+            }
+        }
+
+        return uri.lastPathSegment?.substringAfterLast("/") ?: "import.stala"
+    }
+
+    private fun publicStalaDirectory(relativeDir: String): File {
+        val root = File(Environment.getExternalStorageDirectory(), "STALA")
+        val target = relativeDir
+            .split("/")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .fold(root) { parent, segment -> File(parent, segment) }
+
+        if (!target.exists() && !target.mkdirs()) {
+            throw FileNotFoundException("Unable to create ${target.absolutePath}.")
+        }
+
+        return target
+    }
+
     private fun writeResult(fileUri: Uri, relativeDir: String, fileName: String): Map<String, Any?> {
         return mapOf(
             "uri" to fileUri.toString(),
@@ -473,6 +721,11 @@ class MainActivity : FlutterActivity() {
                     "segmentedImagePath" to null,
                     "staffLineCount" to 0,
                     "staffLines" to emptyList<Any>(),
+                    "ledgerLines" to emptyList<Any>(),
+                    "barLines" to emptyList<Any>(),
+                    "stems" to emptyList<Any>(),
+                    "beams" to emptyList<Any>(),
+                    "measures" to emptyList<Any>(),
                     "validatedStaffs" to emptyList<Any>()
                 )
             )
@@ -498,6 +751,11 @@ class MainActivity : FlutterActivity() {
                             "segmentedImagePath" to null,
                             "staffLineCount" to 0,
                             "staffLines" to emptyList<Any>(),
+                            "ledgerLines" to emptyList<Any>(),
+                            "barLines" to emptyList<Any>(),
+                            "stems" to emptyList<Any>(),
+                            "beams" to emptyList<Any>(),
+                            "measures" to emptyList<Any>(),
                             "validatedStaffs" to emptyList<Any>()
                         )
                     )
