@@ -1,10 +1,6 @@
 import '../dummy_page.dart';
 
-enum ResolvedClef {
-  treble,
-  bass,
-  unknown,
-}
+enum ResolvedClef { treble, bass, unknown }
 
 class StaffClefResult {
   final String staffId;
@@ -36,9 +32,13 @@ class ClefResolutionService {
     required List<SymbolClassItem> classItems,
     required Map<String, List<double>> staffLineGroups,
   }) {
-    final results = <StaffClefResult>[];
+    final resultsByStaff = <String, StaffClefResult>{};
+    final orderedStaffs = staffLineGroups.entries.toList()
+      ..sort((a, b) => a.value.first.compareTo(b.value.first));
 
-    staffLineGroups.forEach((staffId, lines) {
+    for (final entry in orderedStaffs) {
+      final staffId = entry.key;
+      final lines = entry.value;
       final top = lines.first;
       final bottom = lines.last;
       final spacing = _averageSpacing(lines);
@@ -51,35 +51,50 @@ class ClefResolutionService {
         final isClef = name == 'treble_clef' || name == 'bass_clef';
         final insideStaffY = item.y >= extendedTop && item.y <= extendedBottom;
         return isClef && insideStaffY;
-      }).toList()
-        ..sort((a, b) => a.x.compareTo(b.x));
+      }).toList()..sort((a, b) => a.x.compareTo(b.x));
 
       if (clefCandidates.isEmpty) {
-        results.add(
-          StaffClefResult(
+        resultsByStaff[staffId] = StaffClefResult(
+          staffId: staffId,
+          clef: _inferClefByStaffOrder(
             staffId: staffId,
-            clef: ResolvedClef.unknown,
-            confidence: null,
-            source: 'missing',
+            orderedStaffIds: orderedStaffs.map((item) => item.key).toList(),
           ),
+          confidence: null,
+          source: orderedStaffs.length > 1
+              ? 'inferred_by_staff_order'
+              : 'missing',
         );
-        return;
+        continue;
       }
 
       final clefSymbol = clefCandidates.first;
       final name = clefSymbol.className.trim().toLowerCase();
 
-      results.add(
-        StaffClefResult(
-          staffId: staffId,
-          clef: name == 'bass_clef' ? ResolvedClef.bass : ResolvedClef.treble,
-          confidence: clefSymbol.score,
-          source: 'detected',
-        ),
+      resultsByStaff[staffId] = StaffClefResult(
+        staffId: staffId,
+        clef: name == 'bass_clef' ? ResolvedClef.bass : ResolvedClef.treble,
+        confidence: clefSymbol.score,
+        source: 'detected',
       );
-    });
+    }
 
-    return results;
+    return orderedStaffs
+        .map((entry) => resultsByStaff[entry.key])
+        .whereType<StaffClefResult>()
+        .toList();
+  }
+
+  ResolvedClef _inferClefByStaffOrder({
+    required String staffId,
+    required List<String> orderedStaffIds,
+  }) {
+    if (orderedStaffIds.length < 2) return ResolvedClef.unknown;
+
+    final index = orderedStaffIds.indexOf(staffId);
+    if (index < 0) return ResolvedClef.unknown;
+
+    return index.isEven ? ResolvedClef.treble : ResolvedClef.bass;
   }
 
   double _averageSpacing(List<double> lines) {

@@ -3,6 +3,9 @@ import 'fretboard_mapping_service.dart';
 class ChordVoicedEvent {
   final int eventIndex;
   final String label;
+  final String? measureId;
+  final int? measureIndex;
+  final double? sourceX;
   final List<GuitarPosition> chosenPositions;
   final double cost;
   final String voicingReason;
@@ -10,6 +13,9 @@ class ChordVoicedEvent {
   const ChordVoicedEvent({
     required this.eventIndex,
     required this.label,
+    this.measureId,
+    this.measureIndex,
+    this.sourceX,
     required this.chosenPositions,
     required this.cost,
     required this.voicingReason,
@@ -31,15 +37,11 @@ class ChordVoicingLine {
 class ChordVoicingResult {
   final List<ChordVoicingLine> lines;
 
-  const ChordVoicingResult({
-    required this.lines,
-  });
+  const ChordVoicingResult({required this.lines});
 }
 
 class ChordVoicingService {
-  ChordVoicingResult voice({
-    required FretboardMappingResult fretboardMapping,
-  }) {
+  ChordVoicingResult voice({required FretboardMappingResult fretboardMapping}) {
     final lines = fretboardMapping.lines
         .where((line) => line.id.contains('chord'))
         .map(_voiceLine)
@@ -50,21 +52,35 @@ class ChordVoicingService {
   }
 
   ChordVoicingLine? _voiceLine(FretboardMappedLine line) {
+    final sourceEvents = line.events
+        .where((event) => event.candidates.isNotEmpty)
+        .toList();
+    if (sourceEvents.isEmpty) return null;
+
+    final path = _findLowestCostPath(sourceEvents);
+    if (path.isEmpty) return null;
+
     final voicedEvents = <ChordVoicedEvent>[];
 
-    for (final event in line.events) {
-      if (event.candidates.isEmpty) continue;
-
-      final best = _selectBestCandidate(event.candidates);
-      if (best == null) continue;
+    for (int i = 0; i < path.length; i++) {
+      final event = sourceEvents[i];
+      final current = path[i];
+      final previous = i > 0 ? path[i - 1] : null;
+      final transition = previous == null
+          ? 0.0
+          : _transitionCost(previous, current);
+      final cost = _scoreCandidate(current).cost + transition;
 
       voicedEvents.add(
         ChordVoicedEvent(
           eventIndex: event.eventIndex,
           label: event.label,
-          chosenPositions: best.candidate.positions,
-          cost: best.cost,
-          voicingReason: best.reason,
+          measureId: event.measureId,
+          measureIndex: event.measureIndex,
+          sourceX: event.sourceX,
+          chosenPositions: current.positions,
+          cost: cost,
+          voicingReason: _reasonFor(current, previous),
         ),
       );
     }
@@ -78,20 +94,142 @@ class ChordVoicingService {
     );
   }
 
-  _VoicingScore? _selectBestCandidate(List<FretboardCandidate> candidates) {
-    _VoicingScore? best;
+  List<FretboardCandidate> _findLowestCostPath(
+    List<FretboardMappedEvent> events,
+  ) {
+    final dp = <Map<int, _PathState>>[];
 
-    for (final candidate in candidates) {
-      if (candidate.positions.isEmpty) continue;
+    final firstStates = <int, _PathState>{};
+    for (int i = 0; i < events.first.candidates.length; i++) {
+      final candidate = events.first.candidates[i];
+      firstStates[i] = _PathState(
+        cost: _scoreCandidate(candidate).cost,
+        previousIndex: null,
+      );
+    }
+    dp.add(firstStates);
 
-      final score = _scoreCandidate(candidate);
+    for (int eventIndex = 1; eventIndex < events.length; eventIndex++) {
+      final previousCandidates = events[eventIndex - 1].candidates;
+      final currentCandidates = events[eventIndex].candidates;
+      final currentStates = <int, _PathState>{};
 
-      if (best == null || score.cost < best.cost) {
-        best = score;
+      for (
+        int currentIndex = 0;
+        currentIndex < currentCandidates.length;
+        currentIndex++
+      ) {
+        final current = currentCandidates[currentIndex];
+        final localCost = _scoreCandidate(current).cost;
+        double bestCost = double.infinity;
+        int? bestPreviousIndex;
+
+        for (
+          int previousIndex = 0;
+          previousIndex < previousCandidates.length;
+          previousIndex++
+        ) {
+          final previousState = dp[eventIndex - 1][previousIndex];
+          if (previousState == null) continue;
+
+          final previous = previousCandidates[previousIndex];
+          final cost =
+              previousState.cost +
+              localCost +
+              _transitionCost(previous, current);
+
+          if (cost < bestCost) {
+            bestCost = cost;
+            bestPreviousIndex = previousIndex;
+          }
+        }
+
+        currentStates[currentIndex] = _PathState(
+          cost: bestCost,
+          previousIndex: bestPreviousIndex,
+        );
+      }
+
+      dp.add(currentStates);
+    }
+
+    final lastStates = dp.last;
+    int? bestFinalIndex;
+    double bestFinalCost = double.infinity;
+
+    for (final entry in lastStates.entries) {
+      if (entry.value.cost < bestFinalCost) {
+        bestFinalCost = entry.value.cost;
+        bestFinalIndex = entry.key;
       }
     }
 
-    return best;
+    if (bestFinalIndex == null) return const [];
+
+    final path = List<FretboardCandidate?>.filled(events.length, null);
+    int? currentIndex = bestFinalIndex;
+
+    for (int eventIndex = events.length - 1; eventIndex >= 0; eventIndex--) {
+      if (currentIndex == null) break;
+      path[eventIndex] = events[eventIndex].candidates[currentIndex];
+      currentIndex = dp[eventIndex][currentIndex]?.previousIndex;
+    }
+
+    return path.whereType<FretboardCandidate>().toList();
+  }
+
+  double _transitionCost(
+    FretboardCandidate previous,
+    FretboardCandidate current,
+  ) {
+    final previousCenter = _candidateCenter(previous);
+    final currentCenter = _candidateCenter(current);
+
+    final fretDistance = (currentCenter.fret - previousCenter.fret).abs();
+    final stringDistance =
+        (currentCenter.stringNumber - previousCenter.stringNumber).abs();
+    final currentSpan = _fretSpan(current.positions);
+    final openCount = current.positions.where((p) => p.fret == 0).length;
+
+    double cost = 0;
+    cost += fretDistance * 4.0;
+    cost += stringDistance * 2.0;
+    cost += currentSpan * 3.0;
+
+    if (fretDistance > 5) cost += 20;
+    if (fretDistance > 9) cost += 40;
+    if (stringDistance == 0) cost -= 2;
+    cost -= openCount * 1.0;
+
+    return cost;
+  }
+
+  String _reasonFor(FretboardCandidate current, FretboardCandidate? previous) {
+    final localReason = _scoreCandidate(current).reason;
+    if (previous == null) return '$localReason+path_start';
+
+    final transition = _transitionCost(previous, current);
+    if (transition <= 8) return '$localReason+smooth_transition';
+    if (transition <= 20) return '$localReason+reachable_transition';
+    return '$localReason+larger_shift';
+  }
+
+  _CandidateCenter _candidateCenter(FretboardCandidate candidate) {
+    final positions = candidate.positions;
+    if (positions.isEmpty) {
+      return const _CandidateCenter(stringNumber: 3, fret: 0);
+    }
+
+    final averageString =
+        positions.map((p) => p.stringNumber).reduce((a, b) => a + b) /
+        positions.length;
+    final averageFret =
+        positions.map((p) => p.fret).reduce((a, b) => a + b) / positions.length;
+
+    return _CandidateCenter(
+      stringNumber: averageString.round(),
+      fret: averageFret.round(),
+    );
   }
 
   _VoicingScore _scoreCandidate(FretboardCandidate candidate) {
@@ -154,13 +292,9 @@ class ChordVoicingService {
     final fretted = positions.where((p) => p.fret > 0).toList();
     if (fretted.length < 2) return 0;
 
-    final minFret = fretted
-        .map((p) => p.fret)
-        .reduce((a, b) => a < b ? a : b);
+    final minFret = fretted.map((p) => p.fret).reduce((a, b) => a < b ? a : b);
 
-    final maxFret = fretted
-        .map((p) => p.fret)
-        .reduce((a, b) => a > b ? a : b);
+    final maxFret = fretted.map((p) => p.fret).reduce((a, b) => a > b ? a : b);
 
     return maxFret - minFret;
   }
@@ -168,9 +302,7 @@ class ChordVoicingService {
   double _averageFret(List<GuitarPosition> positions) {
     if (positions.isEmpty) return 999;
 
-    return positions
-        .map((p) => p.fret)
-        .reduce((a, b) => a + b) /
+    return positions.map((p) => p.fret).reduce((a, b) => a + b) /
         positions.length;
   }
 
@@ -244,4 +376,18 @@ class _VoicingScore {
     required this.cost,
     required this.reason,
   });
+}
+
+class _PathState {
+  final double cost;
+  final int? previousIndex;
+
+  const _PathState({required this.cost, required this.previousIndex});
+}
+
+class _CandidateCenter {
+  final int stringNumber;
+  final int fret;
+
+  const _CandidateCenter({required this.stringNumber, required this.fret});
 }

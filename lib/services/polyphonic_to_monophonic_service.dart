@@ -5,12 +5,18 @@ class HarmonicStack {
   final String id;
   final String grandStaffId;
   final int eventIndex;
+  final String? measureId;
+  final int? measureIndex;
+  final double sourceX;
   final List<TranslatedSymbolViewItem> notes;
 
   const HarmonicStack({
     required this.id,
     required this.grandStaffId,
     required this.eventIndex,
+    this.measureId,
+    this.measureIndex,
+    required this.sourceX,
     required this.notes,
   });
 }
@@ -19,6 +25,9 @@ class ChordAwareStack {
   final String id;
   final String grandStaffId;
   final int eventIndex;
+  final String? measureId;
+  final int? measureIndex;
+  final double sourceX;
   final List<TranslatedSymbolViewItem> notes;
   final String? chordName;
   final String? root;
@@ -28,6 +37,9 @@ class ChordAwareStack {
     required this.id,
     required this.grandStaffId,
     required this.eventIndex,
+    this.measureId,
+    this.measureIndex,
+    required this.sourceX,
     required this.notes,
     this.chordName,
     this.root,
@@ -39,6 +51,9 @@ class MonophonicNote {
   final String id;
   final String grandStaffId;
   final int eventIndex;
+  final String? measureId;
+  final int? measureIndex;
+  final double sourceX;
   final String pitch;
   final TranslatedSymbolViewItem sourceNote;
   final List<String> harmonyContext;
@@ -48,6 +63,9 @@ class MonophonicNote {
     required this.id,
     required this.grandStaffId,
     required this.eventIndex,
+    this.measureId,
+    this.measureIndex,
+    required this.sourceX,
     required this.pitch,
     required this.sourceNote,
     required this.harmonyContext,
@@ -74,10 +92,14 @@ class PolyphonicToMonophonicResult {
 class _HarmonicCandidate {
   final double centerX;
   final List<TranslatedSymbolViewItem> notes;
+  final int? measureIndex;
+  final String? measureId;
 
   const _HarmonicCandidate({
     required this.centerX,
     required this.notes,
+    this.measureIndex,
+    this.measureId,
   });
 }
 
@@ -119,30 +141,38 @@ class PolyphonicToMonophonicService {
     required Map<String, List<List<TranslatedSymbolViewItem>>> groupedNotes,
   }) {
     final trebleGroups =
-        groupedNotes[pair.trebleStaffId] ?? const <List<TranslatedSymbolViewItem>>[];
+        groupedNotes[pair.trebleStaffId] ??
+        const <List<TranslatedSymbolViewItem>>[];
 
     final bassGroups = pair.bassStaffId == null
         ? const <List<TranslatedSymbolViewItem>>[]
-        : groupedNotes[pair.bassStaffId] ?? const <List<TranslatedSymbolViewItem>>[];
+        : groupedNotes[pair.bassStaffId] ??
+              const <List<TranslatedSymbolViewItem>>[];
 
     final allGroups = <List<TranslatedSymbolViewItem>>[
       ...trebleGroups,
       ...bassGroups,
     ];
 
-    final eventCandidates = allGroups
-        .where((group) => group.isNotEmpty)
-        .map((group) {
-      final avgX =
-          group.map((note) => note.centerX).reduce((a, b) => a + b) /
+    final eventCandidates =
+        allGroups.where((group) => group.isNotEmpty).map((group) {
+          final avgX =
+              group.map((note) => note.centerX).reduce((a, b) => a + b) /
               group.length;
 
-      return _HarmonicCandidate(
-        centerX: avgX,
-        notes: group,
-      );
-    }).toList()
-      ..sort((a, b) => a.centerX.compareTo(b.centerX));
+          return _HarmonicCandidate(
+            centerX: avgX,
+            notes: group,
+            measureIndex: _measureIndexForNotes(group),
+            measureId: _measureIdForNotes(group),
+          );
+        }).toList()..sort((a, b) {
+          final measureCompare = (a.measureIndex ?? 0).compareTo(
+            b.measureIndex ?? 0,
+          );
+          if (measureCompare != 0) return measureCompare;
+          return a.centerX.compareTo(b.centerX);
+        });
 
     if (eventCandidates.isEmpty) return const [];
 
@@ -157,14 +187,17 @@ class PolyphonicToMonophonicService {
         continue;
       }
 
-      final clusterCenter = currentCluster
-          .map((item) => item.centerX)
-          .reduce((a, b) => a + b) /
+      final sameMeasure =
+          (currentCluster.first.measureIndex ?? 0) ==
+          (candidate.measureIndex ?? 0);
+
+      final clusterCenter =
+          currentCluster.map((item) => item.centerX).reduce((a, b) => a + b) /
           currentCluster.length;
 
       final dx = (candidate.centerX - clusterCenter).abs();
 
-      if (dx <= threshold) {
+      if (sameMeasure && dx <= threshold) {
         currentCluster.add(candidate);
       } else {
         clusters.add(currentCluster);
@@ -181,18 +214,27 @@ class PolyphonicToMonophonicService {
     for (int i = 0; i < clusters.length; i++) {
       final notes = clusters[i]
           .expand((candidate) => candidate.notes)
-          .where((note) =>
-      note.defaultKeyLabel != null &&
-          note.defaultKeyLabel!.trim().isNotEmpty)
+          .where(
+            (note) =>
+                note.defaultKeyLabel != null &&
+                note.defaultKeyLabel!.trim().isNotEmpty,
+          )
           .toList();
 
       if (notes.isEmpty) continue;
+
+      final sourceX =
+          notes.map((note) => note.centerX).reduce((a, b) => a + b) /
+          notes.length;
 
       stacks.add(
         HarmonicStack(
           id: '${pair.id}_stack_$i',
           grandStaffId: pair.id,
           eventIndex: i,
+          measureId: _measureIdForNotes(notes),
+          measureIndex: _measureIndexForNotes(notes),
+          sourceX: sourceX,
           notes: notes,
         ),
       );
@@ -209,6 +251,9 @@ class PolyphonicToMonophonicService {
         id: '${stack.id}_chord',
         grandStaffId: stack.grandStaffId,
         eventIndex: stack.eventIndex,
+        measureId: stack.measureId,
+        measureIndex: stack.measureIndex,
+        sourceX: stack.sourceX,
         notes: stack.notes,
         chordName: chord?.chordName,
         root: chord?.root,
@@ -247,23 +292,11 @@ class PolyphonicToMonophonicService {
     };
 
     for (int root = 0; root < 12; root++) {
-      final major = {
-        root,
-        (root + 4) % 12,
-        (root + 7) % 12,
-      };
+      final major = {root, (root + 4) % 12, (root + 7) % 12};
 
-      final minor = {
-        root,
-        (root + 3) % 12,
-        (root + 7) % 12,
-      };
+      final minor = {root, (root + 3) % 12, (root + 7) % 12};
 
-      final diminished = {
-        root,
-        (root + 3) % 12,
-        (root + 6) % 12,
-      };
+      final diminished = {root, (root + 3) % 12, (root + 6) % 12};
 
       if (pitchClasses.containsAll(major)) {
         final rootName = names[root]!;
@@ -296,6 +329,18 @@ class PolyphonicToMonophonicService {
     return null;
   }
 
+  String? _measureIdForNotes(List<TranslatedSymbolViewItem> notes) {
+    final ids = notes.map((note) => note.measureId).whereType<String>();
+    if (ids.isEmpty) return null;
+    return ids.first;
+  }
+
+  int? _measureIndexForNotes(List<TranslatedSymbolViewItem> notes) {
+    final indexes = notes.map((note) => note.measureIndex).whereType<int>();
+    if (indexes.isEmpty) return null;
+    return indexes.first;
+  }
+
   int? _pitchClass(String pitch) {
     final match = RegExp(r'^([A-G])([#b]?)-?\d+$').firstMatch(pitch);
     if (match == null) return null;
@@ -303,15 +348,7 @@ class PolyphonicToMonophonicService {
     final letter = match.group(1)!;
     final accidental = match.group(2) ?? '';
 
-    const base = {
-      'C': 0,
-      'D': 2,
-      'E': 4,
-      'F': 5,
-      'G': 7,
-      'A': 9,
-      'B': 11,
-    };
+    const base = {'C': 0, 'D': 2, 'E': 4, 'F': 5, 'G': 7, 'A': 9, 'B': 11};
 
     var value = base[letter];
     if (value == null) return null;
@@ -398,67 +435,6 @@ class PolyphonicToMonophonicService {
     }
   }
 
-  List<MonophonicNote> _prioritizeMelody({
-    required String grandStaffId,
-    required List<HarmonicStack> stacks,
-  }) {
-    final melody = <MonophonicNote>[];
-    int? previousMidi;
-
-    for (final stack in stacks) {
-      final candidates = stack.notes.where((note) {
-        final pitch = note.defaultKeyLabel;
-        return pitch != null && pitch.trim().isNotEmpty;
-      }).toList();
-
-      if (candidates.isEmpty) continue;
-
-      TranslatedSymbolViewItem? bestNote;
-      double bestScore = double.negativeInfinity;
-      String bestReason = 'unknown';
-
-      for (final note in candidates) {
-        final pitch = note.defaultKeyLabel ?? '';
-        final midi = _pitchToMidiValue(pitch);
-        if (midi <= -9999) continue;
-
-        final isTrebleLikely = _isTrebleMelodyCandidate(note);
-        final scoreResult = _scoreMelodyCandidate(
-          midi: midi,
-          previousMidi: previousMidi,
-          isTrebleLikely: isTrebleLikely,
-        );
-
-        if (scoreResult.score > bestScore) {
-          bestScore = scoreResult.score;
-          bestNote = note;
-          bestReason = scoreResult.reason;
-        }
-      }
-
-      if (bestNote == null) continue;
-
-      final selectedPitch = bestNote.defaultKeyLabel ?? 'Unresolved';
-      previousMidi = _pitchToMidiValue(selectedPitch);
-
-      melody.add(
-        MonophonicNote(
-          id: '${grandStaffId}_mono_${stack.eventIndex}',
-          grandStaffId: grandStaffId,
-          eventIndex: stack.eventIndex,
-          pitch: selectedPitch,
-          sourceNote: bestNote,
-          harmonyContext: candidates
-              .map((note) => note.defaultKeyLabel ?? 'Unresolved')
-              .toList(),
-          selectionReason: bestReason,
-        ),
-      );
-    }
-
-    return melody;
-  }
-
   List<MonophonicNote> _prioritizeMelodyStrict({
     required String grandStaffId,
     required List<HarmonicStack> stacks,
@@ -475,8 +451,9 @@ class PolyphonicToMonophonicService {
       if (trebleNotes.isEmpty) continue;
 
       trebleNotes.sort((a, b) {
-        return _pitchToMidiValue(b.defaultKeyLabel!)
-            .compareTo(_pitchToMidiValue(a.defaultKeyLabel!));
+        return _pitchToMidiValue(
+          b.defaultKeyLabel!,
+        ).compareTo(_pitchToMidiValue(a.defaultKeyLabel!));
       });
 
       final selected = trebleNotes.first;
@@ -486,6 +463,9 @@ class PolyphonicToMonophonicService {
           id: '${grandStaffId}_strict_${stack.eventIndex}',
           grandStaffId: grandStaffId,
           eventIndex: stack.eventIndex,
+          measureId: stack.measureId,
+          measureIndex: stack.measureIndex,
+          sourceX: stack.sourceX,
           pitch: selected.defaultKeyLabel!,
           sourceNote: selected,
           harmonyContext: stack.notes
@@ -530,10 +510,15 @@ class PolyphonicToMonophonicService {
         if (previousMidi != null) {
           final jump = (midi - previousMidi).abs();
 
-          if (jump <= 2) score += 30;
-          else if (jump <= 5) score += 20;
-          else if (jump <= 12) score += 5;
-          else score -= 40;
+          if (jump <= 2) {
+            score += 30;
+          } else if (jump <= 5) {
+            score += 20;
+          } else if (jump <= 12) {
+            score += 5;
+          } else {
+            score -= 40;
+          }
         }
 
         // Bass restriction
@@ -558,13 +543,17 @@ class PolyphonicToMonophonicService {
           id: '${grandStaffId}_cont_${stack.eventIndex}',
           grandStaffId: grandStaffId,
           eventIndex: stack.eventIndex,
+          measureId: stack.measureId,
+          measureIndex: stack.measureIndex,
+          sourceX: stack.sourceX,
           pitch: pitch,
           sourceNote: best,
           harmonyContext: candidates
               .map((n) => n.defaultKeyLabel ?? 'Unresolved')
               .toList(),
-          selectionReason:
-          best.staffRole == 'treble' ? 'treble_primary' : 'bass_fallback',
+          selectionReason: best.staffRole == 'treble'
+              ? 'treble_primary'
+              : 'bass_fallback',
         ),
       );
     }
@@ -619,72 +608,6 @@ class PolyphonicToMonophonicService {
 
     return (medianGap * 0.35).clamp(6.0, 18.0);
   }
-
-  _MelodyScoreResult _scoreMelodyCandidate({
-    required int midi,
-    required int? previousMidi,
-    required bool isTrebleLikely,
-  }) {
-    double score = 0;
-    final reasons = <String>[];
-
-    // 1. Primary voice bias
-    if (isTrebleLikely) {
-      score += 45;
-      reasons.add('treble_primary');
-    } else {
-      score -= 15;
-      reasons.add('bass_fallback');
-    }
-
-    // 2. Register preference: guitar-friendly / melody-friendly range
-    // E3 = 52, E6 = 88
-    if (midi >= 52 && midi <= 88) {
-      score += 20;
-      reasons.add('register_ok');
-    } else {
-      score -= 20;
-      reasons.add('register_outlier');
-    }
-
-    // 3. Continuity from previous melody
-    if (previousMidi != null) {
-      final jump = (midi - previousMidi).abs();
-
-      if (jump == 0) {
-        score += 25;
-        reasons.add('repeat_stability');
-      } else if (jump <= 2) {
-        score += 22;
-        reasons.add('stepwise_motion');
-      } else if (jump <= 5) {
-        score += 15;
-        reasons.add('small_jump');
-      } else if (jump <= 12) {
-        score += 3;
-        reasons.add('moderate_jump');
-      } else {
-        score -= 30;
-        reasons.add('large_jump_penalty');
-      }
-    } else {
-      // First note: prefer higher register slightly, but not too much.
-      score += midi * 0.05;
-      reasons.add('initial_pitch');
-    }
-
-    // 4. Small upper-register preference, weaker than continuity.
-    score += midi * 0.03;
-
-    return _MelodyScoreResult(
-      score: score,
-      reason: reasons.join('+'),
-    );
-  }
-
-  bool _isTrebleMelodyCandidate(TranslatedSymbolViewItem note) {
-    return note.staffRole == 'treble';
-  }
 }
 
 class _ChordResult {
@@ -696,15 +619,5 @@ class _ChordResult {
     required this.chordName,
     required this.root,
     required this.quality,
-  });
-}
-
-class _MelodyScoreResult {
-  final double score;
-  final String reason;
-
-  const _MelodyScoreResult({
-    required this.score,
-    required this.reason,
   });
 }

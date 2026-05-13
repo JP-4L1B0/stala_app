@@ -3,12 +3,18 @@ import 'fretboard_mapping_service.dart';
 class PlayableEvent {
   final int eventIndex;
   final String label;
+  final String? measureId;
+  final int? measureIndex;
+  final double? sourceX;
   final List<GuitarPosition> chosenPositions;
   final double transitionCost;
 
   const PlayableEvent({
     required this.eventIndex,
     required this.label,
+    this.measureId,
+    this.measureIndex,
+    this.sourceX,
     required this.chosenPositions,
     required this.transitionCost,
   });
@@ -31,9 +37,7 @@ class ManagedEventLine {
 class EventManagerResult {
   final List<ManagedEventLine> lines;
 
-  const EventManagerResult({
-    required this.lines,
-  });
+  const EventManagerResult({required this.lines});
 }
 
 class EventManagerService {
@@ -41,10 +45,11 @@ class EventManagerService {
     required FretboardMappingResult fretboardMapping,
   }) {
     final lines = fretboardMapping.lines
-    // For now, optimize melody lines first.
-        .where((line) =>
-    line.id.contains('strict') ||
-        line.id.contains('continuity'))
+        // For now, optimize melody lines first.
+        .where(
+          (line) =>
+              line.id.contains('strict') || line.id.contains('continuity'),
+        )
         .map(_optimizeLine)
         .whereType<ManagedEventLine>()
         .toList();
@@ -80,6 +85,9 @@ class EventManagerService {
         PlayableEvent(
           eventIndex: events[i].eventIndex,
           label: events[i].label,
+          measureId: events[i].measureId,
+          measureIndex: events[i].measureIndex,
+          sourceX: events[i].sourceX,
           chosenPositions: current.positions,
           transitionCost: cost,
         ),
@@ -95,8 +103,8 @@ class EventManagerService {
   }
 
   List<FretboardCandidate> _findLowestCostPath(
-      List<FretboardMappedEvent> events,
-      ) {
+    List<FretboardMappedEvent> events,
+  ) {
     final dp = <Map<int, _PathState>>[];
 
     // First event
@@ -125,9 +133,11 @@ class EventManagerService {
         double bestCost = double.infinity;
         int? bestPrevIndex;
 
-        for (int prevIndex = 0;
-        prevIndex < prevCandidates.length;
-        prevIndex++) {
+        for (
+          int prevIndex = 0;
+          prevIndex < prevCandidates.length;
+          prevIndex++
+        ) {
           final prevState = dp[eventIndex - 1][prevIndex];
           if (prevState == null) continue;
 
@@ -169,9 +179,7 @@ class EventManagerService {
     final path = List<FretboardCandidate?>.filled(events.length, null);
     int? currentIndex = bestFinalIndex;
 
-    for (int eventIndex = events.length - 1;
-    eventIndex >= 0;
-    eventIndex--) {
+    for (int eventIndex = events.length - 1; eventIndex >= 0; eventIndex--) {
       if (currentIndex == null) break;
 
       path[eventIndex] = events[eventIndex].candidates[currentIndex];
@@ -186,8 +194,7 @@ class EventManagerService {
     if (positions.isEmpty) return 9999;
 
     final avgFret =
-        positions.map((p) => p.fret).reduce((a, b) => a + b) /
-            positions.length;
+        positions.map((p) => p.fret).reduce((a, b) => a + b) / positions.length;
 
     final span = _fretSpan(positions);
     final openCount = positions.where((p) => p.fret == 0).length;
@@ -207,15 +214,15 @@ class EventManagerService {
   }
 
   double _transitionCost(
-      FretboardCandidate previous,
-      FretboardCandidate current,
-      ) {
+    FretboardCandidate previous,
+    FretboardCandidate current,
+  ) {
     final prevCenter = _candidateCenter(previous);
     final currCenter = _candidateCenter(current);
 
     final fretDistance = (currCenter.fret - prevCenter.fret).abs();
-    final stringDistance =
-    (currCenter.stringNumber - prevCenter.stringNumber).abs();
+    final stringDistance = (currCenter.stringNumber - prevCenter.stringNumber)
+        .abs();
 
     final currentSpan = _fretSpan(current.positions);
     final openCount = current.positions.where((p) => p.fret == 0).length;
@@ -255,11 +262,10 @@ class EventManagerService {
 
     final avgString =
         positions.map((p) => p.stringNumber).reduce((a, b) => a + b) /
-            positions.length;
+        positions.length;
 
     final avgFret =
-        positions.map((p) => p.fret).reduce((a, b) => a + b) /
-            positions.length;
+        positions.map((p) => p.fret).reduce((a, b) => a + b) / positions.length;
 
     return _CandidateCenter(
       stringNumber: avgString.round(),
@@ -271,13 +277,9 @@ class EventManagerService {
     final fretted = positions.where((p) => p.fret > 0).toList();
     if (fretted.length < 2) return 0;
 
-    final minFret = fretted
-        .map((p) => p.fret)
-        .reduce((a, b) => a < b ? a : b);
+    final minFret = fretted.map((p) => p.fret).reduce((a, b) => a < b ? a : b);
 
-    final maxFret = fretted
-        .map((p) => p.fret)
-        .reduce((a, b) => a > b ? a : b);
+    final maxFret = fretted.map((p) => p.fret).reduce((a, b) => a > b ? a : b);
 
     return maxFret - minFret;
   }
@@ -287,18 +289,12 @@ class _PathState {
   final double cost;
   final int? previousIndex;
 
-  const _PathState({
-    required this.cost,
-    required this.previousIndex,
-  });
+  const _PathState({required this.cost, required this.previousIndex});
 }
 
 class _CandidateCenter {
   final int stringNumber;
   final int fret;
 
-  const _CandidateCenter({
-    required this.stringNumber,
-    required this.fret,
-  });
+  const _CandidateCenter({required this.stringNumber, required this.fret});
 }

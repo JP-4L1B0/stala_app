@@ -16,22 +16,25 @@ class FretboardCandidate {
   final String label;
   final List<GuitarPosition> positions;
 
-  const FretboardCandidate({
-    required this.label,
-    required this.positions,
-  });
+  const FretboardCandidate({required this.label, required this.positions});
 }
 
 class FretboardMappedEvent {
   final int eventIndex;
   final String label;
   final List<String> pitches;
+  final String? measureId;
+  final int? measureIndex;
+  final double? sourceX;
   final List<FretboardCandidate> candidates;
 
   const FretboardMappedEvent({
     required this.eventIndex,
     required this.label,
     required this.pitches,
+    this.measureId,
+    this.measureIndex,
+    this.sourceX,
     required this.candidates,
   });
 }
@@ -51,13 +54,14 @@ class FretboardMappedLine {
 class FretboardMappingResult {
   final List<FretboardMappedLine> lines;
 
-  const FretboardMappingResult({
-    required this.lines,
-  });
+  const FretboardMappingResult({required this.lines});
 }
 
 class FretboardMappingService {
   static const int maxFret = 24;
+  static const int _maxChordPitches = 6;
+  static const int _maxPositionsPerPitch = 4;
+  static const int _maxMultiPitchCandidates = 240;
 
   // Standard tuning:
   // string 1 = high E4, string 6 = low E2
@@ -113,6 +117,9 @@ class FretboardMappingService {
       eventIndex: event.eventIndex,
       label: event.label,
       pitches: event.pitches,
+      measureId: event.measureId,
+      measureIndex: event.measureIndex,
+      sourceX: event.sourceX,
       candidates: candidates,
     );
   }
@@ -130,11 +137,7 @@ class FretboardMappingService {
 
       if (fret >= 0 && fret <= maxFret) {
         positions.add(
-          GuitarPosition(
-            stringNumber: stringNumber,
-            fret: fret,
-            pitch: pitch,
-          ),
+          GuitarPosition(stringNumber: stringNumber, fret: fret, pitch: pitch),
         );
       }
     }
@@ -148,11 +151,23 @@ class FretboardMappingService {
     return positions;
   }
 
-  List<FretboardCandidate> _multiPitchCandidates(
-      InterpretedMusicEvent event,
-      ) {
-    final pitchPositions = event.pitches.map((pitch) {
-      return _positionsForPitch(pitch);
+  List<FretboardCandidate> _multiPitchCandidates(InterpretedMusicEvent event) {
+    final uniquePitches = <String>[];
+    final seen = <String>{};
+
+    for (final pitch in event.pitches) {
+      final normalized = pitch.trim();
+      if (normalized.isEmpty || normalized == 'Unresolved') continue;
+      if (seen.add(normalized)) {
+        uniquePitches.add(normalized);
+      }
+      if (uniquePitches.length >= _maxChordPitches) break;
+    }
+
+    if (uniquePitches.isEmpty) return const [];
+
+    final pitchPositions = uniquePitches.map((pitch) {
+      return _positionsForPitch(pitch).take(_maxPositionsPerPitch).toList();
     }).toList();
 
     if (pitchPositions.any((list) => list.isEmpty)) {
@@ -162,6 +177,8 @@ class FretboardMappingService {
     final combinations = <List<GuitarPosition>>[];
 
     void build(int index, List<GuitarPosition> current) {
+      if (combinations.length >= _maxMultiPitchCandidates) return;
+
       if (index == pitchPositions.length) {
         final usedStrings = current.map((p) => p.stringNumber).toSet();
 
@@ -175,7 +192,16 @@ class FretboardMappingService {
       }
 
       for (final pos in pitchPositions[index]) {
-        build(index + 1, [...current, pos]);
+        if (current.any(
+          (existing) => existing.stringNumber == pos.stringNumber,
+        )) {
+          continue;
+        }
+
+        final next = [...current, pos];
+        if (!_canStillBecomePlayable(next)) continue;
+
+        build(index + 1, next);
       }
     }
 
@@ -186,10 +212,7 @@ class FretboardMappingService {
           .map((p) => '${p.pitch}: S${p.stringNumber} F${p.fret}')
           .join(' | ');
 
-      return FretboardCandidate(
-        label: label,
-        positions: combo,
-      );
+      return FretboardCandidate(label: label, positions: combo);
     }).toList();
   }
 
@@ -206,6 +229,16 @@ class FretboardMappingService {
 
     // Base playable range. EventManager/A* can optimize later.
     return fretSpan <= 5;
+  }
+
+  bool _canStillBecomePlayable(List<GuitarPosition> positions) {
+    final fretted = positions.where((p) => p.fret > 0).toList();
+    if (fretted.length < 2) return true;
+
+    final minFret = fretted.map((p) => p.fret).reduce((a, b) => a < b ? a : b);
+    final maxFret = fretted.map((p) => p.fret).reduce((a, b) => a > b ? a : b);
+
+    return maxFret - minFret <= 5;
   }
 
   int? _pitchToMidiValue(String pitch) {

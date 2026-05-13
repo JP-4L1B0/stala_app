@@ -52,10 +52,22 @@ class PitchMappingService {
       return -2 * n;
     }
 
+    if (id.startsWith('v_space_above_')) {
+      final n = int.tryParse(id.replaceFirst('v_space_above_', ''));
+      if (n == null) return null;
+      return -((2 * n) - 1);
+    }
+
     if (id.startsWith('v_line_below_')) {
       final n = int.tryParse(id.replaceFirst('v_line_below_', ''));
       if (n == null) return null;
       return 8 + (2 * n);
+    }
+
+    if (id.startsWith('v_space_below_')) {
+      final n = int.tryParse(id.replaceFirst('v_space_below_', ''));
+      if (n == null) return null;
+      return 8 + ((2 * n) - 1);
     }
 
     return null;

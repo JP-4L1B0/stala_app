@@ -1,5 +1,6 @@
 import 'event_manager_service.dart';
 import 'chord_voicing_service.dart';
+import 'rhythm_interpretation_service.dart';
 import '../models/tablature_result.dart';
 
 class TablatureResultAdapter {
@@ -7,6 +8,7 @@ class TablatureResultAdapter {
 
   List<TablatureResult> fromEventManagerResult({
     required EventManagerResult result,
+    RhythmInterpretationResult? rhythmResult,
     String titleFallback = 'Untitled',
   }) {
     return result.lines.map((line) {
@@ -14,13 +16,16 @@ class TablatureResultAdapter {
         title: line.title.isNotEmpty ? line.title : titleFallback,
         mode: _modeFromLineId(line.sourceLineId),
         sourceLineId: line.sourceLineId,
-        events: line.events.map(_fromPlayableEvent).toList(),
+        events: line.events
+            .map((event) => _fromPlayableEvent(event, rhythmResult))
+            .toList(),
       );
     }).toList();
   }
 
   List<TablatureResult> fromChordVoicingResult({
     required ChordVoicingResult result,
+    RhythmInterpretationResult? rhythmResult,
     String titleFallback = 'Untitled',
   }) {
     return result.lines.map((line) {
@@ -28,7 +33,9 @@ class TablatureResultAdapter {
         title: line.title.isNotEmpty ? line.title : titleFallback,
         mode: TranslationMode.chordAware,
         sourceLineId: line.sourceLineId,
-        events: line.events.map(_fromChordVoicedEvent).toList(),
+        events: line.events
+            .map((event) => _fromChordVoicedEvent(event, rhythmResult))
+            .toList(),
       );
     }).toList();
   }
@@ -36,27 +43,40 @@ class TablatureResultAdapter {
   List<TablatureResult> combine({
     EventManagerResult? eventManagerResult,
     ChordVoicingResult? chordVoicingResult,
+    RhythmInterpretationResult? rhythmResult,
     String titleFallback = 'Untitled',
   }) {
     return [
       if (eventManagerResult != null)
         ...fromEventManagerResult(
           result: eventManagerResult,
+          rhythmResult: rhythmResult,
           titleFallback: titleFallback,
         ),
       if (chordVoicingResult != null)
         ...fromChordVoicingResult(
           result: chordVoicingResult,
+          rhythmResult: rhythmResult,
           titleFallback: titleFallback,
         ),
     ];
   }
 
-  TablatureEvent _fromPlayableEvent(PlayableEvent event) {
+  TablatureEvent _fromPlayableEvent(
+    PlayableEvent event,
+    RhythmInterpretationResult? rhythmResult,
+  ) {
+    final duration = _durationFor(
+      rhythmResult: rhythmResult,
+      measureIndex: event.measureIndex,
+      sourceX: event.sourceX,
+      fallback: _defaultDurationForMelody(event),
+    );
+
     return TablatureEvent(
       eventIndex: event.eventIndex,
       label: event.label,
-      durationSeconds: _defaultDurationForMelody(event),
+      durationSeconds: duration,
       positions: event.chosenPositions.map((p) {
         return TabPosition(
           stringNumber: p.stringNumber,
@@ -67,15 +87,29 @@ class TablatureResultAdapter {
       metadata: {
         'source': 'event_manager',
         'transitionCost': event.transitionCost,
+        'measureId': event.measureId,
+        'measureIndex': event.measureIndex,
+        'sourceX': event.sourceX,
+        'durationBeats': duration,
       },
     );
   }
 
-  TablatureEvent _fromChordVoicedEvent(ChordVoicedEvent event) {
+  TablatureEvent _fromChordVoicedEvent(
+    ChordVoicedEvent event,
+    RhythmInterpretationResult? rhythmResult,
+  ) {
+    final duration = _durationFor(
+      rhythmResult: rhythmResult,
+      measureIndex: event.measureIndex,
+      sourceX: event.sourceX,
+      fallback: 1.0,
+    );
+
     return TablatureEvent(
       eventIndex: event.eventIndex,
       label: event.label,
-      durationSeconds: 1.0,
+      durationSeconds: duration,
       positions: event.chosenPositions.map((p) {
         return TabPosition(
           stringNumber: p.stringNumber,
@@ -87,6 +121,10 @@ class TablatureResultAdapter {
         'source': 'chord_voicing',
         'cost': event.cost,
         'voicingReason': event.voicingReason,
+        'measureId': event.measureId,
+        'measureIndex': event.measureIndex,
+        'sourceX': event.sourceX,
+        'durationBeats': duration,
       },
     );
   }
@@ -110,8 +148,20 @@ class TablatureResultAdapter {
   }
 
   double _defaultDurationForMelody(PlayableEvent event) {
-    // Temporary thesis-safe default.
-    // Later, replace this with centerX/xGap-based timing if upstream data includes x positions.
     return 1.0;
+  }
+
+  double _durationFor({
+    required RhythmInterpretationResult? rhythmResult,
+    required int? measureIndex,
+    required double? sourceX,
+    required double fallback,
+  }) {
+    if (rhythmResult == null) return fallback;
+    return rhythmResult.durationFor(
+      measureIndex: measureIndex,
+      sourceX: sourceX,
+      fallback: fallback,
+    );
   }
 }

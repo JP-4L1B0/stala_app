@@ -9,12 +9,11 @@ class NoteGroupingService {
     for (final staff in staffGroups) {
       final staffId = staff.staffId;
 
-      // Step 1: filter valid noteheads
       final notes = staff.symbols.where((symbol) {
         final isNotehead = symbol.className.toLowerCase() == 'notehead';
         final isValid =
             symbol.assignmentStatus == 'normal' ||
-                symbol.assignmentStatus == 'ledgerConfirmed';
+            symbol.assignmentStatus == 'ledgerConfirmed';
 
         return isNotehead && isValid;
       }).toList();
@@ -24,47 +23,73 @@ class NoteGroupingService {
         continue;
       }
 
-      // Step 2: sort left → right
-      notes.sort((a, b) => a.centerX.compareTo(b.centerX));
+      notes.sort((a, b) {
+        final measureCompare = (a.measureIndex ?? 0).compareTo(
+          b.measureIndex ?? 0,
+        );
+        if (measureCompare != 0) return measureCompare;
+        return a.centerX.compareTo(b.centerX);
+      });
 
-      // Step 3: estimate spacing (used for grouping threshold)
-      final spacing = _estimateSpacing(notes);
-
-      final threshold = spacing * 0.35;
-
-      // Step 4: group notes
       final groups = <List<TranslatedSymbolViewItem>>[];
-      List<TranslatedSymbolViewItem> currentGroup = [];
 
-      for (final note in notes) {
-        if (currentGroup.isEmpty) {
-          currentGroup.add(note);
-          continue;
+      for (final measureNotes in _groupByMeasure(notes)) {
+        final spacing = _estimateSpacing(measureNotes);
+        final noteheadWidth = _estimateNoteheadWidth(measureNotes);
+        final threshold = (noteheadWidth * 0.9).clamp(6.0, spacing * 0.45);
+
+        List<TranslatedSymbolViewItem> currentGroup = [];
+
+        for (final note in measureNotes) {
+          if (currentGroup.isEmpty) {
+            currentGroup.add(note);
+            continue;
+          }
+
+          final center =
+              currentGroup.map((item) => item.centerX).reduce((a, b) => a + b) /
+              currentGroup.length;
+
+          final dx = (note.centerX - center).abs();
+
+          if (dx <= threshold) {
+            currentGroup.add(note);
+          } else {
+            groups.add(currentGroup);
+            currentGroup = [note];
+          }
         }
 
-        final last = currentGroup.last;
-
-        final dx = (note.centerX - last.centerX).abs();
-
-        if (dx <= threshold) {
-          // same chord
-          currentGroup.add(note);
-        } else {
-          // new group
+        if (currentGroup.isNotEmpty) {
           groups.add(currentGroup);
-          currentGroup = [note];
         }
-      }
-
-      // add last group
-      if (currentGroup.isNotEmpty) {
-        groups.add(currentGroup);
       }
 
       result[staffId] = groups;
     }
 
     return result;
+  }
+
+  List<List<TranslatedSymbolViewItem>> _groupByMeasure(
+    List<TranslatedSymbolViewItem> notes,
+  ) {
+    final keyed = <String, List<TranslatedSymbolViewItem>>{};
+
+    for (final note in notes) {
+      final key = note.measureId ?? 'implicit';
+      keyed.putIfAbsent(key, () => []).add(note);
+    }
+
+    final groups = keyed.values.toList();
+    groups.sort((a, b) {
+      final aIndex = a.first.measureIndex ?? 0;
+      final bIndex = b.first.measureIndex ?? 0;
+      if (aIndex != bIndex) return aIndex.compareTo(bIndex);
+      return a.first.centerX.compareTo(b.first.centerX);
+    });
+
+    return groups;
   }
 
   double _estimateSpacing(List<TranslatedSymbolViewItem> notes) {
@@ -85,5 +110,23 @@ class NoteGroupingService {
     if (count == 0) return 20.0;
 
     return total / count;
+  }
+
+  double _estimateNoteheadWidth(List<TranslatedSymbolViewItem> notes) {
+    final widths =
+        notes
+            .map((note) {
+              final bbox = note.bbox;
+              if (bbox == null || bbox.length < 4) return null;
+              return (bbox[2] - bbox[0]).abs();
+            })
+            .whereType<double>()
+            .where((width) => width > 0)
+            .toList()
+          ..sort();
+
+    if (widths.isEmpty) return 12.0;
+
+    return widths[widths.length ~/ 2];
   }
 }

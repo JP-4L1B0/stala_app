@@ -53,6 +53,8 @@ class GeneratedTabRow {
 class GeneratedTabColumn {
   final int eventIndex;
   final String label;
+  final int? measureIndex;
+  final bool startsMeasure;
   final double durationSeconds;
   final double x;
   final double width;
@@ -62,6 +64,8 @@ class GeneratedTabColumn {
   const GeneratedTabColumn({
     required this.eventIndex,
     required this.label,
+    this.measureIndex,
+    this.startsMeasure = false,
     required this.durationSeconds,
     required this.x,
     required this.width,
@@ -120,9 +124,7 @@ class EventDetail {
       return 'String: ${p.stringNumber}, Fret: ${p.fret}';
     }
 
-    return positions
-        .map((p) => 'S${p.stringNumber}:F${p.fret}')
-        .join('  •  ');
+    return positions.map((p) => 'S${p.stringNumber}:F${p.fret}').join('  •  ');
   }
 }
 
@@ -174,19 +176,24 @@ class GenerationService {
 
     for (int i = 0; i < result.events.length; i++) {
       final event = result.events[i];
-      final x = i * columnWidth;
+      final previous = i > 0 ? result.events[i - 1] : null;
+      final startsMeasure = _startsMeasure(event, previous);
+      final measureGap = startsMeasure && i > 0 ? columnWidth * 0.45 : 0.0;
+      final eventWidth = _widthForDuration(event.durationSeconds, columnWidth);
+      final x =
+          (columns.isEmpty ? 0.0 : columns.last.x + columns.last.width) +
+          measureGap;
 
       columns.add(
         GeneratedTabColumn(
           eventIndex: event.eventIndex,
           label: event.label,
+          measureIndex: _metadataInt(event, 'measureIndex'),
+          startsMeasure: startsMeasure,
           durationSeconds: event.durationSeconds,
           x: x,
-          width: columnWidth,
-          numbers: _buildNumbers(
-            event: event,
-            x: x + (columnWidth / 2),
-          ),
+          width: eventWidth,
+          numbers: _buildNumbers(event: event, x: x + (eventWidth / 2)),
           eventDetail: EventDetail(
             eventIndex: event.eventIndex,
             label: event.label,
@@ -215,7 +222,7 @@ class GenerationService {
         columns: columns,
         eventsPerPage: exportEventsPerPage,
       ),
-      totalWidth: columns.length * columnWidth,
+      totalWidth: columns.isEmpty ? 0.0 : columns.last.x + columns.last.width,
       rowHeight: rowHeight,
       columnWidth: columnWidth,
     );
@@ -270,6 +277,28 @@ class GenerationService {
       default:
         return 5;
     }
+  }
+
+  double _widthForDuration(double durationSeconds, double columnWidth) {
+    final multiplier = durationSeconds.clamp(0.5, 2.5).toDouble();
+    return columnWidth * multiplier;
+  }
+
+  bool _startsMeasure(TablatureEvent event, TablatureEvent? previous) {
+    if (previous == null) return true;
+
+    final currentMeasure = _metadataInt(event, 'measureIndex');
+    final previousMeasure = _metadataInt(previous, 'measureIndex');
+
+    if (currentMeasure == null || previousMeasure == null) return false;
+    return currentMeasure != previousMeasure;
+  }
+
+  int? _metadataInt(TablatureEvent event, String key) {
+    final value = event.metadata[key];
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '');
   }
 
   List<TabExportPage> _buildExportPages({

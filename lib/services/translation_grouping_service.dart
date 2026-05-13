@@ -4,7 +4,6 @@ import 'clef_resolution_service.dart';
 import 'pitch_mapping_service.dart';
 import 'accidental_service.dart';
 import 'key_signature_service.dart';
-import 'note_grouping_service.dart';
 
 class TranslationGroupingService {
   /// Builds staff_n groups using segmented staff lines and detected symbols.
@@ -22,16 +21,10 @@ class TranslationGroupingService {
   /// - clefStatusLabel is reserved for real clef resolution
   /// - defaultKeyLabel can later be replaced by resolved pitch output
 
-  final ClefResolutionService _clefResolutionService =
-  ClefResolutionService();
-  final PitchMappingService _pitchMappingService =
-  PitchMappingService();
-  final AccidentalService _accidentalService =
-  AccidentalService();
-  final KeySignatureService _keySignatureService =
-  KeySignatureService();
-  final NoteGroupingService _noteGroupingService =
-  NoteGroupingService();
+  final ClefResolutionService _clefResolutionService = ClefResolutionService();
+  final PitchMappingService _pitchMappingService = PitchMappingService();
+  final AccidentalService _accidentalService = AccidentalService();
+  final KeySignatureService _keySignatureService = KeySignatureService();
 
   static const int _virtualLedgerSteps = 5;
   static const double _virtualLedgerPadding = 0.75;
@@ -39,22 +32,23 @@ class TranslationGroupingService {
   List<StaffTranslateGroup> buildGroups({
     required List<SymbolClassItem> classItems,
     required List<dynamic> staffLines,
+    List<dynamic> validatedStaffs = const [],
     List<dynamic> ledgerLines = const [],
+    List<dynamic> measures = const [],
   }) {
-
-    final normalizedLines = _normalizeStaffLines(staffLines);
+    final staffGeometries = _normalizeStaffGeometries(
+      validatedStaffs: validatedStaffs,
+      staffLines: staffLines,
+    );
     final normalizedLedgerLines = _normalizeLedgerLines(ledgerLines);
-    print('GROUPING: ledgerLines count = ${normalizedLedgerLines.length}');
+    final measureRegions = _normalizeMeasures(measures);
 
-    if (normalizedLines.length < 5) {
+    if (staffGeometries.isEmpty) {
       return const [];
     }
 
-    final staffGroups = _buildStaffLineGroups(normalizedLines);
-
     final staffLineMap = <String, List<double>>{
-      for (int i = 0; i < staffGroups.length; i++)
-        'staff_$i': staffGroups[i],
+      for (final geometry in staffGeometries) geometry.staffId: geometry.lines,
     };
 
     final clefResults = _clefResolutionService.resolveClefs(
@@ -68,25 +62,27 @@ class TranslationGroupingService {
 
     final result = <StaffTranslateGroup>[];
 
-    for (int staffIndex = 0; staffIndex < staffGroups.length; staffIndex++) {
-      final staffId = 'staff_$staffIndex';
+    for (final geometry in staffGeometries) {
+      final staffId = geometry.staffId;
       final clefResult = clefByStaffId[staffId];
 
-      final lines = staffGroups[staffIndex];
+      final lines = geometry.lines;
       if (lines.length < 5) continue;
 
       final segmentMap = _buildSegmentMap(lines);
 
-      final topBoundary = _computeTopBoundary(lines);
-      final bottomBoundary = _computeBottomBoundary(lines);
-
-      final spacing = _averageSpacing(lines);
+      final topBoundary = geometry.topBoundary ?? _computeTopBoundary(lines);
+      final bottomBoundary =
+          geometry.bottomBoundary ?? _computeBottomBoundary(lines);
+      final spacing = geometry.spacing ?? _averageSpacing(lines);
 
       final extendedTopBoundary =
-          lines.first - (spacing * (_virtualLedgerSteps + _virtualLedgerPadding));
+          lines.first -
+          (spacing * (_virtualLedgerSteps + _virtualLedgerPadding));
 
       final extendedBottomBoundary =
-          lines.last + (spacing * (_virtualLedgerSteps + _virtualLedgerPadding));
+          lines.last +
+          (spacing * (_virtualLedgerSteps + _virtualLedgerPadding));
 
       final symbolsInStaff = classItems.where((item) {
         final className = item.className.trim().toLowerCase();
@@ -104,8 +100,7 @@ class TranslationGroupingService {
         }
 
         return false;
-      }).toList()
-        ..sort((a, b) => a.x.compareTo(b.x));
+      }).toList()..sort((a, b) => a.x.compareTo(b.x));
 
       final keySignature = _keySignatureService.resolveKeySignature(
         staffId: staffId,
@@ -117,32 +112,39 @@ class TranslationGroupingService {
 
       final translatedSymbols = symbolsInStaff.map((item) {
         final location = _findNearestSegment(item.y, segmentMap);
+        final measure = _measureForSymbol(
+          symbol: item,
+          staffId: staffId,
+          measures: measureRegions,
+        );
 
         // Computes pitch
         final pitch = item.className.trim().toLowerCase() == 'notehead'
             ? _pitchMappingService.resolvePitch(
-          segment: location,
-          clef: clefResult?.clef ?? ResolvedClef.unknown,
-        )
+                segment: location,
+                clef: clefResult?.clef ?? ResolvedClef.unknown,
+              )
             : null;
 
         final pitchWithKey = pitch != null
             ? _keySignatureService.applyToPitch(
-          pitch: pitch,
-          keySignature: keySignature,
-        )
+                pitch: pitch,
+                keySignature: keySignature,
+              )
             : null;
 
         // Add accidental effect to pitch
         final isNotehead = item.className.trim().toLowerCase() == 'notehead';
 
         final accidentalResult = isNotehead && pitchWithKey != null
-            ? _accidentalService.applyDirectAccidental(
-          basePitch: pitchWithKey,
-          notehead: item,
-          symbolsInStaff: symbolsInStaff,
-          spacing: spacing,
-        )
+            ? _accidentalService.applyMeasureAwareAccidental(
+                basePitch: pitchWithKey,
+                notehead: item,
+                symbolsInStaff: symbolsInStaff,
+                spacing: spacing,
+                measureStartX: measure?.x1,
+                measureEndX: measure?.x2,
+              )
             : null;
 
         // Ledger line
@@ -154,16 +156,22 @@ class TranslationGroupingService {
         if (insideNormalStaff) {
           assignmentStatus = 'normal';
         } else {
-          final confirmed = _isNearLedgerLine(
-            symbol: item,
-            staffId: staffId,
-            ledgerLines: normalizedLedgerLines,
-            spacing: spacing,
-          );
+          final confirmed =
+              _isNearLedgerLine(
+                symbol: item,
+                staffId: staffId,
+                ledgerLines: normalizedLedgerLines,
+                spacing: spacing,
+              ) ||
+              _isSupportedLedgerSpace(
+                location: location,
+                symbol: item,
+                staffId: staffId,
+                ledgerLines: normalizedLedgerLines,
+                spacing: spacing,
+              );
 
-          assignmentStatus = confirmed
-              ? 'ledgerConfirmed'
-              : 'ledgerCandidate';
+          assignmentStatus = confirmed ? 'ledgerConfirmed' : 'ledgerCandidate';
         }
 
         return TranslatedSymbolViewItem(
@@ -177,20 +185,23 @@ class TranslationGroupingService {
           locationId: location.id,
           locationType: location.type,
           assignmentStatus: assignmentStatus,
+          measureId: measure?.id,
+          measureIndex: measure?.indexInStaff,
           defaultKeyLabel: accidentalResult?.pitch,
           accidentalState:
-          accidentalResult?.accidental.name ?? _defaultAccidentalState(item.className),
+              accidentalResult?.accidental.name ??
+              _defaultAccidentalState(item.className),
         );
       }).toList();
 
       result.add(
         StaffTranslateGroup(
-          staffId: 'staff_$staffIndex',
+          staffId: staffId,
           summary: StaffSummary(
             lineCount: lines.length,
             symbolCount: translatedSymbols.length,
             clefStatusLabel:
-            '${clefResult?.label ?? 'Unknown clef'} • ${keySignature.label}',
+                '${clefResult?.label ?? 'Unknown clef'} • ${keySignature.label}',
           ),
           segmentMap: segmentMap,
           symbols: translatedSymbols,
@@ -226,6 +237,61 @@ class TranslationGroupingService {
     return values;
   }
 
+  List<_StaffGeometry> _normalizeStaffGeometries({
+    required List<dynamic> validatedStaffs,
+    required List<dynamic> staffLines,
+  }) {
+    final fromValidated = <_StaffGeometry>[];
+
+    for (final item in validatedStaffs) {
+      if (item is! Map) continue;
+
+      final map = Map<String, dynamic>.from(
+        item.map((key, value) => MapEntry(key.toString(), value)),
+      );
+
+      final staffId = map['id']?.toString();
+      final rawLines = map['lines'];
+      if (staffId == null || rawLines is! List) continue;
+
+      final lines = rawLines.map(_toDouble).whereType<double>().toList()
+        ..sort();
+
+      if (lines.length != 5) continue;
+
+      fromValidated.add(
+        _StaffGeometry(
+          staffId: staffId,
+          lines: lines,
+          spacing: _toDouble(map['spacing']),
+          topBoundary: _toDouble(map['topBoundary']),
+          bottomBoundary: _toDouble(map['bottomBoundary']),
+        ),
+      );
+    }
+
+    if (fromValidated.isNotEmpty) {
+      fromValidated.sort((a, b) => a.lines.first.compareTo(b.lines.first));
+      return fromValidated;
+    }
+
+    final normalizedLines = _normalizeStaffLines(staffLines);
+    if (normalizedLines.length < 5) return const [];
+
+    final grouped = _buildStaffLineGroups(normalizedLines);
+    return grouped.asMap().entries.map((entry) {
+      final staffId = 'staff_${entry.key}';
+      final lines = entry.value;
+      return _StaffGeometry(
+        staffId: staffId,
+        lines: lines,
+        spacing: _averageSpacing(lines),
+        topBoundary: _computeTopBoundary(lines),
+        bottomBoundary: _computeBottomBoundary(lines),
+      );
+    }).toList();
+  }
+
   List<_LedgerLineItem> _normalizeLedgerLines(List<dynamic> rawLedgerLines) {
     final result = <_LedgerLineItem>[];
 
@@ -251,6 +317,44 @@ class TranslationGroupingService {
           x2: x2,
           y: y,
           position: position,
+        ),
+      );
+    }
+
+    return result;
+  }
+
+  List<_MeasureRegion> _normalizeMeasures(List<dynamic> rawMeasures) {
+    final result = <_MeasureRegion>[];
+
+    for (final item in rawMeasures) {
+      if (item is! Map) continue;
+
+      final map = Map<String, dynamic>.from(
+        item.map((key, value) => MapEntry(key.toString(), value)),
+      );
+
+      final id = map['id']?.toString();
+      final staffId = map['staffId']?.toString();
+      final indexInStaff = _toInt(map['indexInStaff']);
+      final x1 = _toDouble(map['x1']);
+      final x2 = _toDouble(map['x2']);
+
+      if (id == null ||
+          staffId == null ||
+          indexInStaff == null ||
+          x1 == null ||
+          x2 == null) {
+        continue;
+      }
+
+      result.add(
+        _MeasureRegion(
+          id: id,
+          staffId: staffId,
+          indexInStaff: indexInStaff,
+          x1: x1,
+          x2: x2,
         ),
       );
     }
@@ -348,41 +452,62 @@ class TranslationGroupingService {
 
     // Virtual lines above staff
     for (int i = _virtualLedgerSteps; i >= 1; i--) {
-      final y = lines.first - (spacing * i);
-
+      final lineY = lines.first - (spacing * i);
+      final spaceY = lines.first - (spacing * (i - 0.5));
 
       items.insert(
         0,
         SegmentMapItem(
           id: 'v_line_above_$i',
           type: 'virtual_line',
-          centerY: y,
+          centerY: lineY,
           defaultKeyLabel: aboveVirtualMap[i] ?? 'virtual',
+        ),
+      );
+
+      items.insert(
+        0,
+        SegmentMapItem(
+          id: 'v_space_above_$i',
+          type: 'virtual_space',
+          centerY: spaceY,
+          defaultKeyLabel: 'virtual',
         ),
       );
     }
 
     // Virtual lines below staff
     for (int i = 1; i <= _virtualLedgerSteps; i++) {
-      final y = lines.last + (spacing * i);
+      final spaceY = lines.last + (spacing * (i - 0.5));
+      final lineY = lines.last + (spacing * i);
+
+      items.add(
+        SegmentMapItem(
+          id: 'v_space_below_$i',
+          type: 'virtual_space',
+          centerY: spaceY,
+          defaultKeyLabel: 'virtual',
+        ),
+      );
 
       items.add(
         SegmentMapItem(
           id: 'v_line_below_$i',
           type: 'virtual_line',
-          centerY: y,
+          centerY: lineY,
           defaultKeyLabel: belowVirtualMap[i] ?? 'virtual',
         ),
       );
     }
 
+    items.sort((a, b) => a.centerY.compareTo(b.centerY));
     return items;
   }
 
   SegmentMapItem _findNearestSegment(
-      double symbolY,
-      List<SegmentMapItem> segmentMap,
-      ) {
+    double symbolY,
+    List<SegmentMapItem> segmentMap,
+  ) {
     SegmentMapItem nearest = segmentMap.first;
     double minDistance = (symbolY - nearest.centerY).abs();
 
@@ -432,16 +557,36 @@ class TranslationGroupingService {
     return double.tryParse(value.toString());
   }
 
+  int? _toInt(dynamic value) {
+    if (value == null) return null;
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value.toString());
+  }
+
+  _MeasureRegion? _measureForSymbol({
+    required SymbolClassItem symbol,
+    required String staffId,
+    required List<_MeasureRegion> measures,
+  }) {
+    final staffMeasures =
+        measures.where((measure) => measure.staffId == staffId).toList()
+          ..sort((a, b) => a.x1.compareTo(b.x1));
+
+    for (final measure in staffMeasures) {
+      final inside = symbol.x >= measure.x1 && symbol.x <= measure.x2;
+      if (inside) return measure;
+    }
+
+    return null;
+  }
+
   bool _isNearLedgerLine({
     required SymbolClassItem symbol,
     required String staffId,
     required List<_LedgerLineItem> ledgerLines,
     required double spacing,
   }) {
-    final symbolHalfWidth = symbol.bbox != null
-        ? ((symbol.bbox![2] - symbol.bbox![0]).abs() / 2.0)
-        : spacing * 0.6;
-
     final xTolerance = spacing * 0.95;
     final yTolerance = spacing * 0.8;
 
@@ -450,12 +595,16 @@ class TranslationGroupingService {
 
       final yClose = (symbol.y - ledger.y).abs() <= yTolerance;
 
-      final symbolLeft = symbol.bbox != null ? symbol.bbox![0] : symbol.x - spacing;
-      final symbolRight = symbol.bbox != null ? symbol.bbox![2] : symbol.x + spacing;
+      final symbolLeft = symbol.bbox != null
+          ? symbol.bbox![0]
+          : symbol.x - spacing;
+      final symbolRight = symbol.bbox != null
+          ? symbol.bbox![2]
+          : symbol.x + spacing;
 
       final xOverlaps =
           symbolRight >= (ledger.x1 - xTolerance) &&
-              symbolLeft <= (ledger.x2 + xTolerance);
+          symbolLeft <= (ledger.x2 + xTolerance);
 
       final ledgerCenterX = (ledger.x1 + ledger.x2) / 2.0;
       final centerClose = (symbol.x - ledgerCenterX).abs() <= spacing * 1.6;
@@ -468,6 +617,39 @@ class TranslationGroupingService {
     return false;
   }
 
+  bool _isSupportedLedgerSpace({
+    required SegmentMapItem location,
+    required SymbolClassItem symbol,
+    required String staffId,
+    required List<_LedgerLineItem> ledgerLines,
+    required double spacing,
+  }) {
+    if (location.type != 'virtual_space') return false;
+
+    final adjacentToStaff =
+        location.id == 'v_space_above_1' || location.id == 'v_space_below_1';
+    if (adjacentToStaff) return true;
+
+    return ledgerLines.any((ledger) {
+      if (ledger.staffId != staffId) return false;
+
+      final yClose = (symbol.y - ledger.y).abs() <= spacing * 1.35;
+      final symbolLeft = symbol.bbox != null
+          ? symbol.bbox![0]
+          : symbol.x - spacing;
+      final symbolRight = symbol.bbox != null
+          ? symbol.bbox![2]
+          : symbol.x + spacing;
+
+      final xTolerance = spacing * 1.1;
+      final xOverlaps =
+          symbolRight >= ledger.x1 - xTolerance &&
+          symbolLeft <= ledger.x2 + xTolerance;
+
+      return yClose && xOverlaps;
+    });
+  }
+
   String _resolveStaffRole(String? clefLabel) {
     final label = clefLabel?.toLowerCase() ?? '';
 
@@ -476,6 +658,22 @@ class TranslationGroupingService {
 
     return 'unknown';
   }
+}
+
+class _StaffGeometry {
+  final String staffId;
+  final List<double> lines;
+  final double? spacing;
+  final double? topBoundary;
+  final double? bottomBoundary;
+
+  const _StaffGeometry({
+    required this.staffId,
+    required this.lines,
+    this.spacing,
+    this.topBoundary,
+    this.bottomBoundary,
+  });
 }
 
 class _LedgerLineItem {
@@ -491,5 +689,21 @@ class _LedgerLineItem {
     required this.x2,
     required this.y,
     required this.position,
+  });
+}
+
+class _MeasureRegion {
+  final String id;
+  final String staffId;
+  final int indexInStaff;
+  final double x1;
+  final double x2;
+
+  const _MeasureRegion({
+    required this.id,
+    required this.staffId,
+    required this.indexInStaff,
+    required this.x1,
+    required this.x2,
   });
 }

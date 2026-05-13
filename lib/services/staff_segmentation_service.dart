@@ -4,7 +4,7 @@ import 'package:path/path.dart' as p;
 import 'package:flutter/services.dart';
 
 class StaffSegmentationService {
-  static const _channel = MethodChannel('stala/python_bridge');
+  static const _visionPipelineChannel = MethodChannel('stala/python_bridge');
 
   Future<Map<String, dynamic>> segmentStaffLines({
     required String imagePath,
@@ -12,7 +12,7 @@ class StaffSegmentationService {
     try {
       print('SEGMENT: trying native OpenCV segmentation');
 
-      final result = await _channel.invokeMethod(
+      final result = await _visionPipelineChannel.invokeMethod(
         'segmentStaffLines',
         {'imagePath': imagePath},
       );
@@ -21,7 +21,7 @@ class StaffSegmentationService {
 
       if (nativeResult['status'] == 'success') {
         print('SEGMENT: native OpenCV segmentation success');
-        return nativeResult;
+        return _withStableContract(nativeResult);
       }
 
       print('SEGMENT: native failed, falling back to Dart');
@@ -132,10 +132,9 @@ class StaffSegmentationService {
         'segmentedImagePath': outputPath,
         'staffLineCount': validatedStaffs.fold<int>(
           0,
-              (sum, staff) => sum + ((staff['lines'] as List).length),
+          (sum, staff) => sum + ((staff['lines'] as List).length),
         ),
-        'staffLines': validatedStaffs
-            .expand((staff) {
+        'staffLines': validatedStaffs.expand((staff) {
           final staffId = staff['id'] as String;
           final topBoundary = staff['topBoundary'] as double;
           final bottomBoundary = staff['bottomBoundary'] as double;
@@ -152,8 +151,15 @@ class StaffSegmentationService {
               'spacing': spacing,
             };
           });
-        })
-            .toList(),
+        }).toList(),
+        'ledgerLines': const [],
+        'barLines': const [],
+        'stems': const [],
+        'beams': const [],
+        'measures': _buildImplicitMeasures(
+          staffs: validatedStaffs,
+          imageWidth: original.width,
+        ),
         'validatedStaffs': validatedStaffs,
       };
     } catch (e) {
@@ -164,9 +170,48 @@ class StaffSegmentationService {
         'segmentedImagePath': null,
         'staffLineCount': 0,
         'staffLines': [],
+        'ledgerLines': [],
+        'barLines': [],
+        'stems': [],
+        'beams': [],
+        'measures': [],
         'validatedStaffs': [],
       };
     }
+  }
+
+  Map<String, dynamic> _withStableContract(Map<String, dynamic> result) {
+    return {
+      ...result,
+      'staffLines': result['staffLines'] ?? const [],
+      'ledgerLines': result['ledgerLines'] ?? const [],
+      'barLines': result['barLines'] ?? const [],
+      'stems': result['stems'] ?? const [],
+      'beams': result['beams'] ?? const [],
+      'measures': result['measures'] ?? const [],
+      'validatedStaffs': result['validatedStaffs'] ?? const [],
+    };
+  }
+
+  List<Map<String, dynamic>> _buildImplicitMeasures({
+    required List<Map<String, dynamic>> staffs,
+    required int imageWidth,
+  }) {
+    return staffs.asMap().entries.map((entry) {
+      final staff = entry.value;
+      final staffId = staff['id']?.toString() ?? 'staff_${entry.key}';
+
+      return {
+        'id': 'measure_${entry.key}',
+        'staffId': staffId,
+        'indexInStaff': 0,
+        'x1': 0.0,
+        'x2': imageWidth.toDouble(),
+        'startBarLineId': null,
+        'endBarLineId': null,
+        'source': 'implicit_full_staff',
+      };
+    }).toList();
   }
 
   List<int> _collectRawHorizontalRows(img.Image binary) {
@@ -237,16 +282,20 @@ class StaffSegmentationService {
 
       // require spacing consistency
       final isConsistent = spacings.every(
-            (s) => (s - avgSpacing).abs() <= avgSpacing * 0.30,
+        (s) => (s - avgSpacing).abs() <= avgSpacing * 0.30,
       );
 
-      print('SEGMENT FALLBACK WINDOW: $candidate spacings=$spacings avg=$avgSpacing consistent=$isConsistent');
+      print(
+        'SEGMENT FALLBACK WINDOW: $candidate spacings=$spacings avg=$avgSpacing consistent=$isConsistent',
+      );
 
       if (!isConsistent) continue;
 
       // avoid overlapping duplicate staff windows
-      final overlapsUsed = List.generate(5, (offset) => i + offset)
-          .any((idx) => used.contains(idx));
+      final overlapsUsed = List.generate(
+        5,
+        (offset) => i + offset,
+      ).any((idx) => used.contains(idx));
       if (overlapsUsed) continue;
 
       final topBoundary = candidate.first - (avgSpacing * 1.2);

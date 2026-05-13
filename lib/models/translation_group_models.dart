@@ -67,6 +67,10 @@ class TranslatedSymbolViewItem {
   /// assign status to detected notes
   final String assignmentStatus;
 
+  /// Measure region assigned from barline-derived segmentation, when available.
+  final String? measureId;
+  final int? measureIndex;
+
   /// Default displayed translation for noteheads while accidental rules
   /// are not yet applied. For non-noteheads, keep null.
   final String? defaultKeyLabel;
@@ -91,6 +95,8 @@ class TranslatedSymbolViewItem {
     required this.locationId,
     required this.locationType,
     required this.assignmentStatus,
+    this.measureId,
+    this.measureIndex,
     this.defaultKeyLabel,
     this.accidentalState,
   });
