@@ -11,6 +11,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'core/theme/app_colors.dart';
 import 'core/theme/app_text_styles.dart';
 import 'processing_page.dart';
+import 'services/tutorial_service.dart';
 
 /// Main camera workflow page for the STALA capture flow.
 ///
@@ -31,10 +32,7 @@ class DocumentCorner {
   final double x;
   final double y;
 
-  const DocumentCorner({
-    required this.x,
-    required this.y,
-  });
+  const DocumentCorner({required this.x, required this.y});
 
   factory DocumentCorner.fromMap(Map<dynamic, dynamic> map) {
     return DocumentCorner(
@@ -44,20 +42,11 @@ class DocumentCorner {
   }
 
   Map<String, double> toMap() {
-    return {
-      'x': x,
-      'y': y,
-    };
+    return {'x': x, 'y': y};
   }
 
-  DocumentCorner copyWith({
-    double? x,
-    double? y,
-  }) {
-    return DocumentCorner(
-      x: x ?? this.x,
-      y: y ?? this.y,
-    );
+  DocumentCorner copyWith({double? x, double? y}) {
+    return DocumentCorner(x: x ?? this.x, y: y ?? this.y);
   }
 }
 
@@ -178,8 +167,9 @@ class CropValidationResult {
 }
 
 class _CameraLogicPageState extends State<CameraLogicPage> {
-  static const MethodChannel _pythonChannel =
-  MethodChannel('stala/python_bridge');
+  static const MethodChannel _visionPipelineChannel = MethodChannel(
+    'stala/python_bridge',
+  );
 
   final ImagePicker _imagePicker = ImagePicker();
 
@@ -188,11 +178,25 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
   bool _isInitializingCamera = true;
   bool _isCapturingImage = false;
+  String? _cameraUnavailableMessage;
 
   bool _isHdEnabled = true;
   FlashMode _selectedFlashMode = FlashMode.off;
 
   Timer? _cropValidationDebounce;
+  final GlobalKey _cropFrameTourKey = GlobalKey();
+  final GlobalKey _cropHandleTourKey = GlobalKey();
+  final GlobalKey _cropWarningTourKey = GlobalKey();
+  final GlobalKey _cropContinueTourKey = GlobalKey();
+  final GlobalKey _cropHelpTourKey = GlobalKey();
+
+  List<GlobalKey> get _cropTourKeys => [
+    _cropFrameTourKey,
+    _cropHandleTourKey,
+    _cropWarningTourKey,
+    _cropContinueTourKey,
+    _cropHelpTourKey,
+  ];
 
   @override
   void initState() {
@@ -208,10 +212,24 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
         setState(() {
           _isInitializingCamera = true;
           _cameraController = null;
+          _cameraUnavailableMessage = null;
         });
       }
 
       await oldController?.dispose();
+
+      final hasCameraPermission = await _ensureCameraPermission();
+      if (!hasCameraPermission) {
+        if (!mounted) return;
+
+        setState(() {
+          _cameraController = null;
+          _isInitializingCamera = false;
+          _cameraUnavailableMessage =
+              'Camera permission is required to capture music sheets.';
+        });
+        return;
+      }
 
       _availableCameras = await availableCameras();
 
@@ -220,7 +238,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       }
 
       final backCamera = _availableCameras.firstWhere(
-            (camera) => camera.lensDirection == CameraLensDirection.back,
+        (camera) => camera.lensDirection == CameraLensDirection.back,
         orElse: () => _availableCameras.first,
       );
 
@@ -247,6 +265,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       setState(() {
         _cameraController = controller;
         _isInitializingCamera = false;
+        _cameraUnavailableMessage = null;
       });
     } catch (error) {
       if (!mounted) return;
@@ -254,10 +273,28 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       setState(() {
         _cameraController = null;
         _isInitializingCamera = false;
+        _cameraUnavailableMessage = 'Failed to initialize camera: $error';
       });
 
       _showSnackBar('Failed to initialize camera: $error');
     }
+  }
+
+  Future<bool> _ensureCameraPermission() async {
+    var status = await Permission.camera.status;
+
+    if (status.isGranted || status.isLimited) return true;
+
+    if (status.isPermanentlyDenied || status.isRestricted) return false;
+
+    status = await Permission.camera.request();
+    return status.isGranted || status.isLimited;
+  }
+
+  Future<void> _openCameraPermissionSettings() async {
+    await openAppSettings();
+    if (!mounted) return;
+    await _initializeCamera();
   }
 
   Future<void> _setFlashMode(FlashMode mode) async {
@@ -312,9 +349,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
             return Container(
               decoration: const BoxDecoration(
                 color: AppColors.background,
-                borderRadius: BorderRadius.vertical(
-                  top: Radius.circular(28),
-                ),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
               ),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
@@ -350,10 +385,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                       ),
                       child: Row(
                         children: [
-                          const Icon(
-                            Icons.hd_rounded,
-                            color: AppColors.accent,
-                          ),
+                          const Icon(Icons.hd_rounded, color: AppColors.accent),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Column(
@@ -418,7 +450,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                 child: _FlashModeButton(
                                   label: 'OFF',
                                   isSelected:
-                                  _selectedFlashMode == FlashMode.off,
+                                      _selectedFlashMode == FlashMode.off,
                                   onTap: () async {
                                     Navigator.pop(sheetContext);
                                     await _setFlashMode(FlashMode.off);
@@ -430,7 +462,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                 child: _FlashModeButton(
                                   label: 'AUTO',
                                   isSelected:
-                                  _selectedFlashMode == FlashMode.auto,
+                                      _selectedFlashMode == FlashMode.auto,
                                   onTap: () async {
                                     Navigator.pop(sheetContext);
                                     await _setFlashMode(FlashMode.auto);
@@ -442,7 +474,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                 child: _FlashModeButton(
                                   label: 'ON',
                                   isSelected:
-                                  _selectedFlashMode == FlashMode.always,
+                                      _selectedFlashMode == FlashMode.always,
                                   onTap: () async {
                                     Navigator.pop(sheetContext);
                                     await _setFlashMode(FlashMode.always);
@@ -549,9 +581,11 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     }
   }
 
-  Future<DocumentDetectionResult> _detectDocumentBounds(String imagePath) async {
+  Future<DocumentDetectionResult> _detectDocumentBounds(
+    String imagePath,
+  ) async {
     try {
-      final result = await _pythonChannel.invokeMethod(
+      final result = await _visionPipelineChannel.invokeMethod(
         'detectDocumentBounds',
         {'imagePath': imagePath},
       );
@@ -559,11 +593,12 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       if (result is Map) {
         final confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
         final reason = result['reason']?.toString();
-        final validationState =
-        _parseValidationState(result['validationState']?.toString());
+        final validationState = _parseValidationState(
+          result['validationState']?.toString(),
+        );
         final needsManualAdjustment =
             result['needsManualAdjustment'] == true ||
-                validationState != SheetValidationState.strong;
+            validationState != SheetValidationState.strong;
 
         if (result['bounds'] is Map) {
           return DocumentDetectionResult.success(
@@ -577,7 +612,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
         return DocumentDetectionResult.failure(
           confidence: confidence,
-          reason: reason ??
+          reason:
+              reason ??
               'Can’t confidently detect a document. Kindly adjust the box.',
         );
       }
@@ -593,12 +629,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     required DocumentBounds bounds,
   }) async {
     try {
-      final result = await _pythonChannel.invokeMethod(
+      final result = await _visionPipelineChannel.invokeMethod(
         'validateSelectedCrop',
-        {
-          'imagePath': imagePath,
-          'bounds': bounds.toMap(),
-        },
+        {'imagePath': imagePath, 'bounds': bounds.toMap()},
       );
 
       if (result is Map) {
@@ -616,7 +649,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       validationState: SheetValidationState.fail,
       confidence: 0.0,
       reason:
-      'The selected crop does not yet appear to be a reliable music-sheet region.',
+          'The selected crop does not yet appear to be a reliable music-sheet region.',
     );
   }
 
@@ -678,8 +711,10 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
               },
               onLongPress: () => Navigator.pop(dialogContext, true),
               child: Container(
-                padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppColors.warning),
@@ -800,12 +835,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     required DocumentBounds bounds,
   }) async {
     try {
-      final result = await _pythonChannel.invokeMethod(
+      final result = await _visionPipelineChannel.invokeMethod(
         'cropDocumentImage',
-        {
-          'imagePath': imagePath,
-          'bounds': bounds.toMap(),
-        },
+        {'imagePath': imagePath, 'bounds': bounds.toMap()},
       );
 
       if (result is String && result.isNotEmpty) return result;
@@ -829,7 +861,10 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     if (!mounted) return;
 
     Navigator.pop(sheetContext);
-    await _openProcessingPage(croppedImagePath);
+    await _openProcessingPage(
+      sourceImagePath: imagePath,
+      croppedImagePath: croppedImagePath,
+    );
   }
 
   DocumentBounds _updateDraggedCorner({
@@ -867,8 +902,10 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
               (bounds.topRight.x + dx).clamp(bounds.topLeft.x + minGap, 1.0),
             ),
             y: clamp01(
-              (bounds.topRight.y + dy)
-                  .clamp(0.0, bounds.bottomRight.y - minGap),
+              (bounds.topRight.y + dy).clamp(
+                0.0,
+                bounds.bottomRight.y - minGap,
+              ),
             ),
           ),
         );
@@ -877,12 +914,16 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
         candidate = bounds.copyWith(
           bottomRight: bounds.bottomRight.copyWith(
             x: clamp01(
-              (bounds.bottomRight.x + dx)
-                  .clamp(bounds.bottomLeft.x + minGap, 1.0),
+              (bounds.bottomRight.x + dx).clamp(
+                bounds.bottomLeft.x + minGap,
+                1.0,
+              ),
             ),
             y: clamp01(
-              (bounds.bottomRight.y + dy)
-                  .clamp(bounds.topRight.y + minGap, 1.0),
+              (bounds.bottomRight.y + dy).clamp(
+                bounds.topRight.y + minGap,
+                1.0,
+              ),
             ),
           ),
         );
@@ -891,12 +932,13 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
         candidate = bounds.copyWith(
           bottomLeft: bounds.bottomLeft.copyWith(
             x: clamp01(
-              (bounds.bottomLeft.x + dx)
-                  .clamp(0.0, bounds.bottomRight.x - minGap),
+              (bounds.bottomLeft.x + dx).clamp(
+                0.0,
+                bounds.bottomRight.x - minGap,
+              ),
             ),
             y: clamp01(
-              (bounds.bottomLeft.y + dy)
-                  .clamp(bounds.topLeft.y + minGap, 1.0),
+              (bounds.bottomLeft.y + dy).clamp(bounds.topLeft.y + minGap, 1.0),
             ),
           ),
         );
@@ -1046,7 +1088,10 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     return candidate;
   }
 
-  Future<void> _openProcessingPage(String imagePath) async {
+  Future<void> _openProcessingPage({
+    required String sourceImagePath,
+    required String croppedImagePath,
+  }) async {
     final oldController = _cameraController;
 
     if (mounted) {
@@ -1062,14 +1107,22 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
     if (!mounted) return;
 
-    await Navigator.push(
+    final shouldReturnHome = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
-        builder: (_) => ProcessingPage(imagePath: imagePath),
+        builder: (_) => ProcessingPage(
+          sourceImagePath: sourceImagePath,
+          croppedImagePath: croppedImagePath,
+        ),
       ),
     );
 
     if (!mounted) return;
+
+    if (shouldReturnHome == true) {
+      Navigator.pop(context, true);
+      return;
+    }
 
     await _initializeCamera();
   }
@@ -1081,7 +1134,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
     late final ImageStreamListener listener;
     listener = ImageStreamListener(
-          (info, _) {
+      (info, _) {
         completer.complete(info);
         stream.removeListener(listener);
       },
@@ -1099,22 +1152,13 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     required Size imageSize,
     required Size previewSize,
   }) {
-    final fitted = applyBoxFit(
-      BoxFit.contain,
-      imageSize,
-      previewSize,
-    );
+    final fitted = applyBoxFit(BoxFit.contain, imageSize, previewSize);
 
     final renderSize = fitted.destination;
     final dx = (previewSize.width - renderSize.width) / 2.0;
     final dy = (previewSize.height - renderSize.height) / 2.0;
 
-    return Rect.fromLTWH(
-      dx,
-      dy,
-      renderSize.width,
-      renderSize.height,
-    );
+    return Rect.fromLTWH(dx, dy, renderSize.width, renderSize.height);
   }
 
   Future<void> _showImagePreviewSheet({
@@ -1123,7 +1167,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
   }) async {
     final detectionResult = await _detectDocumentBounds(imagePath);
 
-    final initialBounds = detectionResult.bounds ?? DocumentBounds.defaultInset();
+    final initialBounds =
+        detectionResult.bounds ?? DocumentBounds.defaultInset();
 
     await showModalBottomSheet(
       context: context,
@@ -1131,9 +1176,11 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       useSafeArea: true,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) {
+        var cropTourQueued = false;
         DocumentBounds currentBounds = initialBounds;
         bool isProcessing = false;
         bool hasDetectedDocument = detectionResult.bounds != null;
+        bool hasManualCandidate = detectionResult.bounds == null;
         String? detectionMessage = detectionResult.reason;
         SheetValidationState detectionState = detectionResult.validationState;
         bool needsManualAdjustment = detectionResult.needsManualAdjustment;
@@ -1142,6 +1189,15 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
         return StatefulBuilder(
           builder: (context, setModalState) {
+            if (!cropTourQueued) {
+              cropTourQueued = true;
+              TutorialService.autoStartTour(
+                context,
+                pageKey: TutorialService.cropPageKey,
+                keys: _cropTourKeys,
+              );
+            }
+
             void triggerPostAdjustValidation() {
               if (!adjustmentBlocked) {
                 _scheduleCropValidation(
@@ -1150,7 +1206,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                   setModalState: setModalState,
                   onValidated: (message, state) {
                     detectionMessage = message;
-                    needsManualAdjustment = state != SheetValidationState.strong;
+                    hasManualCandidate = true;
+                    needsManualAdjustment =
+                        state != SheetValidationState.strong;
                     detectionState = state;
                   },
                 );
@@ -1160,26 +1218,23 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
             final bool shapeIsValid = _isValidBounds(currentBounds);
 
             final bool canContinue =
-                hasDetectedDocument && shapeIsValid && !adjustmentBlocked;
+                (hasDetectedDocument || hasManualCandidate) &&
+                shapeIsValid &&
+                !adjustmentBlocked;
 
-            final String? cropValidationMessage = !hasDetectedDocument
-                ? (detectionMessage ??
-                'Can’t confidently detect a document. Kindly adjust the box.')
-                : (!shapeIsValid
+            final String? cropValidationMessage = !shapeIsValid
                 ? 'Crop is not allowed. Please fix the document bounds or retry Auto Crop.'
                 : (adjustmentBlocked
-                ? (adjustmentMessage ??
-                'Adjustment not allowed. Keep the crop as a quadrilateral.')
-                : (needsManualAdjustment ? detectionMessage : null)));
+                      ? (adjustmentMessage ??
+                            'Adjustment not allowed. Keep the crop as a quadrilateral.')
+                      : (needsManualAdjustment ? detectionMessage : null));
 
             return FractionallySizedBox(
               heightFactor: 0.83,
               child: Container(
                 decoration: const BoxDecoration(
                   color: AppColors.background,
-                  borderRadius: BorderRadius.vertical(
-                    top: Radius.circular(28),
-                  ),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
                 ),
                 child: Column(
                   children: [
@@ -1210,6 +1265,29 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                             style: AppTextStyles.bodySecondary.copyWith(
                               fontSize: 13,
                               fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          TutorialService.showcase(
+                            key: _cropHelpTourKey,
+                            title: 'Crop Help',
+                            description:
+                                'Open this guide again if you need crop tips.',
+                            targetShapeBorder: const CircleBorder(),
+                            child: IconButton(
+                              tooltip: 'Crop help',
+                              onPressed: () {
+                                TutorialService.showHowToUse(
+                                  context,
+                                  page: TutorialPage.cropPage,
+                                  onStartTour: () => TutorialService
+                                      .showCropGuide(context, _cropTourKeys),
+                                );
+                              },
+                              icon: const Icon(
+                                Icons.help_outline_rounded,
+                                color: AppColors.accent,
+                              ),
                             ),
                           ),
                         ],
@@ -1254,61 +1332,88 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
                                     Offset mapPoint(DocumentCorner point) {
                                       return Offset(
-                                        imageRect.left + (point.x * imageRect.width),
-                                        imageRect.top + (point.y * imageRect.height),
+                                        imageRect.left +
+                                            (point.x * imageRect.width),
+                                        imageRect.top +
+                                            (point.y * imageRect.height),
                                       );
                                     }
 
-                                    final topLeftPoint = mapPoint(currentBounds.topLeft);
-                                    final topRightPoint = mapPoint(currentBounds.topRight);
-                                    final bottomRightPoint =
-                                    mapPoint(currentBounds.bottomRight);
-                                    final bottomLeftPoint =
-                                    mapPoint(currentBounds.bottomLeft);
+                                    final topLeftPoint = mapPoint(
+                                      currentBounds.topLeft,
+                                    );
+                                    final topRightPoint = mapPoint(
+                                      currentBounds.topRight,
+                                    );
+                                    final bottomRightPoint = mapPoint(
+                                      currentBounds.bottomRight,
+                                    );
+                                    final bottomLeftPoint = mapPoint(
+                                      currentBounds.bottomLeft,
+                                    );
 
-                                    return Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        Image.file(
-                                          File(imagePath),
-                                          fit: BoxFit.contain,
-                                        ),
-                                        IgnorePointer(
-                                          child: CustomPaint(
-                                            painter: _DocumentBoundsPainter(
-                                              bounds: currentBounds,
-                                              imageRect: imageRect,
+                                    return TutorialService.showcase(
+                                      key: _cropFrameTourKey,
+                                      title: 'Crop Frame',
+                                      description:
+                                          'Keep the full sheet music page inside this frame before continuing.',
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          Image.file(
+                                            File(imagePath),
+                                            fit: BoxFit.contain,
+                                          ),
+                                          IgnorePointer(
+                                            child: CustomPaint(
+                                              painter: _DocumentBoundsPainter(
+                                                bounds: currentBounds,
+                                                imageRect: imageRect,
+                                              ),
                                             ),
                                           ),
-                                        ),
-                                        _DraggableCornerHandle(
-                                          point: currentBounds.topLeft,
-                                          imageRect: imageRect,
-                                          handleColor: Colors.greenAccent,
-                                          onDragUpdate: (details) {
-                                            setModalState(() {
-                                              final previous = currentBounds;
-                                              final updated = _updateDraggedCorner(
-                                                bounds: currentBounds,
-                                                cornerKey: 'topLeft',
-                                                details: details,
-                                                imageRect: imageRect,
-                                              );
+                                          TutorialService.showcase(
+                                            key: _cropHandleTourKey,
+                                            title: 'Corner Handles',
+                                            description:
+                                                'Drag the corner and edge handles to align the crop with the sheet boundaries.',
+                                            targetShapeBorder:
+                                                const CircleBorder(),
+                                            child: _DraggableCornerHandle(
+                                              point: currentBounds.topLeft,
+                                              imageRect: imageRect,
+                                              handleColor: Colors.greenAccent,
+                                              onDragUpdate: (details) {
+                                                setModalState(() {
+                                                  final previous =
+                                                      currentBounds;
+                                                  final updated =
+                                                      _updateDraggedCorner(
+                                                        bounds: currentBounds,
+                                                        cornerKey: 'topLeft',
+                                                        details: details,
+                                                        imageRect: imageRect,
+                                                      );
 
-                                              final wasBlocked =
-                                              _sameBounds(updated, previous);
+                                                  final wasBlocked = _sameBounds(
+                                                    updated,
+                                                    previous,
+                                                  );
 
-                                              currentBounds = updated;
-                                              adjustmentBlocked = wasBlocked;
-                                              adjustmentMessage = wasBlocked
-                                                  ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
-                                                  : null;
-                                            });
-                                          },
+                                                  currentBounds = updated;
+                                                  hasManualCandidate = true;
+                                                  adjustmentBlocked =
+                                                      wasBlocked;
+                                                  adjustmentMessage = wasBlocked
+                                                      ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
+                                                      : null;
+                                                });
+                                              },
 
-                                          onDragEnd: triggerPostAdjustValidation,
-
-                                        ),
+                                              onDragEnd:
+                                                  triggerPostAdjustValidation,
+                                            ),
+                                          ),
                                         _DraggableCornerHandle(
                                           point: currentBounds.topRight,
                                           imageRect: imageRect,
@@ -1316,17 +1421,21 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-                                              final updated = _updateDraggedCorner(
-                                                bounds: currentBounds,
-                                                cornerKey: 'topRight',
-                                                details: details,
-                                                imageRect: imageRect,
+                                              final updated =
+                                                  _updateDraggedCorner(
+                                                    bounds: currentBounds,
+                                                    cornerKey: 'topRight',
+                                                    details: details,
+                                                    imageRect: imageRect,
+                                                  );
+
+                                              final wasBlocked = _sameBounds(
+                                                updated,
+                                                previous,
                                               );
 
-                                              final wasBlocked =
-                                              _sameBounds(updated, previous);
-
                                               currentBounds = updated;
+                                              hasManualCandidate = true;
                                               adjustmentBlocked = wasBlocked;
                                               adjustmentMessage = wasBlocked
                                                   ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
@@ -1334,8 +1443,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                             });
                                           },
 
-                                          onDragEnd: triggerPostAdjustValidation,
-
+                                          onDragEnd:
+                                              triggerPostAdjustValidation,
                                         ),
                                         _DraggableCornerHandle(
                                           point: currentBounds.bottomRight,
@@ -1344,17 +1453,21 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-                                              final updated = _updateDraggedCorner(
-                                                bounds: currentBounds,
-                                                cornerKey: 'bottomRight',
-                                                details: details,
-                                                imageRect: imageRect,
+                                              final updated =
+                                                  _updateDraggedCorner(
+                                                    bounds: currentBounds,
+                                                    cornerKey: 'bottomRight',
+                                                    details: details,
+                                                    imageRect: imageRect,
+                                                  );
+
+                                              final wasBlocked = _sameBounds(
+                                                updated,
+                                                previous,
                                               );
 
-                                              final wasBlocked =
-                                              _sameBounds(updated, previous);
-
                                               currentBounds = updated;
+                                              hasManualCandidate = true;
                                               adjustmentBlocked = wasBlocked;
                                               adjustmentMessage = wasBlocked
                                                   ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
@@ -1362,8 +1475,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                             });
                                           },
 
-                                          onDragEnd: triggerPostAdjustValidation,
-
+                                          onDragEnd:
+                                              triggerPostAdjustValidation,
                                         ),
                                         _DraggableCornerHandle(
                                           point: currentBounds.bottomLeft,
@@ -1372,17 +1485,21 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
-                                              final updated = _updateDraggedCorner(
-                                                bounds: currentBounds,
-                                                cornerKey: 'bottomLeft',
-                                                details: details,
-                                                imageRect: imageRect,
+                                              final updated =
+                                                  _updateDraggedCorner(
+                                                    bounds: currentBounds,
+                                                    cornerKey: 'bottomLeft',
+                                                    details: details,
+                                                    imageRect: imageRect,
+                                                  );
+
+                                              final wasBlocked = _sameBounds(
+                                                updated,
+                                                previous,
                                               );
 
-                                              final wasBlocked =
-                                              _sameBounds(updated, previous);
-
                                               currentBounds = updated;
+                                              hasManualCandidate = true;
                                               adjustmentBlocked = wasBlocked;
                                               adjustmentMessage = wasBlocked
                                                   ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
@@ -1390,13 +1507,14 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                             });
                                           },
 
-                                          onDragEnd: triggerPostAdjustValidation,
-
+                                          onDragEnd:
+                                              triggerPostAdjustValidation,
                                         ),
                                         _EdgeHandle(
                                           start: topLeftPoint,
                                           end: topRightPoint,
-                                          highlight: cropValidationMessage != null,
+                                          highlight:
+                                              cropValidationMessage != null,
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
@@ -1407,10 +1525,13 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                 imageRect: imageRect,
                                               );
 
-                                              final wasBlocked =
-                                              _sameBounds(updated, previous);
+                                              final wasBlocked = _sameBounds(
+                                                updated,
+                                                previous,
+                                              );
 
                                               currentBounds = updated;
+                                              hasManualCandidate = true;
                                               adjustmentBlocked = wasBlocked;
                                               adjustmentMessage = wasBlocked
                                                   ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
@@ -1418,13 +1539,14 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                             });
                                           },
 
-                                          onDragEnd: triggerPostAdjustValidation,
-
+                                          onDragEnd:
+                                              triggerPostAdjustValidation,
                                         ),
                                         _EdgeHandle(
                                           start: bottomLeftPoint,
                                           end: bottomRightPoint,
-                                          highlight: cropValidationMessage != null,
+                                          highlight:
+                                              cropValidationMessage != null,
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
@@ -1435,10 +1557,13 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                 imageRect: imageRect,
                                               );
 
-                                              final wasBlocked =
-                                              _sameBounds(updated, previous);
+                                              final wasBlocked = _sameBounds(
+                                                updated,
+                                                previous,
+                                              );
 
                                               currentBounds = updated;
+                                              hasManualCandidate = true;
                                               adjustmentBlocked = wasBlocked;
                                               adjustmentMessage = wasBlocked
                                                   ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
@@ -1446,13 +1571,14 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                             });
                                           },
 
-                                          onDragEnd: triggerPostAdjustValidation,
-
+                                          onDragEnd:
+                                              triggerPostAdjustValidation,
                                         ),
                                         _EdgeHandle(
                                           start: topLeftPoint,
                                           end: bottomLeftPoint,
-                                          highlight: cropValidationMessage != null,
+                                          highlight:
+                                              cropValidationMessage != null,
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
@@ -1463,10 +1589,13 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                 imageRect: imageRect,
                                               );
 
-                                              final wasBlocked =
-                                              _sameBounds(updated, previous);
+                                              final wasBlocked = _sameBounds(
+                                                updated,
+                                                previous,
+                                              );
 
                                               currentBounds = updated;
+                                              hasManualCandidate = true;
                                               adjustmentBlocked = wasBlocked;
                                               adjustmentMessage = wasBlocked
                                                   ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
@@ -1474,13 +1603,14 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                             });
                                           },
 
-                                          onDragEnd: triggerPostAdjustValidation,
-
+                                          onDragEnd:
+                                              triggerPostAdjustValidation,
                                         ),
                                         _EdgeHandle(
                                           start: topRightPoint,
                                           end: bottomRightPoint,
-                                          highlight: cropValidationMessage != null,
+                                          highlight:
+                                              cropValidationMessage != null,
                                           onDragUpdate: (details) {
                                             setModalState(() {
                                               final previous = currentBounds;
@@ -1491,10 +1621,13 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                                 imageRect: imageRect,
                                               );
 
-                                              final wasBlocked =
-                                              _sameBounds(updated, previous);
+                                              final wasBlocked = _sameBounds(
+                                                updated,
+                                                previous,
+                                              );
 
                                               currentBounds = updated;
+                                              hasManualCandidate = true;
                                               adjustmentBlocked = wasBlocked;
                                               adjustmentMessage = wasBlocked
                                                   ? 'Adjustment not allowed. Keep the crop as a quadrilateral.'
@@ -1502,17 +1635,23 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                             });
                                           },
 
-                                          onDragEnd: triggerPostAdjustValidation,
-
+                                          onDragEnd:
+                                              triggerPostAdjustValidation,
                                         ),
                                         if (cropValidationMessage != null)
                                           Positioned(
                                             left: 14,
                                             right: 14,
                                             bottom: 14,
-                                            child: _FloatingValidationMessage(
-                                              message: cropValidationMessage,
-                                              state: detectionState,
+                                            child: TutorialService.showcase(
+                                              key: _cropWarningTourKey,
+                                              title: 'Crop Status',
+                                              description:
+                                                  'Warnings appear here when the selected crop may not be reliable.',
+                                              child: _FloatingValidationMessage(
+                                                message: cropValidationMessage,
+                                                state: detectionState,
+                                              ),
                                             ),
                                           ),
                                         if (isProcessing)
@@ -1524,7 +1663,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                               ),
                                             ),
                                           ),
-                                      ],
+                                        ],
+                                      ),
                                     );
                                   },
                                 );
@@ -1546,7 +1686,6 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-
                           Row(
                             children: [
                               Expanded(
@@ -1571,15 +1710,19 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                     });
 
                                     final detection =
-                                    await _detectDocumentBounds(imagePath);
+                                        await _detectDocumentBounds(imagePath);
 
                                     if (!mounted) return;
 
                                     setModalState(() {
                                       isProcessing = false;
-                                      hasDetectedDocument = detection.bounds != null;
+                                      hasDetectedDocument =
+                                          detection.bounds != null;
+                                      hasManualCandidate =
+                                          detection.bounds == null;
                                       detectionMessage = detection.reason;
-                                      detectionState = detection.validationState;
+                                      detectionState =
+                                          detection.validationState;
                                       needsManualAdjustment =
                                           detection.needsManualAdjustment;
 
@@ -1604,62 +1747,75 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                               ),
                               const SizedBox(width: 10),
                               Expanded(
-                                child: _PreviewFooterAction(
-                                  icon: Icons.check_circle_rounded,
-                                  label: 'Continue',
-                                  color: canContinue
-                                      ? AppColors.accent
-                                      : AppColors.textMuted,
-                                  isEnabled: canContinue,
-                                  onTap: () async {
-                                    if (!hasDetectedDocument) {
-                                      _showSnackBar(
-                                        detectionMessage ??
-                                            'Can’t confidently detect a document. Kindly adjust the box.',
-                                      );
-                                      return;
-                                    }
+                                child: TutorialService.showcase(
+                                  key: _cropContinueTourKey,
+                                  title: 'Continue',
+                                  description:
+                                      'Confirm the crop and start STALA processing when the sheet is aligned.',
+                                  child: _PreviewFooterAction(
+                                    icon: Icons.check_circle_rounded,
+                                    label: 'Continue',
+                                    color: canContinue
+                                        ? AppColors.accent
+                                        : AppColors.textMuted,
+                                    isEnabled: canContinue,
+                                    onTap: () async {
+                                      if (!_isValidBounds(currentBounds)) {
+                                        _showSnackBar(
+                                          'Crop is not allowed. Please fix the document bounds or retry Auto Crop.',
+                                        );
+                                        return;
+                                      }
 
-                                    if (!_isValidBounds(currentBounds)) {
-                                      _showSnackBar(
-                                        'Crop is not allowed. Please fix the document bounds or retry Auto Crop.',
-                                      );
-                                      return;
-                                    }
+                                      setModalState(() {
+                                        isProcessing = true;
+                                      });
 
-                                    setModalState(() {
-                                      isProcessing = true;
-                                    });
+                                      final cropValidation =
+                                          await _validateSelectedCrop(
+                                            imagePath: imagePath,
+                                            bounds: currentBounds,
+                                          );
 
-                                    final cropValidation =
-                                    await _validateSelectedCrop(
-                                      imagePath: imagePath,
-                                      bounds: currentBounds,
-                                    );
+                                      if (!mounted) return;
 
-                                    if (!mounted) return;
+                                      setModalState(() {
+                                        isProcessing = false;
+                                      });
 
-                                    setModalState(() {
-                                      isProcessing = false;
-                                    });
+                                      if (cropValidation.validationState ==
+                                          SheetValidationState.strong) {
+                                        await _proceedToCropAndOpen(
+                                          sheetContext: sheetContext,
+                                          imagePath: imagePath,
+                                          bounds: currentBounds,
+                                        );
+                                        return;
+                                      }
 
-                                    if (cropValidation.validationState ==
-                                        SheetValidationState.strong) {
-                                      await _proceedToCropAndOpen(
-                                        sheetContext: sheetContext,
-                                        imagePath: imagePath,
-                                        bounds: currentBounds,
-                                      );
-                                      return;
-                                    }
+                                      if (cropValidation.validationState ==
+                                          SheetValidationState.weak) {
+                                        final proceed =
+                                            await _showWeakValidationDialog(
+                                              cropValidation.reason ??
+                                                  'The selected crop may not be a reliable music-sheet region. Adjust the box or proceed?',
+                                            );
 
-                                    if (cropValidation.validationState ==
-                                        SheetValidationState.weak) {
+                                        if (proceed) {
+                                          await _proceedToCropAndOpen(
+                                            sheetContext: sheetContext,
+                                            imagePath: imagePath,
+                                            bounds: currentBounds,
+                                          );
+                                        }
+                                        return;
+                                      }
+
                                       final proceed =
-                                      await _showWeakValidationDialog(
-                                        cropValidation.reason ??
-                                            'The selected crop may not be a reliable music-sheet region. Adjust the box or proceed?',
-                                      );
+                                          await _showFailValidationDialog(
+                                            cropValidation.reason ??
+                                                'The selected crop does not appear to be a reliable music-sheet region. Please adjust the box, or press and hold to continue anyway.',
+                                          );
 
                                       if (proceed) {
                                         await _proceedToCropAndOpen(
@@ -1668,23 +1824,8 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           bounds: currentBounds,
                                         );
                                       }
-                                      return;
-                                    }
-
-                                    final proceed =
-                                    await _showFailValidationDialog(
-                                      cropValidation.reason ??
-                                          'The selected crop does not appear to be a reliable music-sheet region. Please adjust the box, or press and hold to continue anyway.',
-                                    );
-
-                                    if (proceed) {
-                                      await _proceedToCropAndOpen(
-                                        sheetContext: sheetContext,
-                                        imagePath: imagePath,
-                                        bounds: currentBounds,
-                                      );
-                                    }
-                                  },
+                                    },
+                                  ),
                                 ),
                               ),
                             ],
@@ -1708,10 +1849,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         backgroundColor: AppColors.backgroundSecondary,
-        content: Text(
-          message,
-          style: AppTextStyles.body,
-        ),
+        content: Text(message, style: AppTextStyles.body),
       ),
     );
   }
@@ -1732,91 +1870,87 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
       body: SafeArea(
         child: _isInitializingCamera
             ? const Center(
-          child: CircularProgressIndicator(
-            color: AppColors.accent,
-          ),
-        )
+                child: CircularProgressIndicator(color: AppColors.accent),
+              )
             : controller == null || !controller.value.isInitialized
-            ? const _CameraUnavailableView()
+            ? _CameraUnavailableView(
+                message: _cameraUnavailableMessage,
+                onRetry: _initializeCamera,
+                onOpenSettings: _openCameraPermissionSettings,
+              )
             : Stack(
-          children: [
-            Positioned.fill(
-              child: CameraPreview(controller),
-            ),
-            Positioned.fill(
-              child: IgnorePointer(
-                child: Container(
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Color(0xAA05101D),
-                        Colors.transparent,
-                        Color(0x8805111D),
+                children: [
+                  Positioned.fill(child: CameraPreview(controller)),
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: Container(
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Color(0xAA05101D),
+                              Colors.transparent,
+                              Color(0x8805111D),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(painter: _CameraGridPainter()),
+                    ),
+                  ),
+                  Positioned(
+                    top: 14,
+                    left: 20,
+                    right: 20,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _TopCircleButton(
+                          icon: Icons.arrow_back_ios_new_rounded,
+                          onTap: () => Navigator.pop(context),
+                        ),
+                        _TopCircleButton(
+                          icon: Icons.settings_outlined,
+                          onTap: _showCameraSettingsSheet,
+                        ),
                       ],
                     ),
                   ),
-                ),
-              ),
-            ),
-            Positioned.fill(
-              child: IgnorePointer(
-                child: CustomPaint(
-                  painter: _CameraGridPainter(),
-                ),
-              ),
-            ),
-            Positioned(
-              top: 14,
-              left: 20,
-              right: 20,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  _TopCircleButton(
-                    icon: Icons.arrow_back_ios_new_rounded,
-                    onTap: () => Navigator.pop(context),
-                  ),
-                  _TopCircleButton(
-                    icon: Icons.settings_outlined,
-                    onTap: _showCameraSettingsSheet,
-                  ),
-                ],
-              ),
-            ),
-            Positioned(
-              left: 22,
-              right: 22,
-              bottom: 30,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  _BottomSquareButton(
-                    icon: Icons.photo_library_outlined,
-                    backgroundColor: AppColors.accentSoft,
-                    onTap: _pickImageFromGallery,
-                  ),
-                  _ShutterButton(
-                    onTap: _captureImage,
-                  ),
-                  const SizedBox(width: 52, height: 52),
-                ],
-              ),
-            ),
-            if (_isCapturingImage)
-              Positioned.fill(
-                child: Container(
-                  color: const Color(0x66000000),
-                  child: const Center(
-                    child: CircularProgressIndicator(
-                      color: AppColors.accent,
+                  Positioned(
+                    left: 22,
+                    right: 22,
+                    bottom: 30,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        _BottomSquareButton(
+                          icon: Icons.photo_library_outlined,
+                          backgroundColor: AppColors.accentSoft,
+                          onTap: _pickImageFromGallery,
+                        ),
+                        _ShutterButton(onTap: _captureImage),
+                        const SizedBox(width: 52, height: 52),
+                      ],
                     ),
                   ),
-                ),
+                  if (_isCapturingImage)
+                    Positioned.fill(
+                      child: Container(
+                        color: const Color(0x66000000),
+                        child: const Center(
+                          child: CircularProgressIndicator(
+                            color: AppColors.accent,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
-          ],
-        ),
       ),
     );
   }
@@ -1825,34 +1959,86 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
     required String imagePath,
     required DocumentBounds bounds,
     required void Function(void Function()) setModalState,
-    required void Function(String? message, SheetValidationState state) onValidated,
+    required void Function(String? message, SheetValidationState state)
+    onValidated,
   }) {
     _cropValidationDebounce?.cancel();
 
-    _cropValidationDebounce = Timer(const Duration(milliseconds: 300), () async {
-      final result = await _validateSelectedCrop(
-        imagePath: imagePath,
-        bounds: bounds,
-      );
+    _cropValidationDebounce = Timer(
+      const Duration(milliseconds: 300),
+      () async {
+        final result = await _validateSelectedCrop(
+          imagePath: imagePath,
+          bounds: bounds,
+        );
 
-      if (!mounted) return;
+        if (!mounted) return;
 
-      setModalState(() {
-        onValidated(result.reason, result.validationState);
-      });
-    });
+        setModalState(() {
+          onValidated(result.reason, result.validationState);
+        });
+      },
+    );
   }
 }
 
 class _CameraUnavailableView extends StatelessWidget {
-  const _CameraUnavailableView();
+  final String? message;
+  final VoidCallback onRetry;
+  final VoidCallback onOpenSettings;
+
+  const _CameraUnavailableView({
+    this.message,
+    required this.onRetry,
+    required this.onOpenSettings,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Text(
-        'Camera unavailable',
-        style: AppTextStyles.body.copyWith(fontSize: 16),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.no_photography_outlined,
+              color: AppColors.textSecondary,
+              size: 42,
+            ),
+            const SizedBox(height: 14),
+            Text(
+              'Camera unavailable',
+              textAlign: TextAlign.center,
+              style: AppTextStyles.sectionTitle.copyWith(fontSize: 18),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              message ?? 'Unable to start the camera.',
+              textAlign: TextAlign.center,
+              style: AppTextStyles.bodySecondary,
+            ),
+            const SizedBox(height: 18),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton(
+                  onPressed: onRetry,
+                  child: Text('Retry', style: AppTextStyles.button),
+                ),
+                const SizedBox(width: 10),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.accent,
+                    foregroundColor: AppColors.textPrimary,
+                  ),
+                  onPressed: onOpenSettings,
+                  child: Text('Settings', style: AppTextStyles.button),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1862,10 +2048,7 @@ class _TopCircleButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
 
-  const _TopCircleButton({
-    required this.icon,
-    required this.onTap,
-  });
+  const _TopCircleButton({required this.icon, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -1875,17 +2058,11 @@ class _TopCircleButton extends StatelessWidget {
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: const Color(0x220B162B),
-        border: Border.all(
-          color: AppColors.border,
-        ),
+        border: Border.all(color: AppColors.border),
       ),
       child: IconButton(
         onPressed: onTap,
-        icon: Icon(
-          icon,
-          size: 20,
-          color: AppColors.textSecondary,
-        ),
+        icon: Icon(icon, size: 20, color: AppColors.textSecondary),
       ),
     );
   }
@@ -1913,11 +2090,7 @@ class _BottomSquareButton extends StatelessWidget {
           color: backgroundColor,
           borderRadius: BorderRadius.circular(14),
         ),
-        child: Icon(
-          icon,
-          color: AppColors.textPrimary,
-          size: 24,
-        ),
+        child: Icon(icon, color: AppColors.textPrimary, size: 24),
       ),
     );
   }
@@ -1926,9 +2099,7 @@ class _BottomSquareButton extends StatelessWidget {
 class _ShutterButton extends StatelessWidget {
   final VoidCallback onTap;
 
-  const _ShutterButton({
-    required this.onTap,
-  });
+  const _ShutterButton({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -1940,10 +2111,7 @@ class _ShutterButton extends StatelessWidget {
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: AppColors.textPrimary,
-          border: Border.all(
-            color: AppColors.textSecondary,
-            width: 4,
-          ),
+          border: Border.all(color: AppColors.textSecondary, width: 4),
           boxShadow: const [
             BoxShadow(
               color: Color(0x33000000),
@@ -1958,10 +2126,7 @@ class _ShutterButton extends StatelessWidget {
             height: 66,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              border: Border.all(
-                color: const Color(0xFFDADADA),
-                width: 2,
-              ),
+              border: Border.all(color: const Color(0xFFDADADA), width: 2),
             ),
           ),
         ),
@@ -1989,8 +2154,9 @@ class _PreviewFooterAction extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final effectiveColor =
-    isEnabled ? color : AppColors.textMuted.withOpacity(0.75);
+    final effectiveColor = isEnabled
+        ? color
+        : AppColors.textMuted.withOpacity(0.75);
 
     final effectiveBackground = isPrimary
         ? (isEnabled ? AppColors.card : AppColors.background)
@@ -2010,26 +2176,18 @@ class _PreviewFooterAction extends StatelessWidget {
           decoration: BoxDecoration(
             color: effectiveBackground,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: effectiveBorderColor,
-            ),
+            border: Border.all(color: effectiveBorderColor),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                icon,
-                color: effectiveColor,
-                size: 20,
-              ),
+              Icon(icon, color: effectiveColor, size: 20),
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
                   label,
                   overflow: TextOverflow.ellipsis,
-                  style: AppTextStyles.button.copyWith(
-                    color: effectiveColor,
-                  ),
+                  style: AppTextStyles.button.copyWith(color: effectiveColor),
                 ),
               ),
             ],
@@ -2071,9 +2229,7 @@ class _FlashModeButton extends StatelessWidget {
             child: Text(
               label,
               style: AppTextStyles.button.copyWith(
-                color: isSelected
-                    ? AppColors.accent
-                    : AppColors.textSecondary,
+                color: isSelected ? AppColors.accent : AppColors.textSecondary,
               ),
             ),
           ),
@@ -2151,10 +2307,7 @@ class _EdgeHandle extends StatelessWidget {
 
     final outlineColor = Colors.black.withOpacity(0.65);
 
-    final mid = Offset(
-      (start.dx + end.dx) / 2,
-      (start.dy + end.dy) / 2,
-    );
+    final mid = Offset((start.dx + end.dx) / 2, (start.dy + end.dy) / 2);
 
     final angle = atan2(end.dy - start.dy, end.dx - start.dx);
 
@@ -2181,10 +2334,7 @@ class _EdgeHandle extends StatelessWidget {
               decoration: BoxDecoration(
                 color: edgeColor,
                 borderRadius: BorderRadius.circular(999),
-                border: Border.all(
-                  color: outlineColor,
-                  width: 1.8,
-                ),
+                border: Border.all(color: outlineColor, width: 1.8),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withOpacity(0.28),
@@ -2210,10 +2360,7 @@ class _DocumentBoundsPainter extends CustomPainter {
   final DocumentBounds bounds;
   final Rect imageRect;
 
-  const _DocumentBoundsPainter({
-    required this.bounds,
-    required this.imageRect,
-  });
+  const _DocumentBoundsPainter({required this.bounds, required this.imageRect});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2226,10 +2373,12 @@ class _DocumentBoundsPainter extends CustomPainter {
 
     final topLeft = mapPoint(Offset(bounds.topLeft.x, bounds.topLeft.y));
     final topRight = mapPoint(Offset(bounds.topRight.x, bounds.topRight.y));
-    final bottomRight =
-    mapPoint(Offset(bounds.bottomRight.x, bounds.bottomRight.y));
-    final bottomLeft =
-    mapPoint(Offset(bounds.bottomLeft.x, bounds.bottomLeft.y));
+    final bottomRight = mapPoint(
+      Offset(bounds.bottomRight.x, bounds.bottomRight.y),
+    );
+    final bottomLeft = mapPoint(
+      Offset(bounds.bottomLeft.x, bounds.bottomLeft.y),
+    );
 
     final borderPaint = Paint()
       ..color = AppColors.success
@@ -2262,8 +2411,7 @@ class _DocumentBoundsPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DocumentBoundsPainter oldDelegate) {
-    return oldDelegate.bounds != bounds ||
-        oldDelegate.imageRect != imageRect;
+    return oldDelegate.bounds != bounds || oldDelegate.imageRect != imageRect;
   }
 }
 
@@ -2334,11 +2482,7 @@ class _FloatingValidationMessage extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              Icons.warning_amber_rounded,
-              color: accentColor,
-              size: 18,
-            ),
+            Icon(Icons.warning_amber_rounded, color: accentColor, size: 18),
             const SizedBox(width: 8),
             Expanded(
               child: Text(

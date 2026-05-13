@@ -66,19 +66,35 @@ class GenerateOutputItem {
   final String title;
   final String value;
 
-  const GenerateOutputItem({
-    required this.title,
-    required this.value,
-  });
+  const GenerateOutputItem({required this.title, required this.value});
 }
 
 class NoteGroupViewItem {
   final String staffId;
   final List<List<String>> groups;
 
-  const NoteGroupViewItem({
+  const NoteGroupViewItem({required this.staffId, required this.groups});
+}
+
+class RhythmEventViewItem {
+  final String staffId;
+  final int? measureIndex;
+  final String label;
+  final double durationBeats;
+  final String timingSource;
+  final double confidence;
+  final bool hasStem;
+  final bool hasBeam;
+
+  const RhythmEventViewItem({
     required this.staffId,
-    required this.groups,
+    required this.measureIndex,
+    required this.label,
+    required this.durationBeats,
+    required this.timingSource,
+    required this.confidence,
+    required this.hasStem,
+    required this.hasBeam,
   });
 }
 
@@ -150,10 +166,7 @@ class ChordVoicingViewItem {
   final String title;
   final List<String> events;
 
-  const ChordVoicingViewItem({
-    required this.title,
-    required this.events,
-  });
+  const ChordVoicingViewItem({required this.title, required this.events});
 }
 
 class GeneratedTabViewItem {
@@ -183,6 +196,7 @@ class DummyPage extends StatefulWidget {
   final List<StaffTranslateGroup> translateGroups;
   final List<GenerateOutputItem> generateOutputs;
   final List<NoteGroupViewItem> noteGroups;
+  final List<RhythmEventViewItem> rhythmEvents;
   final List<GrandStaffPairViewItem> grandStaffPairs;
   final List<PolyMonoViewItem> polyMonoResults;
   final List<MusicInterpretationViewItem> musicInterpretations;
@@ -204,6 +218,7 @@ class DummyPage extends StatefulWidget {
     this.translateGroups = const [],
     this.generateOutputs = const [],
     this.noteGroups = const [],
+    this.rhythmEvents = const [],
     this.grandStaffPairs = const [],
     this.polyMonoResults = const [],
     this.musicInterpretations = const [],
@@ -213,7 +228,6 @@ class DummyPage extends StatefulWidget {
     this.generatedTabs = const [],
     this.generatedTabResults = const [],
     this.session,
-
   });
 
   @override
@@ -318,6 +332,7 @@ class _DummyPageState extends State<DummyPage> {
           subtitle: 'Grouped translation result by staff line',
           groups: widget.translateGroups,
           noteGroups: widget.noteGroups,
+          rhythmEvents: widget.rhythmEvents,
         );
 
       case DummyViewOption.generate:
@@ -343,10 +358,7 @@ class _OptionDropdown extends StatelessWidget {
   final DummyViewOption value;
   final ValueChanged<DummyViewOption?> onChanged;
 
-  const _OptionDropdown({
-    required this.value,
-    required this.onChanged,
-  });
+  const _OptionDropdown({required this.value, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
@@ -400,10 +412,7 @@ class _PanelHeader extends StatelessWidget {
   final String title;
   final String subtitle;
 
-  const _PanelHeader({
-    required this.title,
-    required this.subtitle,
-  });
+  const _PanelHeader({required this.title, required this.subtitle});
 
   @override
   Widget build(BuildContext context) {
@@ -411,9 +420,7 @@ class _PanelHeader extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
       decoration: const BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: AppColors.divider),
-        ),
+        border: Border(bottom: BorderSide(color: AppColors.divider)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -486,56 +493,58 @@ class _DetectedPanel extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             child: !exists
                 ? const _EmptyPanelMessage(
-              message: 'No detected image available yet.',
-            )
+                    message: 'No detected image available yet.',
+                  )
                 : ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: Container(
-                color: AppColors.surface,
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    return Stack(
-                      children: [
-                        Positioned.fill(
-                          child: InteractiveViewer(
-                            child: Center(
-                              child: _DetectionImageWithOverlay(
-                                imagePath: imagePath!,
-                                detections: detections,
-                                ledgerLines: ledgerLines,
-                                maxWidth: constraints.maxWidth,
-                                maxHeight: constraints.maxHeight,
+                    borderRadius: BorderRadius.circular(16),
+                    child: Container(
+                      color: AppColors.surface,
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          return Stack(
+                            children: [
+                              Positioned.fill(
+                                child: InteractiveViewer(
+                                  child: Center(
+                                    child: _DetectionImageWithOverlay(
+                                      imagePath: imagePath!,
+                                      detections: detections,
+                                      ledgerLines: ledgerLines,
+                                      maxWidth: constraints.maxWidth,
+                                      maxHeight: constraints.maxHeight,
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                        ),
-                        Positioned(
-                          right: 12,
-                          bottom: 12,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.surface.withOpacity(0.92),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: AppColors.border),
-                            ),
-                            child: Text(
-                              'Detections: ${detections.length}',
-                              style: AppTextStyles.caption.copyWith(
-                                color: AppColors.textPrimary,
+                              Positioned(
+                                right: 12,
+                                bottom: 12,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.surface.withValues(
+                                      alpha: 0.92,
+                                    ),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(color: AppColors.border),
+                                  ),
+                                  child: Text(
+                                    'Detections: ${detections.length}',
+                                    style: AppTextStyles.caption.copyWith(
+                                      color: AppColors.textPrimary,
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-            ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                  ),
           ),
         ),
       ],
@@ -566,9 +575,7 @@ class _DetectionImageWithOverlay extends StatelessWidget {
       future: _loadImageInfo(file),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
-          return const Center(
-            child: CircularProgressIndicator(),
-          );
+          return const Center(child: CircularProgressIndicator());
         }
 
         final imageInfo = snapshot.data!;
@@ -589,12 +596,7 @@ class _DetectionImageWithOverlay extends StatelessWidget {
           height: renderHeight,
           child: Stack(
             children: [
-              Positioned.fill(
-                child: Image.file(
-                  file,
-                  fit: BoxFit.contain,
-                ),
-              ),
+              Positioned.fill(child: Image.file(file, fit: BoxFit.contain)),
               Positioned.fill(
                 child: CustomPaint(
                   painter: DetectionOverlayPainter(
@@ -618,13 +620,16 @@ class _DetectionImageWithOverlay extends StatelessWidget {
     final stream = imageProvider.resolve(const ImageConfiguration());
 
     late final ImageStreamListener listener;
-    listener = ImageStreamListener((info, _) {
-      completer.complete(info);
-      stream.removeListener(listener);
-    }, onError: (error, stackTrace) {
-      completer.completeError(error, stackTrace);
-      stream.removeListener(listener);
-    });
+    listener = ImageStreamListener(
+      (info, _) {
+        completer.complete(info);
+        stream.removeListener(listener);
+      },
+      onError: (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+        stream.removeListener(listener);
+      },
+    );
 
     stream.addListener(listener);
     return completer.future;
@@ -632,7 +637,6 @@ class _DetectionImageWithOverlay extends StatelessWidget {
 }
 
 class DetectionOverlayPainter extends CustomPainter {
-
   final List<DetectionPoint> detections;
   final List<LedgerLineViewItem> ledgerLines;
   final double imageWidth;
@@ -648,7 +652,7 @@ class DetectionOverlayPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final pointPaint = Paint()
-      ..color = AppColors.accent.withOpacity(0.60)
+      ..color = AppColors.accent.withValues(alpha: 0.60)
       ..style = PaintingStyle.fill;
 
     final baseRadius = size.shortestSide * 0.006;
@@ -663,7 +667,6 @@ class DetectionOverlayPainter extends CustomPainter {
       ..strokeWidth = (innerRadius * 0.4).clamp(0.6, 1.2);
 
     for (final detection in detections) {
-
       if (detection.centerX < 0 ||
           detection.centerY < 0 ||
           detection.centerX > imageWidth ||
@@ -688,11 +691,7 @@ class DetectionOverlayPainter extends CustomPainter {
       final x2 = (ledger.x2 / imageWidth) * size.width;
       final y = (ledger.y / imageHeight) * size.height;
 
-      canvas.drawLine(
-        Offset(x1, y),
-        Offset(x2, y),
-        ledgerPaint,
-      );
+      canvas.drawLine(Offset(x1, y), Offset(x2, y), ledgerPaint);
     }
   }
 
@@ -720,12 +719,7 @@ Widget _buildImageOrEmpty({
     child: Container(
       color: AppColors.surface,
       child: InteractiveViewer(
-        child: Center(
-          child: Image.file(
-            File(imagePath!),
-            fit: BoxFit.contain,
-          ),
-        ),
+        child: Center(child: Image.file(File(imagePath), fit: BoxFit.contain)),
       ),
     ),
   );
@@ -787,8 +781,7 @@ class _ClassListPanelState extends State<_ClassListPanel> {
                       borderRadius: BorderRadius.circular(14),
                       onTap: () {
                         setState(() {
-                          _expandedClassKey =
-                          isExpanded ? null : classKey;
+                          _expandedClassKey = isExpanded ? null : classKey;
                         });
                       },
                       child: Padding(
@@ -814,10 +807,7 @@ class _ClassListPanelState extends State<_ClassListPanel> {
                       ),
                     ),
                     if (isExpanded) ...[
-                      Container(
-                        height: 1,
-                        color: AppColors.divider,
-                      ),
+                      Container(height: 1, color: AppColors.divider),
                       if (classItems.isEmpty)
                         Padding(
                           padding: const EdgeInsets.all(14),
@@ -833,7 +823,7 @@ class _ClassListPanelState extends State<_ClassListPanel> {
                           padding: const EdgeInsets.all(14),
                           itemCount: classItems.length,
                           separatorBuilder: (_, __) =>
-                          const SizedBox(height: 10),
+                              const SizedBox(height: 10),
                           itemBuilder: (context, itemIndex) {
                             final item = classItems[itemIndex];
                             return Container(
@@ -841,13 +831,10 @@ class _ClassListPanelState extends State<_ClassListPanel> {
                               decoration: BoxDecoration(
                                 color: AppColors.card,
                                 borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: AppColors.border,
-                                ),
+                                border: Border.all(color: AppColors.border),
                               ),
                               child: Column(
-                                crossAxisAlignment:
-                                CrossAxisAlignment.start,
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
                                     '${itemIndex + 1}. ${_formatClassName(classKey)}',
@@ -871,9 +858,9 @@ class _ClassListPanelState extends State<_ClassListPanel> {
                                     const SizedBox(height: 4),
                                     Text(
                                       'bbox: [${item.bbox![0].toStringAsFixed(1)}, '
-                                          '${item.bbox![1].toStringAsFixed(1)}, '
-                                          '${item.bbox![2].toStringAsFixed(1)}, '
-                                          '${item.bbox![3].toStringAsFixed(1)}]',
+                                      '${item.bbox![1].toStringAsFixed(1)}, '
+                                      '${item.bbox![2].toStringAsFixed(1)}, '
+                                      '${item.bbox![3].toStringAsFixed(1)}]',
                                       style: AppTextStyles.caption,
                                     ),
                                   ],
@@ -895,8 +882,8 @@ class _ClassListPanelState extends State<_ClassListPanel> {
 }
 
 Map<String, List<SymbolClassItem>> _groupItemsByClass(
-    List<SymbolClassItem> items,
-    ) {
+  List<SymbolClassItem> items,
+) {
   final Map<String, List<SymbolClassItem>> grouped = {
     'notehead': <SymbolClassItem>[],
     'treble_clef': <SymbolClassItem>[],
@@ -936,9 +923,9 @@ String _formatClassName(String raw) {
       return raw
           .split('_')
           .map((part) {
-        if (part.isEmpty) return part;
-        return part[0].toUpperCase() + part.substring(1);
-      })
+            if (part.isEmpty) return part;
+            return part[0].toUpperCase() + part.substring(1);
+          })
           .join(' ');
   }
 }
@@ -948,12 +935,14 @@ class _TranslatePanel extends StatefulWidget {
   final String subtitle;
   final List<StaffTranslateGroup> groups;
   final List<NoteGroupViewItem> noteGroups;
+  final List<RhythmEventViewItem> rhythmEvents;
 
   const _TranslatePanel({
     required this.title,
     required this.subtitle,
     required this.groups,
     required this.noteGroups,
+    required this.rhythmEvents,
   });
 
   @override
@@ -962,7 +951,7 @@ class _TranslatePanel extends StatefulWidget {
 
 class _TranslatePanelState extends State<_TranslatePanel> {
   String? _expandedStaffId;
-  int _selectedTranslateTab = 0; // 0 = Map, 1 = Note Group
+  int _selectedTranslateTab = 0; // 0 = Map, 1 = Note Group, 2 = Rhythm
 
   @override
   Widget build(BuildContext context) {
@@ -992,13 +981,25 @@ class _TranslatePanelState extends State<_TranslatePanel> {
                   });
                 },
               ),
+              const SizedBox(width: 8),
+              _TranslateTabButton(
+                label: 'Rhythm',
+                selected: _selectedTranslateTab == 2,
+                onTap: () {
+                  setState(() {
+                    _selectedTranslateTab = 2;
+                  });
+                },
+              ),
             ],
           ),
         ),
         Expanded(
           child: _selectedTranslateTab == 0
               ? _buildMapTab()
-              : _buildNoteGroupTab(),
+              : _selectedTranslateTab == 1
+              ? _buildNoteGroupTab()
+              : _buildRhythmTab(),
         ),
       ],
     );
@@ -1007,207 +1008,284 @@ class _TranslatePanelState extends State<_TranslatePanel> {
   Widget _buildMapTab() {
     return widget.groups.isEmpty
         ? const _EmptyPanelMessage(
-      message: 'No translation data available yet.',
-    )
+            message: 'No translation data available yet.',
+          )
         : ListView.separated(
-      padding: const EdgeInsets.all(16),
-      itemCount: widget.groups.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, index) {
-        final group = widget.groups[index];
-        final isExpanded = _expandedStaffId == group.staffId;
+            padding: const EdgeInsets.all(16),
+            itemCount: widget.groups.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 10),
+            itemBuilder: (context, index) {
+              final group = widget.groups[index];
+              final isExpanded = _expandedStaffId == group.staffId;
 
-        return Container(
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: AppColors.border),
-          ),
-          child: Column(
-            children: [
-              InkWell(
-                borderRadius: BorderRadius.circular(14),
-                onTap: () {
-                  setState(() {
-                    _expandedStaffId =
-                    isExpanded ? null : group.staffId;
-                  });
-                },
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+              return Container(
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Column(
+                  children: [
+                    InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () {
+                        setState(() {
+                          _expandedStaffId = isExpanded ? null : group.staffId;
+                        });
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Row(
                           children: [
-                            Text(
-                              group.staffId,
-                              style: AppTextStyles.body.copyWith(
-                                fontWeight: FontWeight.w600,
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    group.staffId,
+                                    style: AppTextStyles.body.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${group.summary.lineCount} lines detected • '
+                                    '${group.summary.symbolCount} symbols assigned • '
+                                    '${group.summary.clefStatusLabel}',
+                                    style: AppTextStyles.caption.copyWith(
+                                      fontSize: 11.5,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '${group.summary.lineCount} lines detected • '
-                                  '${group.summary.symbolCount} symbols assigned • '
-                                  '${group.summary.clefStatusLabel}',
-                              style: AppTextStyles.caption.copyWith(
-                                fontSize: 11.5,
-                              ),
+                            Icon(
+                              isExpanded
+                                  ? Icons.keyboard_arrow_up_rounded
+                                  : Icons.keyboard_arrow_down_rounded,
+                              color: AppColors.textSecondary,
                             ),
                           ],
                         ),
                       ),
-                      Icon(
-                        isExpanded
-                            ? Icons.keyboard_arrow_up_rounded
-                            : Icons.keyboard_arrow_down_rounded,
-                        color: AppColors.textSecondary,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              if (isExpanded) ...[
-                Container(height: 1, color: AppColors.divider),
-                Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    children: [
-                      _TranslateBox(
-                        title: 'Segment Map',
+                    ),
+                    if (isExpanded) ...[
+                      Container(height: 1, color: AppColors.divider),
+                      Padding(
+                        padding: const EdgeInsets.all(14),
                         child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: group.segmentMap
-                              .map(
-                                (item) => Padding(
-                              padding: const EdgeInsets.only(bottom: 5),
-                              child: Text(
-                                '${item.id} -- ${item.yDisplay} -- ${item.defaultKeyLabel}',
-                                style: AppTextStyles.bodySecondary.copyWith(
-                                  fontSize: 12,
-                                  color: item.id.startsWith('v_')
-                                      ? Colors.lightBlueAccent
-                                      : null,
-                                  fontStyle: item.id.startsWith('v_')
-                                      ? FontStyle.italic
-                                      : null,
-                                ),
+                          children: [
+                            _TranslateBox(
+                              title: 'Segment Map',
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: group.segmentMap
+                                    .map(
+                                      (item) => Padding(
+                                        padding: const EdgeInsets.only(
+                                          bottom: 5,
+                                        ),
+                                        child: Text(
+                                          '${item.id} -- ${item.yDisplay} -- ${item.defaultKeyLabel}',
+                                          style: AppTextStyles.bodySecondary
+                                              .copyWith(
+                                                fontSize: 12,
+                                                color: item.id.startsWith('v_')
+                                                    ? Colors.lightBlueAccent
+                                                    : null,
+                                                fontStyle:
+                                                    item.id.startsWith('v_')
+                                                    ? FontStyle.italic
+                                                    : null,
+                                              ),
+                                        ),
+                                      ),
+                                    )
+                                    .toList(),
                               ),
                             ),
-                          )
-                              .toList(),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      _TranslateBox(
-                        title: 'Symbol/s',
-                        child: group.symbols.isEmpty
-                            ? Text(
-                          'No symbols assigned within this staff.',
-                          style: AppTextStyles.bodySecondary
-                              .copyWith(fontSize: 12),
-                        )
-                            : Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: group.symbols
-                              .where((symbol) =>
-                          symbol.assignmentStatus !=
-                              'ledgerCandidate')
-                              .map(
-                                (symbol) => Padding(
-                              padding:
-                              const EdgeInsets.only(bottom: 6),
-                              child: Text(
-                                _buildSymbolLine(symbol),
-                                style: AppTextStyles.bodySecondary
-                                    .copyWith(fontSize: 12),
-                              ),
+                            const SizedBox(height: 12),
+                            _TranslateBox(
+                              title: 'Symbol/s',
+                              child: group.symbols.isEmpty
+                                  ? Text(
+                                      'No symbols assigned within this staff.',
+                                      style: AppTextStyles.bodySecondary
+                                          .copyWith(fontSize: 12),
+                                    )
+                                  : Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: group.symbols
+                                          .where(
+                                            (symbol) =>
+                                                symbol.assignmentStatus !=
+                                                'ledgerCandidate',
+                                          )
+                                          .map(
+                                            (symbol) => Padding(
+                                              padding: const EdgeInsets.only(
+                                                bottom: 6,
+                                              ),
+                                              child: Text(
+                                                _buildSymbolLine(symbol),
+                                                style: AppTextStyles
+                                                    .bodySecondary
+                                                    .copyWith(fontSize: 12),
+                                              ),
+                                            ),
+                                          )
+                                          .toList(),
+                                    ),
                             ),
-                          )
-                              .toList(),
+                          ],
                         ),
                       ),
                     ],
-                  ),
+                  ],
                 ),
-              ],
-            ],
-          ),
-        );
-      },
-    );
+              );
+            },
+          );
   }
 
   Widget _buildNoteGroupTab() {
     return widget.noteGroups.isEmpty
-        ? const _EmptyPanelMessage(
-      message: 'No note groups available yet.',
-    )
+        ? const _EmptyPanelMessage(message: 'No note groups available yet.')
         : ListView.separated(
-      padding: const EdgeInsets.all(16),
-      itemCount: widget.noteGroups.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
-      itemBuilder: (context, index) {
-        final item = widget.noteGroups[index];
+            padding: const EdgeInsets.all(16),
+            itemCount: widget.noteGroups.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 10),
+            itemBuilder: (context, index) {
+              final item = widget.noteGroups[index];
 
-        return Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: AppColors.border),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                item.staffId,
-                style: AppTextStyles.body.copyWith(
-                  fontWeight: FontWeight.w600,
+              return Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.border),
                 ),
-              ),
-              const SizedBox(height: 10),
-              if (item.groups.isEmpty)
-                Text(
-                  'No grouped notes for this staff.',
-                  style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
-                )
-              else
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: item.groups.map((group) {
-                    final label = group.length == 1
-                        ? group.first
-                        : group.join(' + ');
-
-                    return Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 7,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item.staffId,
+                      style: AppTextStyles.body.copyWith(
+                        fontWeight: FontWeight.w600,
                       ),
-                      decoration: BoxDecoration(
-                        color: AppColors.card,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: AppColors.border),
-                      ),
-                      child: Text(
-                        '[$label]',
-                        style: AppTextStyles.caption.copyWith(
-                          color: AppColors.textPrimary,
-                          fontWeight: FontWeight.w600,
+                    ),
+                    const SizedBox(height: 10),
+                    if (item.groups.isEmpty)
+                      Text(
+                        'No grouped notes for this staff.',
+                        style: AppTextStyles.bodySecondary.copyWith(
+                          fontSize: 12,
                         ),
+                      )
+                    else
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: item.groups.map((group) {
+                          final label = group.length == 1
+                              ? group.first
+                              : group.join(' + ');
+
+                          return Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 7,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.card,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: AppColors.border),
+                            ),
+                            child: Text(
+                              '[$label]',
+                              style: AppTextStyles.caption.copyWith(
+                                color: AppColors.textPrimary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          );
+                        }).toList(),
                       ),
-                    );
-                  }).toList(),
+                  ],
                 ),
-            ],
-          ),
-        );
-      },
-    );
+              );
+            },
+          );
+  }
+
+  Widget _buildRhythmTab() {
+    return widget.rhythmEvents.isEmpty
+        ? const _EmptyPanelMessage(
+            message: 'No rhythm estimates available yet.',
+          )
+        : ListView.separated(
+            padding: const EdgeInsets.all(16),
+            itemCount: widget.rhythmEvents.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 10),
+            itemBuilder: (context, index) {
+              final item = widget.rhythmEvents[index];
+              final measureLabel = item.measureIndex == null
+                  ? 'Measure unknown'
+                  : 'Measure ${item.measureIndex! + 1}';
+              final timingLabel = _formatTimingSource(item.timingSource);
+              final confidence = (item.confidence * 100).round();
+              final geometry = [
+                if (item.hasStem) 'stem',
+                if (item.hasBeam) 'beam',
+              ].join(' + ');
+
+              return Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            item.label,
+                            style: AppTextStyles.body.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          '${item.durationBeats.toStringAsFixed(2)} beat',
+                          style: AppTextStyles.caption.copyWith(
+                            color: AppColors.accent,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '${item.staffId} -- $measureLabel -- $timingLabel',
+                      style: AppTextStyles.bodySecondary.copyWith(fontSize: 12),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      geometry.isEmpty
+                          ? 'Estimated from spacing -- confidence $confidence%'
+                          : 'Detected $geometry -- confidence $confidence%',
+                      style: AppTextStyles.caption.copyWith(fontSize: 11.5),
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
   }
 
   String _buildSymbolLine(TranslatedSymbolViewItem symbol) {
@@ -1225,6 +1303,19 @@ class _TranslatePanelState extends State<_TranslatePanel> {
 
     return '${symbol.className} -- $yText -- $confidenceText -- '
         '${symbol.locationId} -- ${symbol.assignmentStatus}';
+  }
+
+  String _formatTimingSource(String source) {
+    switch (source) {
+      case 'beam_geometry':
+        return 'short note from beam shape';
+      case 'stem_spacing_estimate':
+        return 'stem with spacing estimate';
+      case 'spacing_estimate':
+        return 'spacing estimate';
+      default:
+        return source.replaceAll('_', ' ');
+    }
   }
 }
 
@@ -1256,9 +1347,7 @@ class _TranslateTabButton extends StatelessWidget {
           child: Text(
             label,
             style: AppTextStyles.caption.copyWith(
-              color: selected
-                  ? AppColors.textPrimary
-                  : AppColors.textSecondary,
+              color: selected ? AppColors.textPrimary : AppColors.textSecondary,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -1272,10 +1361,7 @@ class _TranslateBox extends StatelessWidget {
   final String title;
   final Widget child;
 
-  const _TranslateBox({
-    required this.title,
-    required this.child,
-  });
+  const _TranslateBox({required this.title, required this.child});
 
   @override
   Widget build(BuildContext context) {
@@ -1292,9 +1378,7 @@ class _TranslateBox extends StatelessWidget {
         children: [
           Text(
             title,
-            style: AppTextStyles.body.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
+            style: AppTextStyles.body.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 8),
           child,
@@ -1366,35 +1450,40 @@ class _GeneratePanelState extends State<_GeneratePanel> {
               _buildGenerateSection(
                 sectionId: 'music_interpretation',
                 title: 'Musical Interpretation',
-                subtitle: '${widget.musicInterpretations.length} structures prepared',
+                subtitle:
+                    '${widget.musicInterpretations.length} structures prepared',
                 child: _buildMusicInterpretationContent(),
               ),
               const SizedBox(height: 10),
               _buildGenerateSection(
                 sectionId: 'fretboard_mapping',
                 title: 'Fretboard Mapping',
-                subtitle: '${widget.fretboardMappings.length} mapped structures prepared',
+                subtitle:
+                    '${widget.fretboardMappings.length} mapped structures prepared',
                 child: _buildFretboardMappingContent(),
               ),
               const SizedBox(height: 10),
               _buildGenerateSection(
                 sectionId: 'event_manager',
                 title: 'Event Manager',
-                subtitle: '${widget.eventManagerResults.length} optimized lines prepared',
+                subtitle:
+                    '${widget.eventManagerResults.length} optimized lines prepared',
                 child: _buildEventManagerContent(),
               ),
               const SizedBox(height: 10),
               _buildGenerateSection(
                 sectionId: 'chord_voicing',
                 title: 'Chord Voicing',
-                subtitle: '${widget.chordVoicingResults.length} voiced lines prepared',
+                subtitle:
+                    '${widget.chordVoicingResults.length} voiced lines prepared',
                 child: _buildChordVoicingContent(),
               ),
               const SizedBox(height: 10),
               _buildGenerateSection(
                 sectionId: 'generated_tabs',
                 title: 'Generated Tabs',
-                subtitle: '${widget.generatedTabs.length} generated tab outputs prepared',
+                subtitle:
+                    '${widget.generatedTabs.length} generated tab outputs prepared',
                 child: _buildGeneratedTabsContent(),
               ),
             ],
@@ -1461,10 +1550,7 @@ class _GeneratePanelState extends State<_GeneratePanel> {
           ),
           if (isExpanded) ...[
             Container(height: 1, color: AppColors.divider),
-            Padding(
-              padding: const EdgeInsets.all(14),
-              child: child,
-            ),
+            Padding(padding: const EdgeInsets.all(14), child: child),
           ],
         ],
       ),
@@ -1563,9 +1649,7 @@ class _GeneratePanelState extends State<_GeneratePanel> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                _buildGroupWrap(
-                  item.strictMelody.map((p) => [p]).toList(),
-                ),
+                _buildGroupWrap(item.strictMelody.map((p) => [p]).toList()),
 
                 const SizedBox(height: 12),
 
@@ -1577,9 +1661,7 @@ class _GeneratePanelState extends State<_GeneratePanel> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                _buildGroupWrap(
-                  item.continuityMelody.map((p) => [p]).toList(),
-                ),
+                _buildGroupWrap(item.continuityMelody.map((p) => [p]).toList()),
               ],
             ),
           ),
@@ -1690,23 +1772,31 @@ class _GeneratePanelState extends State<_GeneratePanel> {
       );
     }
 
+    final session = widget.session;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         ElevatedButton(
-          onPressed: widget.generatedTabResults.isEmpty || widget.session == null
+          onPressed: widget.generatedTabResults.isEmpty || session == null
               ? null
-              : () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => ResultPage(
-                  session: widget.session!,
-                  generatedTabs: widget.generatedTabResults,
-                ),
-              ),
-            );
-          },
+              : () async {
+                  final shouldRefreshHome = await Navigator.push<bool>(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ResultPage(
+                        session: session,
+                        generatedTabs: widget.generatedTabResults,
+                      ),
+                    ),
+                  );
+
+                  if (!mounted) return;
+
+                  if (shouldRefreshHome == true) {
+                    Navigator.pop(context, true);
+                  }
+                },
           child: const Text('Open Result Page'),
         ),
         const SizedBox(height: 12),
@@ -1719,9 +1809,18 @@ class _GeneratePanelState extends State<_GeneratePanel> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Columns: ${item.columns}', style: AppTextStyles.caption),
-                  Text('Fretboard Frames: ${item.fretboardFrames}', style: AppTextStyles.caption),
-                  Text('Export Pages: ${item.exportPages}', style: AppTextStyles.caption),
+                  Text(
+                    'Columns: ${item.columns}',
+                    style: AppTextStyles.caption,
+                  ),
+                  Text(
+                    'Fretboard Frames: ${item.fretboardFrames}',
+                    style: AppTextStyles.caption,
+                  ),
+                  Text(
+                    'Export Pages: ${item.exportPages}',
+                    style: AppTextStyles.caption,
+                  ),
                   const SizedBox(height: 8),
                   Text(
                     item.firstEventSummary,
@@ -1804,9 +1903,7 @@ class _GeneratePanelState extends State<_GeneratePanel> {
 class _EmptyPanelMessage extends StatelessWidget {
   final String message;
 
-  const _EmptyPanelMessage({
-    required this.message,
-  });
+  const _EmptyPanelMessage({required this.message});
 
   @override
   Widget build(BuildContext context) {

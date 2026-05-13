@@ -10,6 +10,7 @@ import 'data/debug_settings_repository.dart';
 import 'result_page.dart';
 import 'dummy_page.dart';
 import 'services/staff_segmentation_service.dart';
+import 'services/barline_refinement_service.dart';
 import 'models/translation_group_models.dart';
 import 'services/translation_grouping_service.dart';
 import 'services/note_grouping_service.dart';
@@ -19,10 +20,12 @@ import 'services/musical_interpretation_service.dart';
 import 'services/fretboard_mapping_service.dart';
 import 'services/event_manager_service.dart';
 import 'services/chord_voicing_service.dart';
+import 'services/rhythm_interpretation_service.dart';
 import 'services/tablature_result_adapter.dart';
 import 'services/generation_service.dart';
 import 'services/save_export_service.dart';
 import 'data/app_settings_repository.dart';
+import 'services/tutorial_service.dart';
 
 /// Processing screen shown after the image crop is confirmed.
 ///
@@ -30,13 +33,15 @@ import 'data/app_settings_repository.dart';
 /// - display overall processing progress
 /// - show each pipeline stage and its status
 /// - simulate the current workflow for UI development
-/// - prepare the structure for future Python/model integration
+/// - bridge to the native OpenCV/ONNX vision pipeline
 class ProcessingPage extends StatefulWidget {
-  final String imagePath;
+  final String sourceImagePath;
+  final String croppedImagePath;
 
   const ProcessingPage({
     super.key,
-    required this.imagePath,
+    required this.sourceImagePath,
+    required this.croppedImagePath,
   });
 
   @override
@@ -44,12 +49,7 @@ class ProcessingPage extends StatefulWidget {
 }
 
 /// High-level state of one processing stage in the pipeline.
-enum ProcessingStageStatus {
-  pending,
-  active,
-  completed,
-  failed,
-}
+enum ProcessingStageStatus { pending, active, completed, failed }
 
 /// UI model for a single pipeline stage row.
 class ProcessingStageItem {
@@ -81,113 +81,120 @@ class ProcessingStageItem {
 }
 
 class _ProcessingPageState extends State<ProcessingPage> {
-  static const MethodChannel _processingChannel =
-  MethodChannel('stala/python_bridge');
+  static const MethodChannel _visionPipelineChannel = MethodChannel(
+    'stala/python_bridge',
+  );
 
   late List<ProcessingStageItem> _stages;
   int _activeStageIndex = -1;
   bool _isProcessingFinished = false;
   bool _hasProcessingFailed = false;
-  String _statusMessage = 'Preparing image for processing...';
+  String _statusMessage = 'Getting your music sheet ready...';
 
   final StaffSegmentationService _segmentationService =
-  StaffSegmentationService();
+      StaffSegmentationService();
+
+  final BarlineRefinementService _barlineRefinementService =
+      const BarlineRefinementService();
 
   final TranslationGroupingService _translationGroupingService =
-  TranslationGroupingService();
+      TranslationGroupingService();
 
   final NoteGroupingService _noteGroupingService = NoteGroupingService();
 
   final GrandStaffPairingService _grandStaffPairingService =
-  GrandStaffPairingService();
+      GrandStaffPairingService();
 
   final PolyphonicToMonophonicService _polyMonoService =
-  PolyphonicToMonophonicService();
+      PolyphonicToMonophonicService();
 
   final MusicalInterpretationService _musicalInterpretationService =
-  MusicalInterpretationService();
+      MusicalInterpretationService();
 
   final FretboardMappingService _fretboardMappingService =
-  FretboardMappingService();
+      FretboardMappingService();
 
-  final EventManagerService _eventManagerService =
-  EventManagerService();
+  final EventManagerService _eventManagerService = EventManagerService();
 
-  final ChordVoicingService _chordVoicingService =
-  ChordVoicingService();
+  final ChordVoicingService _chordVoicingService = ChordVoicingService();
+
+  final RhythmInterpretationService _rhythmInterpretationService =
+      const RhythmInterpretationService();
 
   final SaveExportService _saveExportService = const SaveExportService();
   final AppSettingsRepository _appSettingsRepository =
-  const AppSettingsRepository();
+      const AppSettingsRepository();
 
   Map<String, dynamic>? _processingResult;
+  final GlobalKey _processingHelpTourKey = GlobalKey();
+  final GlobalKey _processingProgressTourKey = GlobalKey();
+  final GlobalKey _processingStepsTourKey = GlobalKey();
+  final GlobalKey _processingFooterTourKey = GlobalKey();
 
   @override
   void initState() {
     super.initState();
     _stages = _buildInitialStages();
     _startProcessingPipeline();
+    TutorialService.autoStartTour(
+      context,
+      pageKey: TutorialService.processingPageKey,
+      keys: _processingTourKeys,
+    );
   }
 
-  /// Creates the initial ordered pipeline list.
-  ///
-  /// These labels match the intended STALA workflow and can later
-  /// be connected to real backend/model calls.
+  List<GlobalKey> get _processingTourKeys => [
+    _processingProgressTourKey,
+    _processingStepsTourKey,
+    _processingFooterTourKey,
+    _processingHelpTourKey,
+  ];
+
   List<ProcessingStageItem> _buildInitialStages() {
     return [
       const ProcessingStageItem(
-        title: 'Preprocessing Image',
-        subtitle: 'Applying crop, cleanup, and enhancement.',
+        title: 'Preparing Image',
+        subtitle:
+            'Cleaning up the crop so the notes and staff lines are easier to read.',
         icon: Icons.tune_rounded,
         status: ProcessingStageStatus.pending,
       ),
       const ProcessingStageItem(
-        title: 'Detecting Symbols',
-        subtitle: 'Running Faster R-CNN multiclass symbol detection.',
+        title: 'Finding Music Symbols',
+        subtitle: 'Looking for notes, accidentals, and clefs on the sheet.',
         icon: Icons.center_focus_strong_rounded,
         status: ProcessingStageStatus.pending,
       ),
       const ProcessingStageItem(
-        title: 'Segmenting Staff Lines',
-        subtitle: 'Analyzing line and space structure for pitch mapping.',
+        title: 'Reading Staff Lines',
+        subtitle: 'Locating each staff so STALA can understand note positions.',
         icon: Icons.horizontal_rule_rounded,
         status: ProcessingStageStatus.pending,
       ),
       const ProcessingStageItem(
-        title: 'Translating Notes',
-        subtitle: 'Combining detection and segmentation outputs.',
+        title: 'Interpreting Notes',
+        subtitle:
+            'Matching the detected marks to pitches and guitar-friendly choices.',
         icon: Icons.music_note_rounded,
         status: ProcessingStageStatus.pending,
       ),
       const ProcessingStageItem(
-        title: 'Generating Results',
-        subtitle: 'Preparing tablature and fretboard mapping.',
+        title: 'Building Tablature',
+        subtitle: 'Creating the guitar tab and playback-ready result.',
         icon: Icons.library_music_rounded,
         status: ProcessingStageStatus.pending,
       ),
     ];
   }
 
-  /// Temporary simulated pipeline runner.
-  ///
-  /// Later, this can be replaced with real async steps such as:
-  /// - preprocessing
-  /// - symbol detection
-  /// - staff segmentation
-  /// - note translation
-  /// - result generation
   Future<void> _startProcessingPipeline() async {
-    print('DEBUG: _startProcessingPipeline started');
     try {
       if (!mounted) return;
 
       setState(() {
-        print('DEBUG: activating stage 0');
         _activeStageIndex = 0;
-        _statusMessage = 'Preparing image for processing...';
-        _stages[0] = _stages[0].copyWith(
-          status: ProcessingStageStatus.active,
-        );
+        _statusMessage = 'Getting your music sheet ready...';
+        _stages[0] = _stages[0].copyWith(status: ProcessingStageStatus.active);
       });
 
       await Future.delayed(const Duration(milliseconds: 400));
@@ -199,32 +206,27 @@ class _ProcessingPageState extends State<ProcessingPage> {
           status: ProcessingStageStatus.completed,
         );
         _activeStageIndex = 1;
-        _statusMessage = 'Running detection model...';
-        _stages[1] = _stages[1].copyWith(
-          status: ProcessingStageStatus.active,
-        );
+        _statusMessage = 'Finding the notes and symbols on the page...';
+        _stages[1] = _stages[1].copyWith(status: ProcessingStageStatus.active);
       });
-
-      print('DEBUG: calling processImage');
 
       setState(() {
-        _statusMessage = 'About to call native processImage...';
+        _statusMessage = 'Scanning the music symbols...';
       });
 
-      final dynamic result = await _processingChannel.invokeMethod(
+      final dynamic result = await _visionPipelineChannel.invokeMethod(
         'processImage',
-        {'imagePath': widget.imagePath},
+        {'imagePath': widget.croppedImagePath},
       );
 
-      print('DEBUG: processImage returned');
-
       setState(() {
-        _statusMessage = 'Native processImage returned.';
+        _statusMessage = 'Music symbols found. Reading the staff lines next...';
       });
 
       if (!mounted) return;
 
       final response = Map<String, dynamic>.from(result as Map);
+      response['croppedImagePath'] ??= widget.croppedImagePath;
       _processingResult = response;
 
       final status = response['status']?.toString() ?? 'error';
@@ -232,12 +234,14 @@ class _ProcessingPageState extends State<ProcessingPage> {
       final errors = (response['errors'] as List?)?.cast<dynamic>() ?? const [];
 
       if (status == 'success') {
+        final classItems = _parseClassItems(response['detections']);
+
         setState(() {
           _stages[1] = _stages[1].copyWith(
             status: ProcessingStageStatus.completed,
           );
           _activeStageIndex = 2;
-          _statusMessage = 'Running staff line segmentation...';
+          _statusMessage = 'Reading staff lines and note positions...';
           _stages[2] = _stages[2].copyWith(
             status: ProcessingStageStatus.active,
           );
@@ -245,86 +249,132 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
         final segmentationInputPath =
             response['preprocessedImagePath'] ??
-                response['detectionImagePath'] ??
-                response['croppedImagePath'] ??
-                widget.imagePath;
+            response['detectionImagePath'] ??
+            response['croppedImagePath'] ??
+            widget.croppedImagePath;
 
-        print('DEBUG: segmentationInputPath = $segmentationInputPath');
-        print('DEBUG: preprocessedImagePath = ${response['preprocessedImagePath']}');
-        print('DEBUG: detectionImagePath = ${response['detectionImagePath']}');
-        print('DEBUG: croppedImagePath = ${response['croppedImagePath']}');
-
-        final segmentationResult =
-        await _segmentationService.segmentStaffLines(
+        final segmentationResult = await _segmentationService.segmentStaffLines(
           imagePath: segmentationInputPath,
         );
 
-        print('DEBUG: segmentedImagePath = ${segmentationResult['segmentedImagePath']}');
-
         if (segmentationResult['status'] == 'success') {
           response['segmentedImagePath'] =
-          segmentationResult['segmentedImagePath'];
-          response['staffLineCount'] =
-          segmentationResult['staffLineCount'];
-          response['staffLines'] =
-          segmentationResult['staffLines'];
-          response['validatedStaffs'] =
-          segmentationResult['validatedStaffs'];
-          response['ledgerLines'] =
-          segmentationResult['ledgerLines'];
+              segmentationResult['segmentedImagePath'];
+          response['staffLineCount'] = segmentationResult['staffLineCount'];
+          response['staffLines'] = segmentationResult['staffLines'];
+          response['validatedStaffs'] = segmentationResult['validatedStaffs'];
+          response['ledgerLines'] = segmentationResult['ledgerLines'];
+          response['barLines'] = segmentationResult['barLines'];
+          response['stems'] = segmentationResult['stems'];
+          response['beams'] = segmentationResult['beams'];
+          response['measures'] = segmentationResult['measures'];
+
+          final refinedBarlines = _barlineRefinementService.refine(
+            rawBarLines: (response['barLines'] as List?) ?? const [],
+            rawMeasures: (response['measures'] as List?) ?? const [],
+            rawValidatedStaffs:
+                (response['validatedStaffs'] as List?) ?? const [],
+            classItems: classItems,
+          );
+
+          response['barLines'] = refinedBarlines.barLines;
+          response['measures'] = refinedBarlines.measures;
 
           setState(() {
             _stages[2] = _stages[2].copyWith(
               status: ProcessingStageStatus.completed,
             );
             _activeStageIndex = 3;
-            _statusMessage = 'Building translation groups...';
+            _statusMessage = 'Connecting notes to their staff positions...';
             _stages[3] = _stages[3].copyWith(
               status: ProcessingStageStatus.active,
             );
           });
 
-          final classItems = _parseClassItems(response['detections']);
+          print(
+            'STALA_PIPELINE: interpreting start '
+            'detections=${classItems.length} '
+            'staffs=${(response['validatedStaffs'] as List?)?.length ?? 0} '
+            'measures=${(response['measures'] as List?)?.length ?? 0}',
+          );
+
           final translateGroups = _translationGroupingService.buildGroups(
             classItems: classItems,
             staffLines: (response['staffLines'] as List?) ?? const [],
+            validatedStaffs: (response['validatedStaffs'] as List?) ?? const [],
             ledgerLines: (response['ledgerLines'] as List?) ?? const [],
+            measures: (response['measures'] as List?) ?? const [],
           );
 
-          print('DEBUG: response ledgerLines = ${response['ledgerLines']}');
+          print(
+            'STALA_PIPELINE: translateGroups=${translateGroups.length} '
+            'symbols=${translateGroups.fold<int>(0, (sum, group) => sum + group.symbols.length)}',
+          );
 
           final groupedNotes = _noteGroupingService.groupNotes(
             staffGroups: translateGroups,
+          );
+
+          print(
+            'STALA_PIPELINE: groupedNotes=${groupedNotes.length} '
+            'noteEvents=${groupedNotes.values.fold<int>(0, (sum, groups) => sum + groups.length)}',
           );
 
           final noteGroupViewItems = groupedNotes.entries.map((entry) {
             return NoteGroupViewItem(
               staffId: entry.key,
               groups: entry.value
-                  .map((group) => group
-                  .map((note) => note.defaultKeyLabel ?? 'Unresolved')
-                  .toList())
+                  .map(
+                    (group) => group
+                        .map((note) => note.defaultKeyLabel ?? 'Unresolved')
+                        .toList(),
+                  )
                   .toList(),
             );
           }).toList();
 
           response['noteGroups'] = noteGroupViewItems;
 
+          final rhythmResult = _rhythmInterpretationService.interpret(
+            groupedNotes: groupedNotes,
+            rawStems: (response['stems'] as List?) ?? const [],
+            rawBeams: (response['beams'] as List?) ?? const [],
+          );
+
+          final rhythmViewItems = rhythmResult.events.map((event) {
+            return RhythmEventViewItem(
+              staffId: event.staffId,
+              measureIndex: event.measureIndex,
+              label: event.label,
+              durationBeats: event.durationBeats,
+              timingSource: event.timingSource,
+              confidence: event.confidence,
+              hasStem: event.hasStem,
+              hasBeam: event.hasBeam,
+            );
+          }).toList();
+
+          response['rhythmEvents'] = rhythmViewItems;
+
+          print('STALA_PIPELINE: rhythmEvents=${rhythmResult.events.length}');
+
           final grandStaffPairs = _grandStaffPairingService.pairStaffs(
             noteGroups: noteGroupViewItems,
             translateGroups: translateGroups,
           );
 
+          print('STALA_PIPELINE: grandStaffPairs=${grandStaffPairs.length}');
+
           final grandStaffPairViewItems = grandStaffPairs.map((pair) {
             final trebleView = noteGroupViewItems.firstWhere(
-                  (item) => item.staffId == pair.trebleStaffId,
+              (item) => item.staffId == pair.trebleStaffId,
             );
 
             final bassView = pair.bassStaffId == null
                 ? null
                 : noteGroupViewItems.firstWhere(
-                  (item) => item.staffId == pair.bassStaffId,
-            );
+                    (item) => item.staffId == pair.bassStaffId,
+                  );
 
             return GrandStaffPairViewItem(
               id: pair.id,
@@ -342,6 +392,11 @@ class _ProcessingPageState extends State<ProcessingPage> {
             groupedNotes: groupedNotes,
           );
 
+          print(
+            'STALA_PIPELINE: polyMonoResults=${polyMonoResults.length} '
+            'stacks=${polyMonoResults.fold<int>(0, (sum, result) => sum + result.harmonicStacks.length)}',
+          );
+
           final polyMonoViewItems = polyMonoResults.map((result) {
             final chordAwareStrings = result.chordAwareStacks.map((stack) {
               final notes = stack.notes
@@ -357,12 +412,15 @@ class _ProcessingPageState extends State<ProcessingPage> {
               return '[$notes] → $chord';
             }).toList();
 
-            final allNoChord =
-            chordAwareStrings.every((item) => item == 'NO_CHORD');
+            final allNoChord = chordAwareStrings.every(
+              (item) => item == 'NO_CHORD',
+            );
 
             final finalChordAware = allNoChord
                 ? ['No chords detected']
-                : chordAwareStrings.where((item) => item != 'NO_CHORD').toList();
+                : chordAwareStrings
+                      .where((item) => item != 'NO_CHORD')
+                      .toList();
 
             return PolyMonoViewItem(
               grandStaffId: result.grandStaffId,
@@ -373,17 +431,24 @@ class _ProcessingPageState extends State<ProcessingPage> {
               }).toList(),
               chordAwareStacks: finalChordAware,
               strictMelody: result.strictMelody.map((n) => n.pitch).toList(),
-              continuityMelody:
-              result.continuityMelody.map((n) => n.pitch).toList(),
+              continuityMelody: result.continuityMelody
+                  .map((n) => n.pitch)
+                  .toList(),
             );
           }).toList();
 
           response['polyMonoResults'] = polyMonoViewItems;
 
           // Music interpretation service
-          final musicInterpretation =
-          _musicalInterpretationService.interpret(
+          final musicInterpretation = _musicalInterpretationService.interpret(
             polyMonoResults: polyMonoResults,
+          );
+
+          print(
+            'STALA_PIPELINE: musicInterpretation '
+            'chord=${musicInterpretation.chordAwareLine.events.length} '
+            'strict=${musicInterpretation.strictMelodyLine.events.length} '
+            'continuity=${musicInterpretation.continuityMelodyLine.events.length}',
           );
 
           final musicInterpretationViewItems = [
@@ -414,15 +479,26 @@ class _ProcessingPageState extends State<ProcessingPage> {
             interpretation: musicInterpretation,
           );
 
+          print(
+            'STALA_PIPELINE: fretboardMapping '
+            'events=${fretboardMapping.lines.fold<int>(0, (sum, line) => sum + line.events.length)} '
+            'candidates=${fretboardMapping.lines.fold<int>(0, (sum, line) => sum + line.events.fold<int>(0, (inner, event) => inner + event.candidates.length))}',
+          );
+
           final fretboardMappingViewItems = fretboardMapping.lines.map((line) {
             return FretboardMappingViewItem(
               title: line.title,
               eventSummaries: line.events.map((event) {
-                final preview = event.candidates.take(3).map((candidate) {
-                  return candidate.positions.map((pos) {
-                    return 'S${pos.stringNumber} F${pos.fret}';
-                  }).join(' + ');
-                }).join(', ');
+                final preview = event.candidates
+                    .take(3)
+                    .map((candidate) {
+                      return candidate.positions
+                          .map((pos) {
+                            return 'S${pos.stringNumber} F${pos.fret}';
+                          })
+                          .join(' + ');
+                    })
+                    .join(', ');
 
                 final suffix = event.candidates.length > 3 ? '...' : '';
 
@@ -438,14 +514,21 @@ class _ProcessingPageState extends State<ProcessingPage> {
             fretboardMapping: fretboardMapping,
           );
 
+          print(
+            'STALA_PIPELINE: eventManager '
+            'lines=${eventManagerResult.lines.length}',
+          );
+
           final eventManagerViewItems = eventManagerResult.lines.map((line) {
             return EventManagerViewItem(
               title: line.title,
               totalCost: line.totalCost.toStringAsFixed(2),
               events: line.events.map((event) {
-                final positions = event.chosenPositions.map((pos) {
-                  return '${pos.pitch}: S${pos.stringNumber} F${pos.fret}';
-                }).join(' + ');
+                final positions = event.chosenPositions
+                    .map((pos) {
+                      return '${pos.pitch}: S${pos.stringNumber} F${pos.fret}';
+                    })
+                    .join(' + ');
 
                 return '${event.label} → $positions';
               }).toList(),
@@ -459,13 +542,20 @@ class _ProcessingPageState extends State<ProcessingPage> {
             fretboardMapping: fretboardMapping,
           );
 
+          print(
+            'STALA_PIPELINE: chordVoicing '
+            'lines=${chordVoicingResult.lines.length}',
+          );
+
           final chordVoicingViewItems = chordVoicingResult.lines.map((line) {
             return ChordVoicingViewItem(
               title: line.title,
               events: line.events.map((event) {
-                final positions = event.chosenPositions.map((pos) {
-                  return '${pos.pitch}: S${pos.stringNumber} F${pos.fret}';
-                }).join(' + ');
+                final positions = event.chosenPositions
+                    .map((pos) {
+                      return '${pos.pitch}: S${pos.stringNumber} F${pos.fret}';
+                    })
+                    .join(' + ');
 
                 return '${event.label} → $positions (${event.voicingReason})';
               }).toList(),
@@ -474,17 +564,31 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
           response['chordVoicingResults'] = chordVoicingViewItems;
 
-          // Result adapter
+          if (!mounted) return;
+
+          setState(() {
+            _stages[3] = _stages[3].copyWith(
+              status: ProcessingStageStatus.completed,
+            );
+            _activeStageIndex = 4;
+            _statusMessage = 'Building your tablature result...';
+            _stages[4] = _stages[4].copyWith(
+              status: ProcessingStageStatus.active,
+            );
+          });
+
           final tablatureResults = const TablatureResultAdapter().combine(
             eventManagerResult: eventManagerResult,
             chordVoicingResult: chordVoicingResult,
+            rhythmResult: rhythmResult,
             titleFallback: 'Sample 1',
           );
 
           debugPrint('TABLATURE RESULTS: ${tablatureResults.length} mode(s)');
 
-          response['tablatureResults'] =
-              tablatureResults.map((result) => result.toJson()).toList();
+          response['tablatureResults'] = tablatureResults
+              .map((result) => result.toJson())
+              .toList();
 
           for (final result in tablatureResults) {
             debugPrint('${result.mode.name}: ${result.events.length} events');
@@ -493,9 +597,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
               final first = result.events.first;
               debugPrint(
                 'First event: index=${first.eventIndex}, '
-                    'duration=${first.durationSeconds}, '
-                    'label=${first.label}, '
-                    'positions=${first.positions.length}',
+                'duration=${first.durationSeconds}, '
+                'label=${first.label}, '
+                'positions=${first.positions.length}',
               );
             }
           }
@@ -505,8 +609,12 @@ class _ProcessingPageState extends State<ProcessingPage> {
             id: DateTime.now().millisecondsSinceEpoch.toString(),
             projectName: 'Sample 1',
 
-            originalImagePath: widget.imagePath,
-            croppedImagePath: response['croppedImagePath']?.toString(),
+            originalImagePath: widget.sourceImagePath,
+            croppedImagePath:
+                response['croppedImagePath']?.toString() ??
+                widget.croppedImagePath,
+            preprocessedImagePath: response['preprocessedImagePath']
+                ?.toString(),
             detectionImagePath: response['detectionImagePath']?.toString(),
             segmentationImagePath: response['segmentedImagePath']?.toString(),
 
@@ -540,9 +648,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
           for (final tab in generatedTabs) {
             debugPrint(
               '${tab.mode.name}: '
-                  '${tab.columns.length} columns, '
-                  '${tab.fretboardFrames.length} fretboard frames, '
-                  '${tab.exportPages.length} export pages',
+              '${tab.columns.length} columns, '
+              '${tab.fretboardFrames.length} fretboard frames, '
+              '${tab.exportPages.length} export pages',
             );
           }
 
@@ -564,8 +672,8 @@ class _ProcessingPageState extends State<ProcessingPage> {
           SessionData finalSession = session;
 
           try {
-            final autoSaveEnabled =
-            await _appSettingsRepository.getAutoSaveEnabled();
+            final autoSaveEnabled = await _appSettingsRepository
+                .getAutoSaveEnabled();
 
             if (autoSaveEnabled) {
               final savedFile = await _saveExportService.saveStalaFile(
@@ -579,9 +687,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
               );
             }
           } catch (error) {
-            finalSession = session.copyWith(
-              autoSaveFailed: true,
-            );
+            finalSession = session.copyWith(autoSaveFailed: true);
 
             debugPrint('AUTO_SAVE_FAILED: $error');
           }
@@ -594,23 +700,18 @@ class _ProcessingPageState extends State<ProcessingPage> {
           _processingResult = response;
 
           setState(() {
-            _stages[3] = _stages[3].copyWith(
-              status: ProcessingStageStatus.completed,
-            );
-
-            _activeStageIndex = 4;
-            _statusMessage = 'Generation stage placeholder ready.';
             _stages[4] = _stages[4].copyWith(
               status: ProcessingStageStatus.completed,
             );
 
             _isProcessingFinished = true;
-            _statusMessage = message ?? 'Processing complete. Result is ready.';
+            _statusMessage = 'Your guitar tablature is ready to review.';
           });
         } else {
           final segmentationMessage =
-              segmentationResult['message']?.toString() ?? 'Unknown segmentation error';
-          throw Exception('Segmentation failed: $segmentationMessage');
+              segmentationResult['message']?.toString() ??
+              'The staff lines could not be read clearly.';
+          throw Exception(segmentationMessage);
         }
       } else {
         setState(() {
@@ -619,11 +720,15 @@ class _ProcessingPageState extends State<ProcessingPage> {
           );
           _hasProcessingFailed = true;
           _statusMessage = errors.isNotEmpty
-              ? errors.first.toString()
-              : (message ?? 'Processing failed. Please try again.');
+              ? 'The sheet could not be read clearly. Please try a sharper crop.'
+              : (message ??
+                    'The sheet could not be processed. Please try again.');
         });
       }
-    } on PlatformException catch (error) {
+    } on PlatformException catch (error, stackTrace) {
+      print('STALA_PIPELINE: platform error $error');
+      print(stackTrace);
+
       if (!mounted) return;
 
       setState(() {
@@ -634,9 +739,12 @@ class _ProcessingPageState extends State<ProcessingPage> {
         }
         _hasProcessingFailed = true;
         _statusMessage =
-        'Bridge error: ${error.message ?? error.code}';
+            'STALA could not start the reading step. Please try again.';
       });
-    } catch (error) {
+    } catch (error, stackTrace) {
+      print('STALA_PIPELINE: interpretation error $error');
+      print(stackTrace);
+
       if (!mounted) return;
 
       setState(() {
@@ -646,7 +754,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
           );
         }
         _hasProcessingFailed = true;
-        _statusMessage = 'Processing failed: $error';
+        _statusMessage = 'Something went wrong while reading the sheet.';
       });
     }
   }
@@ -657,7 +765,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
       _activeStageIndex = -1;
       _isProcessingFinished = false;
       _hasProcessingFailed = false;
-      _statusMessage = 'Preparing image for processing...';
+      _statusMessage = 'Getting your music sheet ready...';
       _stages = _buildInitialStages();
       _processingResult = null;
     });
@@ -697,9 +805,6 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
     final croppedImagePath = _pickFirstNonEmptyString(result, const [
       'croppedImagePath',
-      'preprocessedImagePath',
-      'processedImagePath',
-      'outputImagePath',
     ]);
 
     final detectedImagePath = _pickFirstNonEmptyString(result, const [
@@ -707,6 +812,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
       'annotatedImagePath',
       'visualizedImagePath',
       'detectionImagePath',
+      'preprocessedImagePath',
     ]);
 
     final segmentedImagePath = _pickFirstNonEmptyString(result, const [
@@ -721,57 +827,68 @@ class _ProcessingPageState extends State<ProcessingPage> {
     final noteGroups =
         (result['noteGroups'] as List<NoteGroupViewItem>?) ?? const [];
 
+    final rhythmEvents =
+        (result['rhythmEvents'] as List<RhythmEventViewItem>?) ?? const [];
+
     final grandStaffPairs =
-        (result['grandStaffPairs'] as List<GrandStaffPairViewItem>?) ?? const [];
+        (result['grandStaffPairs'] as List<GrandStaffPairViewItem>?) ??
+        const [];
 
     final polyMonoResults =
         (result['polyMonoResults'] as List<PolyMonoViewItem>?) ?? const [];
 
     final musicInterpretations =
-        (result['musicInterpretations'] as List<MusicInterpretationViewItem>?) ??
-            const [];
+        (result['musicInterpretations']
+            as List<MusicInterpretationViewItem>?) ??
+        const [];
 
     final fretboardMappings =
         (result['fretboardMappings'] as List<FretboardMappingViewItem>?) ??
-            const [];
+        const [];
 
     final eventManagerResults =
         (result['eventManagerResults'] as List<EventManagerViewItem>?) ??
-            const [];
+        const [];
 
     final chordVoicingResults =
         (result['chordVoicingResults'] as List<ChordVoicingViewItem>?) ??
-            const [];
+        const [];
 
     final session = result['sessionData'] as SessionData;
     final generatedTabResults =
-        (result['generatedTabResults'] as List<GeneratedTabResult>?) ?? const [];
+        (result['generatedTabResults'] as List<GeneratedTabResult>?) ??
+        const [];
 
     final generatedTabs =
         (result['generatedTabViewItems'] as List<GeneratedTabViewItem>?) ??
-            const [];
+        const [];
 
     final ledgerLines = _parseConfirmedLedgerLines(
       result['ledgerLines'],
       translateGroups,
     );
 
-    final isDebugEnabled =
-        await const DebugSettingsRepository().isDebugPageEnabled();
+    final isDebugEnabled = await const DebugSettingsRepository()
+        .isDebugPageEnabled();
+
+    if (!mounted) return;
 
     if (isDebugEnabled) {
-      Navigator.push(
+      final shouldRefreshHome = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
           builder: (_) => DummyPage(
-            croppedImagePath: croppedImagePath ?? widget.imagePath,
+            croppedImagePath: croppedImagePath ?? widget.croppedImagePath,
             detectedImagePath:
-            detectedImagePath ?? croppedImagePath ?? widget.imagePath,
+                detectedImagePath ??
+                croppedImagePath ??
+                widget.croppedImagePath,
             segmentedImagePath: segmentedImagePath,
             detections: detections,
             classItems: classItems,
             translateGroups: translateGroups,
             noteGroups: noteGroups,
+            rhythmEvents: rhythmEvents,
             grandStaffPairs: grandStaffPairs,
             polyMonoResults: polyMonoResults,
             musicInterpretations: musicInterpretations,
@@ -786,14 +903,18 @@ class _ProcessingPageState extends State<ProcessingPage> {
           ),
         ),
       );
+
+      if (!mounted) return;
+
+      if (shouldRefreshHome == true) {
+        Navigator.pop(context, true);
+      }
     } else {
       final shouldRefreshHome = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
-          builder: (_) => ResultPage(
-            session: session,
-            generatedTabs: generatedTabResults,
-          ),
+          builder: (_) =>
+              ResultPage(session: session, generatedTabs: generatedTabResults),
         ),
       );
 
@@ -805,11 +926,10 @@ class _ProcessingPageState extends State<ProcessingPage> {
     }
   }
 
-
   String? _pickFirstNonEmptyString(
-      Map<String, dynamic> source,
-      List<String> keys,
-      ) {
+    Map<String, dynamic> source,
+    List<String> keys,
+  ) {
     for (final key in keys) {
       final value = source[key];
       if (value is String && value.trim().isNotEmpty) {
@@ -833,9 +953,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
       final className =
           map['className']?.toString() ??
-              map['labelName']?.toString() ??
-              map['label']?.toString() ??
-              'symbol';
+          map['labelName']?.toString() ??
+          map['label']?.toString() ??
+          'symbol';
 
       final score = _toDouble(map['score'] ?? map['confidence']);
 
@@ -909,7 +1029,18 @@ class _ProcessingPageState extends State<ProcessingPage> {
           child: Column(
             children: [
               _ProcessingHeader(
+                helpTourKey: _processingHelpTourKey,
                 onBackTap: () => Navigator.pop(context),
+                onHelpTap: () {
+                  TutorialService.showHowToUse(
+                    context,
+                    page: TutorialPage.processingPage,
+                    onStartTour: () => TutorialService.showProcessingGuide(
+                      context,
+                      _processingTourKeys,
+                    ),
+                  );
+                },
               ),
               Expanded(
                 child: Padding(
@@ -918,42 +1049,58 @@ class _ProcessingPageState extends State<ProcessingPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       /// Top summary card with thumbnail, status, and progress.
-                      _ProcessingSummaryCard(
-                        progressValue: _progressValue,
-                        title: _hasProcessingFailed
-                            ? 'Processing Interrupted'
-                            : _isProcessingFinished
-                            ? 'Processing Complete'
-                            : 'Processing Image',
-                        subtitle: _statusMessage,
-                        imagePath: widget.imagePath,
-                        completedCount: _completedStageCount,
-                        totalCount: _stages.length,
-                        isFinished: _isProcessingFinished,
-                        hasFailed: _hasProcessingFailed,
+                      TutorialService.showcase(
+                        key: _processingProgressTourKey,
+                        title: 'Processing Progress',
+                        description:
+                            'This area shows the selected sheet, current status, and overall processing progress.',
+                        child: _ProcessingSummaryCard(
+                          progressValue: _progressValue,
+                          title: _hasProcessingFailed
+                              ? 'Could Not Read Sheet'
+                              : _isProcessingFinished
+                              ? 'Tablature Ready'
+                              : 'Reading Your Music',
+                          subtitle: _statusMessage,
+                          imagePath: widget.croppedImagePath,
+                          completedCount: _completedStageCount,
+                          totalCount: _stages.length,
+                          isFinished: _isProcessingFinished,
+                          hasFailed: _hasProcessingFailed,
+                        ),
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        'Pipeline Stages',
-                        style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
+                        'Current Steps',
+                        style: AppTextStyles.sectionTitle.copyWith(
+                          fontSize: 20,
+                        ),
                       ),
                       const SizedBox(height: 12),
 
                       /// Scrollable list of pipeline stage cards.
                       Expanded(
-                        child: ListView.separated(
-                          physics: const BouncingScrollPhysics(),
-                          itemCount: _stages.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 10),
-                          itemBuilder: (context, index) {
-                            final stage = _stages[index];
-                            return _ProcessingStageCard(
-                              stage: stage,
-                              isActive: index == _activeStageIndex &&
-                                  !_isProcessingFinished &&
-                                  !_hasProcessingFailed,
-                            );
-                          },
+                        child: TutorialService.showcase(
+                          key: _processingStepsTourKey,
+                          title: 'Processing Steps',
+                          description:
+                              'STALA moves through cleanup, detection, staff analysis, translation, and tablature generation.',
+                          child: ListView.separated(
+                            physics: const BouncingScrollPhysics(),
+                            itemCount: _stages.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, index) {
+                              final stage = _stages[index];
+                              return _ProcessingStageCard(
+                                stage: stage,
+                                isActive:
+                                    index == _activeStageIndex &&
+                                    !_isProcessingFinished &&
+                                    !_hasProcessingFailed,
+                              );
+                            },
+                          ),
                         ),
                       ),
                     ],
@@ -963,11 +1110,17 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
               /// Footer reacts to three states:
               /// running, failed, and completed.
-              _ProcessingFooter(
-                isFinished: _isProcessingFinished,
-                hasFailed: _hasProcessingFailed,
-                onRetry: _retryProcessing,
-                onContinue: _showNextStepMessage,
+              TutorialService.showcase(
+                key: _processingFooterTourKey,
+                title: 'Result Navigation',
+                description:
+                    'When processing completes, use this area to review the generated result or retry if needed.',
+                child: _ProcessingFooter(
+                  isFinished: _isProcessingFinished,
+                  hasFailed: _hasProcessingFailed,
+                  onRetry: _retryProcessing,
+                  onContinue: _showNextStepMessage,
+                ),
               ),
             ],
           ),
@@ -990,9 +1143,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
       final className =
           map['className']?.toString() ??
-              map['labelName']?.toString() ??
-              map['label']?.toString() ??
-              'unknown';
+          map['labelName']?.toString() ??
+          map['label']?.toString() ??
+          'unknown';
 
       final score = _toDouble(map['score'] ?? map['confidence']);
 
@@ -1034,8 +1187,8 @@ class _ProcessingPageState extends State<ProcessingPage> {
   }
 
   List<SymbolClassItem> _sortSymbolsTopLeftToBottomRight(
-      List<SymbolClassItem> items,
-      ) {
+    List<SymbolClassItem> items,
+  ) {
     final sorted = List<SymbolClassItem>.from(items);
 
     const double rowTolerance = 12.0;
@@ -1054,9 +1207,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
   }
 
   List<LedgerLineViewItem> _parseConfirmedLedgerLines(
-      dynamic rawLedgerLines,
-      List<StaffTranslateGroup> groups,
-      ) {
+    dynamic rawLedgerLines,
+    List<StaffTranslateGroup> groups,
+  ) {
     if (rawLedgerLines is! List) return const [];
 
     final confirmedSymbols = groups
@@ -1082,20 +1235,14 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
       final hasMatchingConfirmedNote = confirmedSymbols.any((symbol) {
         final yClose = (symbol.centerY - y).abs() <= 24.0;
-        final xClose = symbol.centerX >= x1 - 36.0 && symbol.centerX <= x2 + 36.0;
+        final xClose =
+            symbol.centerX >= x1 - 36.0 && symbol.centerX <= x2 + 36.0;
         return yClose && xClose;
       });
 
       if (!hasMatchingConfirmedNote) continue;
 
-      result.add(
-        LedgerLineViewItem(
-          staffId: staffId,
-          x1: x1,
-          x2: x2,
-          y: y,
-        ),
-      );
+      result.add(LedgerLineViewItem(staffId: staffId, x1: x1, x2: x2, y: y));
     }
 
     return result;
@@ -1104,10 +1251,14 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
 /// Top app header for the processing page.
 class _ProcessingHeader extends StatelessWidget {
+  final GlobalKey helpTourKey;
   final VoidCallback onBackTap;
+  final VoidCallback onHelpTap;
 
   const _ProcessingHeader({
+    required this.helpTourKey,
     required this.onBackTap,
+    required this.onHelpTap,
   });
 
   @override
@@ -1123,8 +1274,19 @@ class _ProcessingHeader extends StatelessWidget {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              'Processing',
+              'Reading Sheet',
               style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
+            ),
+          ),
+          TutorialService.showcase(
+            key: helpTourKey,
+            title: 'Processing Help',
+            description:
+                'Open this anytime to read what the processing screen is doing or replay the tour.',
+            targetShapeBorder: const CircleBorder(),
+            child: _HeaderCircleButton(
+              icon: Icons.help_outline_rounded,
+              onTap: onHelpTap,
             ),
           ),
         ],
@@ -1167,14 +1329,14 @@ class _ProcessingSummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isRunning = !isFinished && !hasFailed;
+
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: AppColors.backgroundSecondary,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.05),
-        ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1206,10 +1368,10 @@ class _ProcessingSummaryCard extends StatelessWidget {
               children: [
                 _StatusPill(
                   label: hasFailed
-                      ? 'Failed'
+                      ? 'Needs Retry'
                       : isFinished
-                      ? 'Completed'
-                      : 'Running',
+                      ? 'Ready'
+                      : 'Working',
                   icon: hasFailed
                       ? Icons.error_outline_rounded
                       : isFinished
@@ -1220,6 +1382,7 @@ class _ProcessingSummaryCard extends StatelessWidget {
                       : isFinished
                       ? AppColors.success
                       : AppColors.warning,
+                  animate: isRunning,
                 ),
                 const SizedBox(height: 10),
                 Text(
@@ -1235,20 +1398,22 @@ class _ProcessingSummaryCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 14),
+                if (isRunning) ...[
+                  const _RunningActivityIndicator(),
+                  const SizedBox(height: 12),
+                ],
                 ClipRRect(
                   borderRadius: BorderRadius.circular(999),
                   child: LinearProgressIndicator(
                     value: progressValue,
                     minHeight: 8,
                     backgroundColor: AppColors.border,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      _progressColor(),
-                    ),
+                    valueColor: AlwaysStoppedAnimation<Color>(_progressColor()),
                   ),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '$completedCount of $totalCount stages completed',
+                  '$completedCount of $totalCount steps complete',
                   style: AppTextStyles.caption.copyWith(
                     color: AppColors.textSecondary,
                   ),
@@ -1273,10 +1438,7 @@ class _ProcessingStageCard extends StatelessWidget {
   final ProcessingStageItem stage;
   final bool isActive;
 
-  const _ProcessingStageCard({
-    required this.stage,
-    required this.isActive,
-  });
+  const _ProcessingStageCard({required this.stage, required this.isActive});
 
   Color _statusColor() {
     switch (stage.status) {
@@ -1307,11 +1469,11 @@ class _ProcessingStageCard extends StatelessWidget {
   String _statusLabel() {
     switch (stage.status) {
       case ProcessingStageStatus.pending:
-        return 'Pending';
+        return 'Waiting';
       case ProcessingStageStatus.active:
-        return 'Active';
+        return 'Working';
       case ProcessingStageStatus.completed:
-        return 'Completed';
+        return 'Done';
       case ProcessingStageStatus.failed:
         return 'Failed';
     }
@@ -1329,17 +1491,17 @@ class _ProcessingStageCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: isActive
-              ? statusColor.withOpacity(0.55)
-              : Colors.white.withOpacity(0.04),
+              ? statusColor.withValues(alpha: 0.55)
+              : Colors.white.withValues(alpha: 0.04),
         ),
         boxShadow: isActive
             ? [
-          BoxShadow(
-            color: statusColor.withOpacity(0.10),
-            blurRadius: 14,
-            offset: const Offset(0, 6),
-          ),
-        ]
+                BoxShadow(
+                  color: statusColor.withValues(alpha: 0.10),
+                  blurRadius: 14,
+                  offset: const Offset(0, 6),
+                ),
+              ]
             : null,
       ),
       child: Row(
@@ -1352,10 +1514,7 @@ class _ProcessingStageCard extends StatelessWidget {
               color: AppColors.border,
               borderRadius: BorderRadius.circular(14),
             ),
-            child: Icon(
-              stage.icon,
-              color: statusColor,
-            ),
+            child: Icon(stage.icon, color: statusColor),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -1380,11 +1539,13 @@ class _ProcessingStageCard extends StatelessWidget {
           const SizedBox(width: 10),
           Column(
             children: [
-              Icon(
-                _statusIcon(),
-                size: 20,
-                color: statusColor,
-              ),
+              isActive
+                  ? _RotatingStatusIcon(
+                      icon: _statusIcon(),
+                      color: statusColor,
+                      size: 20,
+                    )
+                  : Icon(_statusIcon(), size: 20, color: statusColor),
               const SizedBox(height: 6),
               Text(
                 _statusLabel(),
@@ -1397,6 +1558,117 @@ class _ProcessingStageCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _RunningActivityIndicator extends StatefulWidget {
+  const _RunningActivityIndicator();
+
+  @override
+  State<_RunningActivityIndicator> createState() =>
+      _RunningActivityIndicatorState();
+}
+
+class _RunningActivityIndicatorState extends State<_RunningActivityIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat(reverse: true);
+    _pulse = CurvedAnimation(parent: _controller, curve: Curves.easeInOut);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _pulse,
+      builder: (context, child) {
+        return SizedBox(
+          height: 18,
+          child: Row(
+            children: List.generate(4, (index) {
+              final offset = (index / 4.0);
+              final value = ((_pulse.value + offset) % 1.0);
+              final height = 6.0 + (value * 12.0);
+
+              return Expanded(
+                child: Padding(
+                  padding: EdgeInsets.only(right: index == 3 ? 0 : 6),
+                  child: Align(
+                    alignment: Alignment.center,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 120),
+                      height: height,
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withValues(
+                          alpha: 0.28 + (value * 0.42),
+                        ),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _RotatingStatusIcon extends StatefulWidget {
+  final IconData icon;
+  final Color color;
+  final double size;
+
+  const _RotatingStatusIcon({
+    required this.icon,
+    required this.color,
+    this.size = 24,
+  });
+
+  @override
+  State<_RotatingStatusIcon> createState() => _RotatingStatusIconState();
+}
+
+class _RotatingStatusIconState extends State<_RotatingStatusIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RotationTransition(
+      turns: _controller,
+      child: Icon(widget.icon, color: widget.color, size: widget.size),
     );
   }
 }
@@ -1427,9 +1699,7 @@ class _ProcessingFooter extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.backgroundSecondary,
         border: Border(
-          top: BorderSide(
-            color: Colors.white.withOpacity(0.04),
-          ),
+          top: BorderSide(color: Colors.white.withValues(alpha: 0.04)),
         ),
       ),
       child: Row(
@@ -1437,24 +1707,24 @@ class _ProcessingFooter extends StatelessWidget {
           Expanded(
             child: hasFailed
                 ? _FooterActionButton(
-              icon: Icons.refresh_rounded,
-              label: 'Retry',
-              onTap: onRetry,
-              backgroundColor: AppColors.card,
-              foregroundColor: AppColors.warning,
-            )
+                    icon: Icons.refresh_rounded,
+                    label: 'Retry',
+                    onTap: onRetry,
+                    backgroundColor: AppColors.card,
+                    foregroundColor: AppColors.warning,
+                  )
                 : isFinished
                 ? _FooterActionButton(
-              icon: Icons.arrow_forward_rounded,
-              label: 'Continue',
-              onTap: onContinue,
-              backgroundColor: AppColors.accent,
-              foregroundColor: AppColors.textPrimary,
-            )
+                    icon: Icons.arrow_forward_rounded,
+                    label: 'Review Result',
+                    onTap: onContinue,
+                    backgroundColor: AppColors.accent,
+                    foregroundColor: AppColors.textPrimary,
+                  )
                 : const _FooterInfoLabel(
-              icon: Icons.hourglass_top_rounded,
-              label: 'Processing is running...',
-            ),
+                    icon: Icons.auto_awesome_rounded,
+                    label: 'Keep this screen open while STALA reads the sheet.',
+                  ),
           ),
         ],
       ),
@@ -1467,10 +1737,7 @@ class _HeaderCircleButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
 
-  const _HeaderCircleButton({
-    required this.icon,
-    required this.onTap,
-  });
+  const _HeaderCircleButton({required this.icon, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -1480,17 +1747,11 @@ class _HeaderCircleButton extends StatelessWidget {
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: const Color(0x220B162B),
-        border: Border.all(
-          color: AppColors.border,
-        ),
+        border: Border.all(color: AppColors.border),
       ),
       child: IconButton(
         onPressed: onTap,
-        icon: Icon(
-          icon,
-          size: 19,
-          color: AppColors.textSecondary,
-        ),
+        icon: Icon(icon, size: 19, color: AppColors.textSecondary),
       ),
     );
   }
@@ -1501,11 +1762,13 @@ class _StatusPill extends StatelessWidget {
   final String label;
   final IconData icon;
   final Color accentColor;
+  final bool animate;
 
   const _StatusPill({
     required this.label,
     required this.icon,
     required this.accentColor,
+    this.animate = false,
   });
 
   @override
@@ -1515,18 +1778,14 @@ class _StatusPill extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.card,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.04),
-        ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            icon,
-            size: 15,
-            color: accentColor,
-          ),
+          animate
+              ? _RotatingStatusIcon(icon: icon, color: accentColor, size: 15)
+              : Icon(icon, size: 15, color: accentColor),
           const SizedBox(width: 6),
           Text(
             label,
@@ -1573,17 +1832,11 @@ class _FooterActionButton extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                icon,
-                color: foregroundColor,
-                size: 20,
-              ),
+              Icon(icon, color: foregroundColor, size: 20),
               const SizedBox(width: 8),
               Text(
                 label,
-                style: AppTextStyles.button.copyWith(
-                  color: foregroundColor,
-                ),
+                style: AppTextStyles.button.copyWith(color: foregroundColor),
               ),
             ],
           ),
@@ -1598,10 +1851,7 @@ class _FooterInfoLabel extends StatelessWidget {
   final IconData icon;
   final String label;
 
-  const _FooterInfoLabel({
-    required this.icon,
-    required this.label,
-  });
+  const _FooterInfoLabel({required this.icon, required this.label});
 
   @override
   Widget build(BuildContext context) {
@@ -1615,17 +1865,16 @@ class _FooterInfoLabel extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            icon,
-            color: AppColors.textSecondary,
-            size: 19,
-          ),
+          Icon(icon, color: AppColors.textSecondary, size: 19),
           const SizedBox(width: 8),
-          Text(
-            label,
-            style: AppTextStyles.bodySecondary.copyWith(
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
+          Flexible(
+            child: Text(
+              label,
+              textAlign: TextAlign.center,
+              style: AppTextStyles.bodySecondary.copyWith(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
         ],

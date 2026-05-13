@@ -6,16 +6,22 @@ import 'core/theme/app_text_styles.dart';
 import 'services/generation_service.dart';
 import 'services/save_export_service.dart';
 import 'services/audio_playback_service.dart';
+import 'data/app_settings_repository.dart';
+import 'data/recent_items_repository.dart';
 import 'models/session_data.dart';
+import 'models/saved_item_data.dart';
+import 'services/tutorial_service.dart';
 
 class ResultPage extends StatefulWidget {
   final SessionData session;
   final List<GeneratedTabResult> generatedTabs;
+  final SavedItemData? sourceItem;
 
   const ResultPage({
     super.key,
     required this.session,
     required this.generatedTabs,
+    this.sourceItem,
   });
 
   @override
@@ -24,9 +30,36 @@ class ResultPage extends StatefulWidget {
 
 class _ResultPageState extends State<ResultPage> {
   final AudioPlaybackService _audioService = AudioPlaybackService();
+  final AppSettingsRepository _appSettingsRepository =
+      const AppSettingsRepository();
+  late final TextEditingController _titleController;
+  late SessionData _session;
+  late String _persistedTitle;
+  SavedItemData? _sourceItem;
+  final GlobalKey _resultHelpTourKey = GlobalKey();
+  final GlobalKey _resultSaveTourKey = GlobalKey();
+  final GlobalKey _resultModeTourKey = GlobalKey();
+  final GlobalKey _resultTabTourKey = GlobalKey();
+  final GlobalKey _resultPlaybackTourKey = GlobalKey();
 
   bool _isMuted = false;
+  bool _isSustainEnabled = false;
+  double _playbackSpeed = 1.0;
   List<int> _activeMidiNotes = [];
+  final Map<int, int> _noteSustainGeneration = {};
+  final List<Timer> _sustainTimers = [];
+
+  static const List<double> _playbackSpeedOptions = [
+    0.50,
+    0.75,
+    1.00,
+    1.25,
+    1.50,
+    1.75,
+    2.00,
+  ];
+
+  static const Duration _sustainTailDuration = Duration(seconds: 4);
 
   int _toMidiNote({required int stringNumber, required int fret}) {
     const openStringMidi = {
@@ -51,7 +84,8 @@ class _ResultPageState extends State<ResultPage> {
   bool _isPlaying = false;
   Timer? _timer;
   Timer? _autoSaveStatusTimer;
-  bool _didSave = false;
+  bool _isSavingTitle = false;
+  bool _isExporting = false;
   bool _showAutoSaveStatus = false;
 
   GeneratedTabResult get _currentTab =>
@@ -63,9 +97,15 @@ class _ResultPageState extends State<ResultPage> {
   @override
   void initState() {
     super.initState();
+    _session = widget.session.copyWith(
+      projectName: _initialProjectName(widget.session),
+    );
+    _persistedTitle = widget.session.projectName.trim();
+    _sourceItem = widget.sourceItem;
+    _titleController = TextEditingController(text: _session.projectName);
 
     final hasAutoSaveStatus =
-        widget.session.autoSavedAt != null || widget.session.autoSaveFailed;
+        _session.autoSavedAt != null || _session.autoSaveFailed;
 
     if (hasAutoSaveStatus) {
       _showAutoSaveStatus = true;
@@ -77,14 +117,30 @@ class _ResultPageState extends State<ResultPage> {
         });
       });
     }
+
+    TutorialService.autoStartTour(
+      context,
+      pageKey: TutorialService.resultPageKey,
+      keys: _resultTourKeys,
+    );
   }
+
+  List<GlobalKey> get _resultTourKeys => [
+    _resultTabTourKey,
+    _resultPlaybackTourKey,
+    _resultModeTourKey,
+    _resultSaveTourKey,
+    _resultHelpTourKey,
+  ];
 
   @override
   void dispose() {
     _timer?.cancel();
+    _cancelSustainTimers();
     _autoSaveStatusTimer?.cancel();
     _audioService.stopAll();
     _tabScrollController.dispose();
+    _titleController.dispose();
     super.dispose();
   }
 
@@ -121,14 +177,7 @@ class _ResultPageState extends State<ResultPage> {
     // Play tapped note/chord once, unless muted.
     await _playCurrentColumnAudio();
 
-    await Future.delayed(
-      Duration(
-        milliseconds: (_currentColumn.durationSeconds * 1000).round().clamp(
-          250,
-          900,
-        ),
-      ),
-    );
+    await Future.delayed(_previewDurationForColumn(_currentColumn));
 
     await _stopActiveAudio();
   }
@@ -142,7 +191,8 @@ class _ResultPageState extends State<ResultPage> {
   }
 
   Future<void> _togglePlay() async {
-    print('Play pressed');
+    if (_currentTab.columns.isEmpty) return;
+
     if (_isPlaying) {
       _timer?.cancel();
       await _stopActiveAudio();
@@ -156,7 +206,19 @@ class _ResultPageState extends State<ResultPage> {
       return;
     }
 
-    setState(() => _isPlaying = true);
+    final shouldRestart =
+        _currentColumnIndex >= _currentTab.columns.length - 1;
+
+    setState(() {
+      if (shouldRestart) {
+        _currentColumnIndex = 0;
+      }
+      _isPlaying = true;
+    });
+
+    if (shouldRestart) {
+      _scrollToCurrent();
+    }
 
     await _playCurrentColumnAudio();
     _scheduleNext();
@@ -165,14 +227,14 @@ class _ResultPageState extends State<ResultPage> {
   void _scheduleNext() {
     _timer?.cancel();
 
-    final duration = Duration(
-      milliseconds: (_currentColumn.durationSeconds * 1000).round(),
-    );
+    final duration = _durationForColumn(_currentColumn);
 
     _timer = Timer(duration, () async {
       if (!mounted || !_isPlaying) return;
 
-      await _stopActiveAudio();
+      if (!_isSustainEnabled) {
+        await _stopActiveAudio();
+      }
 
       if (_currentColumnIndex >= _currentTab.columns.length - 1) {
         _timer?.cancel();
@@ -197,15 +259,27 @@ class _ResultPageState extends State<ResultPage> {
     });
   }
 
+  Duration _durationForColumn(GeneratedTabColumn column) {
+    final milliseconds = ((column.durationSeconds * 1000) / _playbackSpeed)
+        .round();
+    return Duration(milliseconds: milliseconds.clamp(120, 6000));
+  }
+
+  Duration _previewDurationForColumn(GeneratedTabColumn column) {
+    final milliseconds = _durationForColumn(
+      column,
+    ).inMilliseconds.clamp(160, 900);
+    return Duration(milliseconds: milliseconds);
+  }
+
   void _scrollToCurrent() {
     if (!_tabScrollController.hasClients) return;
+    if (_currentTab.columns.isEmpty) return;
 
     final viewportWidth = _tabScrollController.position.viewportDimension;
+    final column = _currentTab.columns[_currentColumnIndex];
 
-    final target =
-        (_currentColumnIndex * _currentTab.columnWidth) -
-        (viewportWidth / 2) +
-        (_currentTab.columnWidth / 2);
+    final target = column.x - (viewportWidth / 2) + (column.width / 2);
 
     final safeTarget = target.clamp(
       0.0,
@@ -219,14 +293,134 @@ class _ResultPageState extends State<ResultPage> {
     );
   }
 
-  bool get _shouldRefreshRecent {
-    return _didSave || widget.session.autoSavedAt != null;
+  Future<void> _exitResultPage() async {
+    _timer?.cancel();
+    await _stopActiveAudio();
+    final didCommitTitle = await _commitTitleChange();
+    if (!didCommitTitle) return;
+    if (!mounted) return;
+    Navigator.pop(context, true);
   }
 
-  void _exitResultPage() {
-    _timer?.cancel();
-    _stopActiveAudio();
-    Navigator.pop(context, _shouldRefreshRecent);
+  String _initialProjectName(SessionData session) {
+    final rawName = session.projectName.trim();
+    if (rawName.isNotEmpty && rawName != 'Untitled' && rawName != 'Sample 1') {
+      return rawName;
+    }
+
+    return _formatDefaultFileName(session.processingTimestamp);
+  }
+
+  String _formatDefaultFileName(DateTime value) {
+    String two(int number) => number.toString().padLeft(2, '0');
+    return '${two(value.month)}/${two(value.day)}/${value.year}_${two(value.hour)}:${two(value.minute)}:${two(value.second)}';
+  }
+
+  String get _currentExportTitle {
+    final title = _titleController.text.trim();
+    return title.isEmpty ? _session.projectName : title;
+  }
+
+  Widget _buildTitleField() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: TextField(
+        controller: _titleController,
+        style: AppTextStyles.body,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _commitTitleChange(),
+        decoration: InputDecoration(
+          filled: true,
+          fillColor: AppColors.card,
+          labelText: 'Filename',
+          labelStyle: AppTextStyles.caption.copyWith(
+            color: AppColors.textSecondary,
+          ),
+          prefixIcon: const Icon(
+            Icons.drive_file_rename_outline_rounded,
+            color: AppColors.accent,
+          ),
+          suffixIcon: IconButton(
+            tooltip: 'Apply filename',
+            onPressed: _isSavingTitle ? null : _commitTitleChange,
+            icon: _isSavingTitle
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.check_rounded),
+            color: AppColors.accent,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: AppColors.border),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: AppColors.accent),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<bool> _commitTitleChange() async {
+    final nextTitle = _currentExportTitle.trim();
+    if (nextTitle.isEmpty || nextTitle == _persistedTitle) return true;
+
+    setState(() {
+      _isSavingTitle = true;
+      _session = _session.copyWith(projectName: nextTitle);
+    });
+
+    try {
+      if (_sourceItem != null) {
+        _sourceItem = await RecentItemsRepository.updateItemTitle(
+          _sourceItem!,
+          nextTitle,
+        );
+      } else if (_session.autoSavedFilePath != null) {
+        final updatedPath = await RecentItemsRepository.updateFileTitle(
+          filePath: _session.autoSavedFilePath!,
+          newTitle: nextTitle,
+        );
+        if (updatedPath != null) {
+          _session = _session.copyWith(autoSavedFilePath: updatedPath);
+        }
+      }
+
+      _persistedTitle = nextTitle;
+      return true;
+    } on DuplicateFileNameException catch (error) {
+      if (!mounted) return false;
+
+      setState(() {
+        _session = _session.copyWith(projectName: _persistedTitle);
+        _titleController.text = _persistedTitle;
+        _titleController.selection = TextSelection.collapsed(
+          offset: _titleController.text.length,
+        );
+      });
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+      return false;
+    } catch (error) {
+      if (!mounted) return false;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update filename: $error')),
+      );
+      return false;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSavingTitle = false;
+        });
+      }
+    }
   }
 
   @override
@@ -258,35 +452,91 @@ class _ResultPageState extends State<ResultPage> {
           style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
         ),
         actions: [
-          IconButton(
-            tooltip: 'Save as PNG',
-            icon: const Icon(Icons.image_outlined),
-            color: AppColors.textPrimary,
-            onPressed: _saveCurrentTabAsPng,
+          TutorialService.showcase(
+            key: _resultHelpTourKey,
+            title: 'Result Help',
+            description:
+                'Open this anytime to read result-page help or replay the tour.',
+            targetShapeBorder: const CircleBorder(),
+            child: IconButton(
+              tooltip: 'Result help',
+              icon: const Icon(Icons.help_outline_rounded),
+              color: AppColors.textPrimary,
+              onPressed: () {
+                TutorialService.showHowToUse(
+                  context,
+                  page: TutorialPage.resultPage,
+                  onStartTour: () =>
+                      TutorialService.showResultGuide(context, _resultTourKeys),
+                );
+              },
+            ),
+          ),
+          TutorialService.showcase(
+            key: _resultSaveTourKey,
+            title: 'Save and Export',
+            description:
+                'Export the current tablature as PNG or PDF from these buttons.',
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: 'Save as PNG',
+                  icon: const Icon(Icons.image_outlined),
+                  color: AppColors.textPrimary,
+                  onPressed: _isExporting ? null : _saveCurrentTabAsPng,
+                ),
+                IconButton(
+                  tooltip: 'Save as PDF',
+                  icon: const Icon(Icons.picture_as_pdf_outlined),
+                  color: AppColors.textPrimary,
+                  onPressed: _isExporting ? null : _saveCurrentTabAsPdf,
+                ),
+              ],
+            ),
           ),
         ],
       ),
       body: SafeArea(
         child: Column(
           children: [
-            _buildTopDropdown(),
+            _buildTitleField(),
+            TutorialService.showcase(
+              key: _resultModeTourKey,
+              title: 'Tablature Mode',
+              description:
+                  'Switch between available tablature generation modes.',
+              child: _buildTopDropdown(),
+            ),
             _buildAutoSaveStatus(),
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  _ResultCard(
-                    title: 'Tablature',
-                    subtitle: 'Tap a fret number to jump to that event.',
-                    child: _TablatureViewer(
-                      tab: _currentTab,
-                      currentColumnIndex: _currentColumnIndex,
-                      scrollController: _tabScrollController,
-                      onColumnTap: _jumpToColumn,
+                  TutorialService.showcase(
+                    key: _resultTabTourKey,
+                    title: 'Tablature Display',
+                    description:
+                        'This panel shows the generated guitar tablature. Tap a fret number to jump to that event.',
+                    child: _ResultCard(
+                      title: 'Tablature',
+                      subtitle: 'Tap a fret number to jump to that event.',
+                      child: _TablatureViewer(
+                        tab: _currentTab,
+                        currentColumnIndex: _currentColumnIndex,
+                        scrollController: _tabScrollController,
+                        onColumnTap: _jumpToColumn,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 14),
-                  _buildControlCard(),
+                  TutorialService.showcase(
+                    key: _resultPlaybackTourKey,
+                    title: 'Playback Controls',
+                    description:
+                        'Play, pause, step through events, and adjust playback settings here.',
+                    child: _buildControlCard(),
+                  ),
                   const SizedBox(height: 14),
                   _ResultCard(
                     title: 'Fretboard Map',
@@ -311,31 +561,22 @@ class _ResultPageState extends State<ResultPage> {
       child: Row(
         children: [
           Expanded(
-            child: Container(
-              height: 46,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: AppColors.accent,
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<int>(
-                  value: _selectedModeIndex,
-                  dropdownColor: AppColors.card,
-                  iconEnabledColor: AppColors.textPrimary,
-                  style: AppTextStyles.button,
-                  items: List.generate(widget.generatedTabs.length, (index) {
-                    final tab = widget.generatedTabs[index];
-                    return DropdownMenuItem(
-                      value: index,
-                      child: Text(_formatMode(tab.mode.name)),
-                    );
-                  }),
-                  onChanged: (value) {
-                    if (value != null) _changeMode(value);
-                  },
-                ),
-              ),
+            child: _AnchoredOptionButton<int>(
+              value: _selectedModeIndex,
+              options: List.generate(widget.generatedTabs.length, (index) {
+                return _OptionItem<int>(
+                  value: index,
+                  label: _formatMode(widget.generatedTabs[index].mode.name),
+                );
+              }),
+              onChanged: (value) {
+                if (value != null) {
+                  _changeMode(value);
+                }
+              },
+              backgroundColor: AppColors.accent,
+              foregroundColor: AppColors.textPrimary,
+              minHeight: 46,
             ),
           ),
         ],
@@ -346,7 +587,7 @@ class _ResultPageState extends State<ResultPage> {
   Widget _buildAutoSaveStatus() {
     if (!_showAutoSaveStatus) return const SizedBox.shrink();
 
-    final session = widget.session;
+    final session = _session;
 
     if (session.autoSavedAt == null && !session.autoSaveFailed) {
       return const SizedBox.shrink();
@@ -391,7 +632,17 @@ class _ResultPageState extends State<ResultPage> {
       ),
       child: Column(
         children: [
+          LinearProgressIndicator(
+            value: _currentTab.columns.isEmpty
+                ? 0
+                : (_currentColumnIndex + 1) / _currentTab.columns.length,
+            minHeight: 8,
+            backgroundColor: AppColors.border,
+            valueColor: const AlwaysStoppedAnimation<Color>(AppColors.success),
+          ),
+          const SizedBox(height: 12),
           Row(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               _RoundControlButton(
                 icon: Icons.skip_previous_rounded,
@@ -431,51 +682,51 @@ class _ResultPageState extends State<ResultPage> {
                   }
                 },
               ),
-
-              const SizedBox(width: 14),
-              Expanded(
-                child: LinearProgressIndicator(
-                  value: _currentTab.columns.isEmpty
-                      ? 0
-                      : (_currentColumnIndex + 1) / _currentTab.columns.length,
-                  minHeight: 8,
-                  backgroundColor: AppColors.border,
-                  valueColor: const AlwaysStoppedAnimation<Color>(
-                    AppColors.success,
-                  ),
-                ),
-              ),
             ],
           ),
           const SizedBox(height: 14),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  'Event ${_currentColumnIndex + 1} of ${_currentTab.columns.length}',
-                  style: AppTextStyles.caption.copyWith(
-                    color: AppColors.textSecondary,
+                Expanded(
+                  child: _EventDetailPanel(
+                    eventLabel:
+                        'Event ${_currentColumnIndex + 1} of ${_currentTab.columns.length}',
+                    title: detail.displayTitle,
+                    subtitle: detail.displaySubtitle,
                   ),
                 ),
-                const SizedBox(height: 6),
-                Text(
-                  detail.displayTitle,
-                  style: AppTextStyles.body.copyWith(
-                    fontWeight: FontWeight.w700,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _PlaybackSettingsPanel(
+                    speed: _playbackSpeed,
+                    speedOptions: _playbackSpeedOptions,
+                    sustainEnabled: _isSustainEnabled,
+                    onSpeedChanged: (value) {
+                      if (value == null) return;
+
+                      setState(() {
+                        _playbackSpeed = value;
+                      });
+
+                      if (_isPlaying) {
+                        _scheduleNext();
+                      }
+                    },
+                    onSustainChanged: (value) {
+                      setState(() {
+                        _isSustainEnabled = value;
+                      });
+
+                      if (!value && _isPlaying) {
+                        _stopActiveAudio().then((_) {
+                          if (!mounted || !_isPlaying) return;
+                          _playCurrentColumnAudio();
+                        });
+                      }
+                    },
                   ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  detail.displaySubtitle,
-                  style: AppTextStyles.bodySecondary.copyWith(fontSize: 12.5),
                 ),
               ],
             ),
@@ -528,10 +779,21 @@ class _ResultPageState extends State<ResultPage> {
   }
 
   Future<void> _saveCurrentTabAsPng() async {
+    if (_isExporting) return;
+
+    setState(() {
+      _isExporting = true;
+    });
+
     try {
+      final didCommitTitle = await _commitTitleChange();
+      if (!didCommitTitle) return;
+      final orientation = await _getExportOrientation();
+
       await const SaveExportService().saveTabPngPages(
-        title: _currentTab.title,
+        title: _currentExportTitle,
         tab: _currentTab,
+        orientation: orientation,
       );
 
       if (!mounted) return;
@@ -539,17 +801,64 @@ class _ResultPageState extends State<ResultPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Saved PNG page(s) successfully.')),
       );
-
-      setState(() {
-        _didSave = true;
-      });
     } catch (error) {
       if (!mounted) return;
 
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Failed to save PNG: $error')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExporting = false;
+        });
+      }
     }
+  }
+
+  Future<void> _saveCurrentTabAsPdf() async {
+    if (_isExporting) return;
+
+    setState(() {
+      _isExporting = true;
+    });
+
+    try {
+      final didCommitTitle = await _commitTitleChange();
+      if (!didCommitTitle) return;
+      final orientation = await _getExportOrientation();
+
+      await const SaveExportService().saveTabPdf(
+        title: _currentExportTitle,
+        tab: _currentTab,
+        orientation: orientation,
+      );
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Saved PDF successfully.')));
+    } catch (error) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to save PDF: $error')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExporting = false;
+        });
+      }
+    }
+  }
+
+  Future<TablatureExportOrientation> _getExportOrientation() async {
+    final value = await _appSettingsRepository.getTablatureExportOrientation();
+    return value == 'landscape'
+        ? TablatureExportOrientation.landscape
+        : TablatureExportOrientation.portrait;
   }
 
   String _formatMode(String raw) {
@@ -568,12 +877,8 @@ class _ResultPageState extends State<ResultPage> {
   /// This is the audio helper block
   Future<void> _playCurrentColumnAudio() async {
     if (_isMuted) {
-      print('AUDIO: muted, skipping column $_currentColumnIndex');
       return;
     }
-
-    print('--- PLAY COLUMN ---');
-    print('Column Index: $_currentColumnIndex');
 
     final notes = _currentColumn.numbers.map((number) {
       final midi = _toMidiNote(
@@ -581,33 +886,351 @@ class _ResultPageState extends State<ResultPage> {
         fret: number.fret,
       );
 
-      print('String ${number.stringNumber}, Fret ${number.fret} → MIDI $midi');
-
       return midi;
     }).toList();
 
-    print('Total notes: ${notes.length}');
-    print('--------------------');
-
     if (notes.isEmpty) {
-      print('No notes to play');
       return;
     }
 
-    _activeMidiNotes = notes;
+    _activeMidiNotes = _isSustainEnabled
+        ? {..._activeMidiNotes, ...notes}.toList()
+        : notes;
 
     await _audioService.playChord(notes);
+
+    if (_isSustainEnabled) {
+      _scheduleSustainStop(notes, _durationForColumn(_currentColumn));
+    }
   }
 
   Future<void> _stopActiveAudio() async {
+    _cancelSustainTimers();
     final notes = List<int>.from(_activeMidiNotes);
     _activeMidiNotes = [];
+    _noteSustainGeneration.clear();
 
     if (notes.isNotEmpty) {
       await _audioService.stopChord(notes);
     }
 
     await _audioService.stopAll();
+  }
+
+  void _scheduleSustainStop(List<int> notes, Duration eventDuration) {
+    final delay = eventDuration + _sustainTailDuration;
+
+    for (final note in notes) {
+      final generation = (_noteSustainGeneration[note] ?? 0) + 1;
+      _noteSustainGeneration[note] = generation;
+
+      final timer = Timer(delay, () async {
+        if (_noteSustainGeneration[note] != generation) return;
+
+        _noteSustainGeneration.remove(note);
+        _activeMidiNotes.remove(note);
+        await _audioService.stopNote(note);
+      });
+
+      _sustainTimers.add(timer);
+    }
+  }
+
+  void _cancelSustainTimers() {
+    for (final timer in _sustainTimers) {
+      timer.cancel();
+    }
+    _sustainTimers.clear();
+  }
+}
+
+class _EventDetailPanel extends StatelessWidget {
+  final String eventLabel;
+  final String title;
+  final String subtitle;
+
+  const _EventDetailPanel({
+    required this.eventLabel,
+    required this.title,
+    required this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minHeight: 128),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            eventLabel,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: AppTextStyles.body.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            subtitle,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: AppTextStyles.bodySecondary.copyWith(fontSize: 12.5),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OptionItem<T> {
+  final T value;
+  final String label;
+
+  const _OptionItem({required this.value, required this.label});
+}
+
+class _AnchoredOptionButton<T> extends StatelessWidget {
+  final T value;
+  final List<_OptionItem<T>> options;
+  final ValueChanged<T?> onChanged;
+  final Color backgroundColor;
+  final Color foregroundColor;
+  final double minHeight;
+  final bool dense;
+
+  const _AnchoredOptionButton({
+    required this.value,
+    required this.options,
+    required this.onChanged,
+    this.backgroundColor = AppColors.card,
+    this.foregroundColor = AppColors.textPrimary,
+    this.minHeight = 42,
+    this.dense = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (options.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final selected = options.firstWhere(
+      (option) => option.value == value,
+      orElse: () => options.first,
+    );
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(dense ? 10 : 14),
+        onTap: options.isEmpty ? null : () => _showMenu(context),
+        child: Ink(
+          height: minHeight,
+          padding: EdgeInsets.symmetric(horizontal: dense ? 10 : 12),
+          decoration: BoxDecoration(
+            color: backgroundColor,
+            borderRadius: BorderRadius.circular(dense ? 10 : 14),
+            border: Border.all(
+              color: backgroundColor == AppColors.accent
+                  ? AppColors.accent
+                  : AppColors.border,
+            ),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  selected.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTextStyles.body.copyWith(
+                    color: foregroundColor,
+                    fontSize: dense ? 13 : 14,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                Icons.keyboard_arrow_down_rounded,
+                color: foregroundColor,
+                size: dense ? 19 : 22,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showMenu(BuildContext context) async {
+    final box = context.findRenderObject() as RenderBox?;
+    final overlay = Navigator.of(context).overlay?.context.findRenderObject()
+        as RenderBox?;
+
+    if (box == null || overlay == null) return;
+
+    final topLeft = box.localToGlobal(Offset.zero, ancestor: overlay);
+    final bottomRight = box.localToGlobal(
+      box.size.bottomRight(Offset.zero),
+      ancestor: overlay,
+    );
+
+    final selectedValue = await showMenu<T>(
+      context: context,
+      color: AppColors.card,
+      position: RelativeRect.fromLTRB(
+        topLeft.dx,
+        bottomRight.dy + 4,
+        overlay.size.width - bottomRight.dx,
+        overlay.size.height - bottomRight.dy,
+      ),
+      constraints: BoxConstraints(minWidth: box.size.width),
+      items: options.map((option) {
+        final isSelected = option.value == value;
+
+        return PopupMenuItem<T>(
+          value: option.value,
+          padding: EdgeInsets.zero,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+            color: isSelected
+                ? AppColors.accent.withValues(alpha: 0.18)
+                : Colors.transparent,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    option.label,
+                    style: AppTextStyles.body.copyWith(
+                      color: isSelected
+                          ? AppColors.accent
+                          : AppColors.textPrimary,
+                      fontWeight: isSelected
+                          ? FontWeight.w800
+                          : FontWeight.w600,
+                    ),
+                  ),
+                ),
+                if (isSelected)
+                  const Icon(
+                    Icons.check_rounded,
+                    size: 18,
+                    color: AppColors.accent,
+                  ),
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+
+    if (selectedValue != null && selectedValue != value) {
+      onChanged(selectedValue);
+    }
+  }
+}
+
+class _PlaybackSettingsPanel extends StatelessWidget {
+  final double speed;
+  final List<double> speedOptions;
+  final bool sustainEnabled;
+  final ValueChanged<double?> onSpeedChanged;
+  final ValueChanged<bool> onSustainChanged;
+
+  const _PlaybackSettingsPanel({
+    required this.speed,
+    required this.speedOptions,
+    required this.sustainEnabled,
+    required this.onSpeedChanged,
+    required this.onSustainChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minHeight: 128),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.speed_rounded,
+                size: 17,
+                color: AppColors.accent,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Speed',
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.textSecondary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _AnchoredOptionButton<double>(
+            value: speed,
+            options: speedOptions.map((option) {
+              return _OptionItem<double>(
+                value: option,
+                label: '${option.toStringAsFixed(2)}x',
+              );
+            }).toList(),
+            onChanged: onSpeedChanged,
+            minHeight: 36,
+            dense: true,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Sustain notes',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textSecondary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Transform.scale(
+                scale: 0.78,
+                child: Switch(
+                  value: sustainEnabled,
+                  activeThumbColor: AppColors.accent,
+                  onChanged: onSustainChanged,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -683,8 +1306,10 @@ class _TablatureViewer extends StatelessWidget {
           onTapUp: (details) {
             const leftLabelWidth = 36.0;
             final dx = details.localPosition.dx - leftLabelWidth;
-            final index = (dx / tab.columnWidth).floor();
-            onColumnTap(index);
+            final index = _columnIndexAtDx(dx);
+            if (index != null) {
+              onColumnTap(index);
+            }
           },
           child: CustomPaint(
             size: Size(tab.totalWidth + 72, 220),
@@ -696,6 +1321,22 @@ class _TablatureViewer extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  int? _columnIndexAtDx(double dx) {
+    if (tab.columns.isEmpty || dx < 0) return null;
+
+    for (int i = 0; i < tab.columns.length; i++) {
+      final column = tab.columns[i];
+      final left = column.x;
+      final right = column.x + column.width;
+
+      if (dx >= left && dx <= right) {
+        return i;
+      }
+    }
+
+    return null;
   }
 }
 
@@ -719,15 +1360,16 @@ class _TabPainter extends CustomPainter {
       ..strokeWidth = 2.5;
 
     final currentColumnPaint = Paint()
-      ..color = AppColors.success.withOpacity(0.08)
+      ..color = AppColors.success.withValues(alpha: 0.08)
       ..style = PaintingStyle.fill;
 
     final textPainter = TextPainter(textDirection: TextDirection.ltr);
 
-    final currentX = leftLabelWidth + (currentColumnIndex * tab.columnWidth);
+    final currentColumn = tab.columns[currentColumnIndex];
+    final currentX = leftLabelWidth + currentColumn.x;
 
     canvas.drawRect(
-      Rect.fromLTWH(currentX, 12, tab.columnWidth, 190),
+      Rect.fromLTWH(currentX, 12, currentColumn.width, 190),
       currentColumnPaint,
     );
 
@@ -777,8 +1419,7 @@ class _TabPainter extends CustomPainter {
         );
 
         final bgPaint = Paint()
-          ..color =
-              column.eventIndex == tab.columns[currentColumnIndex].eventIndex
+          ..color = column.eventIndex == currentColumn.eventIndex
               ? AppColors.accent
               : AppColors.surface;
 
@@ -791,9 +1432,7 @@ class _TabPainter extends CustomPainter {
     }
 
     final progressX =
-        leftLabelWidth +
-        (currentColumnIndex * tab.columnWidth) +
-        (tab.columnWidth / 2);
+        leftLabelWidth + currentColumn.x + (currentColumn.width / 2);
 
     canvas.drawLine(
       Offset(progressX, 12),

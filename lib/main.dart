@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:showcaseview/showcaseview.dart';
 import 'pages/splash_page.dart';
 import 'app_restart_widget.dart';
 
@@ -19,6 +20,12 @@ class STALAApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'STALA',
       home: const SplashPage(),
+      builder: (context, child) {
+        return ShowCaseWidget(
+          builder: (_) => child ?? const SizedBox.shrink(),
+          enableAutoScroll: true,
+        );
+      },
     );
   }
 }
