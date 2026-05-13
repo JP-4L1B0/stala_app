@@ -1,0 +1,3 @@
+D:/MyApps/AndroidStudio_Folder/stala_app/opencv/.cxx/RelWithDebInfo/6v693w4e/x86/CMakeFiles/opencv_jni_shared.dir
+D:/MyApps/AndroidStudio_Folder/stala_app/opencv/.cxx/RelWithDebInfo/6v693w4e/x86/CMakeFiles/edit_cache.dir
+D:/MyApps/AndroidStudio_Folder/stala_app/opencv/.cxx/RelWithDebInfo/6v693w4e/x86/CMakeFiles/rebuild_cache.dir
