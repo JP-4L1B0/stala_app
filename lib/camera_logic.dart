@@ -187,13 +187,14 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
   final GlobalKey _cropFrameTourKey = GlobalKey();
   final GlobalKey _cropHandleTourKey = GlobalKey();
   final GlobalKey _cropWarningTourKey = GlobalKey();
+  final GlobalKey _cropResetTourKey = GlobalKey();
   final GlobalKey _cropContinueTourKey = GlobalKey();
   final GlobalKey _cropHelpTourKey = GlobalKey();
 
   List<GlobalKey> get _cropTourKeys => [
     _cropFrameTourKey,
     _cropHandleTourKey,
-    _cropWarningTourKey,
+    _cropResetTourKey,
     _cropContinueTourKey,
     _cropHelpTourKey,
   ];
@@ -614,13 +615,13 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
           confidence: confidence,
           reason:
               reason ??
-              'Can’t confidently detect a document. Kindly adjust the box.',
+              'Document bounds could not be detected confidently. Kindly adjust the box.',
         );
       }
     } catch (_) {}
 
     return DocumentDetectionResult.failure(
-      reason: 'Automatic crop is unavailable.',
+      reason: 'Document detection is unavailable. Kindly adjust the box.',
     );
   }
 
@@ -1195,6 +1196,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                 context,
                 pageKey: TutorialService.cropPageKey,
                 keys: _cropTourKeys,
+                page: TutorialPage.cropPage,
               );
             }
 
@@ -1223,7 +1225,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                 !adjustmentBlocked;
 
             final String? cropValidationMessage = !shapeIsValid
-                ? 'Crop is not allowed. Please fix the document bounds or retry Auto Crop.'
+                ? 'Crop is not allowed. Please fix the document bounds or tap Reset.'
                 : (adjustmentBlocked
                       ? (adjustmentMessage ??
                             'Adjustment not allowed. Keep the crop as a quadrilateral.')
@@ -1270,9 +1272,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                           const SizedBox(width: 8),
                           TutorialService.showcase(
                             key: _cropHelpTourKey,
-                            title: 'Crop Help',
+                            title: 'Need Crop Help?',
                             description:
-                                'Open this guide again if you need crop tips.',
+                                'Tap this if you want to read the crop tips again or replay this tour.',
                             targetShapeBorder: const CircleBorder(),
                             child: IconButton(
                               tooltip: 'Crop help',
@@ -1354,9 +1356,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
 
                                     return TutorialService.showcase(
                                       key: _cropFrameTourKey,
-                                      title: 'Crop Frame',
+                                      title: 'Line Up the Sheet',
                                       description:
-                                          'Keep the full sheet music page inside this frame before continuing.',
+                                          'Keep the full sheet music page inside this area before you continue.',
                                       child: Stack(
                                         fit: StackFit.expand,
                                         children: [
@@ -1374,9 +1376,9 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                           ),
                                           TutorialService.showcase(
                                             key: _cropHandleTourKey,
-                                            title: 'Corner Handles',
+                                            title: 'Adjust the Corners',
                                             description:
-                                                'Drag the corner and edge handles to align the crop with the sheet boundaries.',
+                                                'Drag these handles until the frame follows the edges of the page.',
                                             targetShapeBorder:
                                                 const CircleBorder(),
                                             child: _DraggableCornerHandle(
@@ -1647,7 +1649,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                               key: _cropWarningTourKey,
                                               title: 'Crop Status',
                                               description:
-                                                  'Warnings appear here when the selected crop may not be reliable.',
+                                                  'If STALA sees a possible crop problem, it will tell you here.',
                                               child: _FloatingValidationMessage(
                                                 message: cropValidationMessage,
                                                 state: detectionState,
@@ -1700,49 +1702,36 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                               ),
                               const SizedBox(width: 10),
                               Expanded(
-                                child: _PreviewFooterAction(
-                                  icon: Icons.crop_free_rounded,
-                                  label: 'Auto Crop',
-                                  color: AppColors.warning,
-                                  onTap: () async {
-                                    setModalState(() {
-                                      isProcessing = true;
-                                    });
-
-                                    final detection =
-                                        await _detectDocumentBounds(imagePath);
-
-                                    if (!mounted) return;
-
-                                    setModalState(() {
-                                      isProcessing = false;
-                                      hasDetectedDocument =
-                                          detection.bounds != null;
-                                      hasManualCandidate =
-                                          detection.bounds == null;
-                                      detectionMessage = detection.reason;
-                                      detectionState =
-                                          detection.validationState;
-                                      needsManualAdjustment =
-                                          detection.needsManualAdjustment;
-
-                                      if (detection.bounds != null) {
-                                        currentBounds = detection.bounds!;
+                                child: TutorialService.showcase(
+                                  key: _cropResetTourKey,
+                                  title: 'Reset Crop',
+                                  description:
+                                      'Tap Reset to return the crop frame to its starting position.',
+                                  child: _PreviewFooterAction(
+                                    icon: Icons.restart_alt_rounded,
+                                    label: 'Reset',
+                                    color: AppColors.warning,
+                                    onTap: () {
+                                      _cropValidationDebounce?.cancel();
+                                      setModalState(() {
+                                        currentBounds = initialBounds;
+                                        hasDetectedDocument =
+                                            detectionResult.bounds != null;
+                                        hasManualCandidate =
+                                            detectionResult.bounds == null;
+                                        detectionMessage =
+                                            detectionResult.reason;
+                                        detectionState =
+                                            detectionResult.validationState;
+                                        needsManualAdjustment = detectionResult
+                                            .needsManualAdjustment;
                                         adjustmentBlocked = false;
                                         adjustmentMessage = null;
-                                      }
-                                    });
+                                      });
 
-                                    if (detection.bounds != null) {
-                                      _showSnackBar('Auto-crop updated.');
-                                      return;
-                                    }
-
-                                    _showSnackBar(
-                                      detection.reason ??
-                                          'Can’t confidently detect a document. Kindly adjust the box.',
-                                    );
-                                  },
+                                      _showSnackBar('Crop reset.');
+                                    },
+                                  ),
                                 ),
                               ),
                               const SizedBox(width: 10),
@@ -1751,7 +1740,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                   key: _cropContinueTourKey,
                                   title: 'Continue',
                                   description:
-                                      'Confirm the crop and start STALA processing when the sheet is aligned.',
+                                      'Tap Continue when the sheet is lined up and ready to read.',
                                   child: _PreviewFooterAction(
                                     icon: Icons.check_circle_rounded,
                                     label: 'Continue',
@@ -1762,7 +1751,7 @@ class _CameraLogicPageState extends State<CameraLogicPage> {
                                     onTap: () async {
                                       if (!_isValidBounds(currentBounds)) {
                                         _showSnackBar(
-                                          'Crop is not allowed. Please fix the document bounds or retry Auto Crop.',
+                                          'Crop is not allowed. Please fix the document bounds or tap Reset.',
                                         );
                                         return;
                                       }

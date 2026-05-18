@@ -80,6 +80,15 @@ class ProcessingStageItem {
   }
 }
 
+class SheetInterpretationException implements Exception {
+  final String message;
+
+  const SheetInterpretationException(this.message);
+
+  @override
+  String toString() => message;
+}
+
 class _ProcessingPageState extends State<ProcessingPage> {
   static const MethodChannel _visionPipelineChannel = MethodChannel(
     'stala/python_bridge',
@@ -140,6 +149,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
       context,
       pageKey: TutorialService.processingPageKey,
       keys: _processingTourKeys,
+      page: TutorialPage.processingPage,
     );
   }
 
@@ -315,9 +325,23 @@ class _ProcessingPageState extends State<ProcessingPage> {
             staffGroups: translateGroups,
           );
 
+          final interpretedNoteCount = groupedNotes.values.fold<int>(
+            0,
+            (sum, groups) => sum + groups.fold<int>(
+              0,
+              (inner, group) => inner + group.length,
+            ),
+          );
+
+          if (interpretedNoteCount == 0) {
+            throw const SheetInterpretationException(
+              'No readable noteheads were matched to the staff lines. Please try a clearer crop with the full staff area visible.',
+            );
+          }
+
           print(
             'STALA_PIPELINE: groupedNotes=${groupedNotes.length} '
-            'noteEvents=${groupedNotes.values.fold<int>(0, (sum, groups) => sum + groups.length)}',
+            'noteEvents=$interpretedNoteCount',
           );
 
           final noteGroupViewItems = groupedNotes.entries.map((entry) {
@@ -366,14 +390,18 @@ class _ProcessingPageState extends State<ProcessingPage> {
           print('STALA_PIPELINE: grandStaffPairs=${grandStaffPairs.length}');
 
           final grandStaffPairViewItems = grandStaffPairs.map((pair) {
-            final trebleView = noteGroupViewItems.firstWhere(
-              (item) => item.staffId == pair.trebleStaffId,
+            final trebleView = _findNoteGroupViewItem(
+              noteGroupViewItems,
+              pair.trebleStaffId,
             );
+
+            if (trebleView == null) return null;
 
             final bassView = pair.bassStaffId == null
                 ? null
-                : noteGroupViewItems.firstWhere(
-                    (item) => item.staffId == pair.bassStaffId,
+                : _findNoteGroupViewItem(
+                    noteGroupViewItems,
+                    pair.bassStaffId!,
                   );
 
             return GrandStaffPairViewItem(
@@ -383,7 +411,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
               trebleGroups: trebleView.groups,
               bassGroups: bassView?.groups ?? const [],
             );
-          }).toList();
+          }).whereType<GrandStaffPairViewItem>().toList();
 
           response['grandStaffPairs'] = grandStaffPairViewItems;
 
@@ -741,6 +769,21 @@ class _ProcessingPageState extends State<ProcessingPage> {
         _statusMessage =
             'STALA could not start the reading step. Please try again.';
       });
+    } on SheetInterpretationException catch (error, stackTrace) {
+      print('STALA_PIPELINE: interpretation data error ${error.message}');
+      print(stackTrace);
+
+      if (!mounted) return;
+
+      setState(() {
+        if (_activeStageIndex >= 0 && _activeStageIndex < _stages.length) {
+          _stages[_activeStageIndex] = _stages[_activeStageIndex].copyWith(
+            status: ProcessingStageStatus.failed,
+          );
+        }
+        _hasProcessingFailed = true;
+        _statusMessage = error.message;
+      });
     } catch (error, stackTrace) {
       print('STALA_PIPELINE: interpretation error $error');
       print(stackTrace);
@@ -757,6 +800,16 @@ class _ProcessingPageState extends State<ProcessingPage> {
         _statusMessage = 'Something went wrong while reading the sheet.';
       });
     }
+  }
+
+  NoteGroupViewItem? _findNoteGroupViewItem(
+    List<NoteGroupViewItem> items,
+    String staffId,
+  ) {
+    for (final item in items) {
+      if (item.staffId == staffId) return item;
+    }
+    return null;
   }
 
   /// Resets the page state and runs the mock pipeline again.
@@ -1051,9 +1104,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
                       /// Top summary card with thumbnail, status, and progress.
                       TutorialService.showcase(
                         key: _processingProgressTourKey,
-                        title: 'Processing Progress',
+                        title: 'Reading Progress',
                         description:
-                            'This area shows the selected sheet, current status, and overall processing progress.',
+                            'This shows how far STALA has read your sheet and what it is doing now.',
                         child: _ProcessingSummaryCard(
                           progressValue: _progressValue,
                           title: _hasProcessingFailed
@@ -1082,9 +1135,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
                       Expanded(
                         child: TutorialService.showcase(
                           key: _processingStepsTourKey,
-                          title: 'Processing Steps',
+                          title: 'Reading Steps',
                           description:
-                              'STALA moves through cleanup, detection, staff analysis, translation, and tablature generation.',
+                              'These steps show the path from your sheet image to the final guitar tab.',
                           child: ListView.separated(
                             physics: const BouncingScrollPhysics(),
                             itemCount: _stages.length,
@@ -1112,9 +1165,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
               /// running, failed, and completed.
               TutorialService.showcase(
                 key: _processingFooterTourKey,
-                title: 'Result Navigation',
+                title: 'Next Step',
                 description:
-                    'When processing completes, use this area to review the generated result or retry if needed.',
+                    'When reading is finished, use this area to open the result or try again if needed.',
                 child: _ProcessingFooter(
                   isFinished: _isProcessingFinished,
                   hasFailed: _hasProcessingFailed,
@@ -1280,9 +1333,9 @@ class _ProcessingHeader extends StatelessWidget {
           ),
           TutorialService.showcase(
             key: helpTourKey,
-            title: 'Processing Help',
+            title: 'Need Processing Help?',
             description:
-                'Open this anytime to read what the processing screen is doing or replay the tour.',
+                'Tap this if you want a quick reminder about what this screen is doing.',
             targetShapeBorder: const CircleBorder(),
             child: _HeaderCircleButton(
               icon: Icons.help_outline_rounded,

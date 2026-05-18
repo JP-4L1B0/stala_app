@@ -18,6 +18,7 @@ class TutorialService {
   TutorialService._();
 
   static const String _prefix = 'stala_tutorial_seen_';
+  static const Duration _tourStartDelay = Duration(milliseconds: 250);
 
   static const String homeTabKey = 'home_tab';
   static const String homePageKey = 'home_page';
@@ -50,7 +51,7 @@ class TutorialService {
     }
   }
 
-  static Future<void> showHomeTabGuide(
+  static Future<bool> showHomeTabGuide(
     BuildContext context,
     List<GlobalKey> keys, {
     bool markSeen = false,
@@ -63,7 +64,7 @@ class TutorialService {
     );
   }
 
-  static Future<void> showHomeGuide(
+  static Future<bool> showHomeGuide(
     BuildContext context,
     List<GlobalKey> keys, {
     bool markSeen = false,
@@ -76,7 +77,7 @@ class TutorialService {
     );
   }
 
-  static Future<void> showImportGuide(
+  static Future<bool> showImportGuide(
     BuildContext context,
     List<GlobalKey> keys, {
     bool markSeen = false,
@@ -89,7 +90,7 @@ class TutorialService {
     );
   }
 
-  static Future<void> showCropGuide(
+  static Future<bool> showCropGuide(
     BuildContext context,
     List<GlobalKey> keys, {
     bool markSeen = false,
@@ -102,7 +103,7 @@ class TutorialService {
     );
   }
 
-  static Future<void> showProcessingGuide(
+  static Future<bool> showProcessingGuide(
     BuildContext context,
     List<GlobalKey> keys, {
     bool markSeen = false,
@@ -115,7 +116,7 @@ class TutorialService {
     );
   }
 
-  static Future<void> showResultGuide(
+  static Future<bool> showResultGuide(
     BuildContext context,
     List<GlobalKey> keys, {
     bool markSeen = false,
@@ -133,44 +134,88 @@ class TutorialService {
     required String pageKey,
     required List<GlobalKey> keys,
     Duration delay = const Duration(milliseconds: 450),
+    TutorialPage? page,
   }) async {
     if (!context.mounted || await hasSeenTour(pageKey)) return;
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await Future<void>.delayed(delay);
       if (!context.mounted) return;
+
+      if (page != null) {
+        await showHowToUse(
+          context,
+          page: page,
+          onStartTour: () =>
+              startTour(context, keys: keys, pageKey: pageKey, markSeen: true),
+        );
+        if (context.mounted) await markTourSeen(pageKey);
+        return;
+      }
+
       await startTour(context, keys: keys, pageKey: pageKey, markSeen: true);
     });
   }
 
-  static Future<void> startTour(
+  static Future<bool> startTour(
     BuildContext context, {
     required List<GlobalKey> keys,
     required String pageKey,
     bool markSeen = false,
   }) async {
-    if (!context.mounted) return;
+    if (!context.mounted) return false;
 
-    final visibleKeys = keys
-        .where((key) => key.currentContext != null)
-        .toList(growable: false);
-    if (visibleKeys.isEmpty) {
-      return;
+    final tourKeys = await _prepareTourKeys(context, keys);
+    if (tourKeys.isEmpty) {
+      if (context.mounted) {
+        _showTourUnavailableMessage(context);
+      }
+      return false;
     }
 
     try {
-      // The context-bound API reliably targets the active page scope after
-      // dialogs and route changes.
-      // ignore: deprecated_member_use
-      ShowCaseWidget.of(
-        context,
-      ).startShowCase(visibleKeys, delay: const Duration(milliseconds: 80));
+      ShowcaseView.get().startShowCase(
+        tourKeys,
+        delay: const Duration(milliseconds: 80),
+      );
       if (markSeen) await markTourSeen(pageKey);
+      return true;
     } catch (error) {
       // A page can opt into help text before every target is wired. Missing
       // showcase context should never break normal app navigation.
       debugPrint('Unable to start tutorial tour: $error');
+      if (context.mounted) {
+        _showTourUnavailableMessage(context);
+      }
+      return false;
     }
+  }
+
+  static Future<List<GlobalKey>> _prepareTourKeys(
+    BuildContext context,
+    List<GlobalKey> keys,
+  ) async {
+    if (keys.isEmpty || !context.mounted) return const [];
+    await Future<void>.delayed(_tourStartDelay);
+    if (!context.mounted) return const [];
+    return keys;
+  }
+
+  static void _showTourUnavailableMessage(BuildContext context) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            'The tour could not start on this screen. Please try again.',
+            style: AppTextStyles.body.copyWith(color: AppColors.textPrimary),
+          ),
+          backgroundColor: AppColors.card,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 3),
+        ),
+      );
   }
 
   static Future<void> showHowToUse(
@@ -182,7 +227,7 @@ class TutorialService {
 
     final info = _contentFor(page);
 
-    await showDialog<void>(
+    final shouldStartTour = await showDialog<bool>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
@@ -195,33 +240,25 @@ class TutorialService {
             children: [
               const Icon(Icons.help_outline_rounded, color: AppColors.accent),
               const SizedBox(width: 10),
-              Expanded(
-                child: Text(info.title, style: AppTextStyles.cardTitle),
-              ),
+              Expanded(child: Text(info.title, style: AppTextStyles.cardTitle)),
             ],
           ),
-          content: Text(
-            info.body,
-            style: AppTextStyles.bodySecondary.copyWith(height: 1.45),
+          content: SingleChildScrollView(
+            child: Text(
+              info.body,
+              style: AppTextStyles.bodySecondary.copyWith(height: 1.45),
+            ),
           ),
           actions: [
             if (onStartTour != null)
               TextButton.icon(
-                onPressed: () {
-                  Navigator.pop(dialogContext);
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    Future<void>.delayed(
-                      const Duration(milliseconds: 250),
-                      onStartTour,
-                    );
-                  });
-                },
+                onPressed: () => Navigator.pop(dialogContext, true),
                 icon: const Icon(Icons.play_circle_outline_rounded, size: 18),
                 label: const Text('Start Tour'),
                 style: TextButton.styleFrom(foregroundColor: AppColors.accent),
               ),
             TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
+              onPressed: () => Navigator.pop(dialogContext, false),
               child: Text(
                 'Close',
                 style: AppTextStyles.button.copyWith(
@@ -233,6 +270,12 @@ class TutorialService {
         );
       },
     );
+
+    if (shouldStartTour == true && context.mounted && onStartTour != null) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      if (!context.mounted) return;
+      onStartTour();
+    }
   }
 
   static Showcase showcase({
@@ -255,48 +298,91 @@ class TutorialService {
       overlayOpacity: 0.72,
       targetPadding: const EdgeInsets.all(6),
       tooltipBorderRadius: BorderRadius.circular(14),
+      tooltipActions: _tooltipActions,
+      tooltipActionConfig: const TooltipActionConfig(
+        alignment: MainAxisAlignment.spaceBetween,
+        actionGap: 8,
+        mainAxisSize: MainAxisSize.max,
+      ),
       targetShapeBorder: targetShapeBorder,
       child: child,
     );
   }
 
+  static List<TooltipActionButton> get _tooltipActions => [
+    TooltipActionButton(
+      type: TooltipDefaultActionType.skip,
+      name: 'Skip',
+      backgroundColor: AppColors.surface,
+      textStyle: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+      border: Border.all(color: AppColors.border),
+    ),
+    TooltipActionButton(
+      type: TooltipDefaultActionType.previous,
+      name: 'Previous',
+      backgroundColor: AppColors.surface,
+      textStyle: AppTextStyles.caption.copyWith(color: AppColors.textSecondary),
+      leadIcon: const ActionButtonIcon(
+        icon: Icon(
+          Icons.chevron_left_rounded,
+          color: AppColors.textSecondary,
+          size: 16,
+        ),
+      ),
+      border: Border.all(color: AppColors.border),
+    ),
+    TooltipActionButton(
+      type: TooltipDefaultActionType.next,
+      name: 'Next',
+      backgroundColor: AppColors.accent,
+      textStyle: AppTextStyles.caption.copyWith(color: AppColors.textPrimary),
+      tailIcon: const ActionButtonIcon(
+        icon: Icon(
+          Icons.chevron_right_rounded,
+          color: AppColors.textPrimary,
+          size: 16,
+        ),
+      ),
+    ),
+  ];
+
   static _TutorialContent _contentFor(TutorialPage page) {
     switch (page) {
       case TutorialPage.homeTab:
         return const _TutorialContent(
-          title: 'Home Tab',
+          title: 'Welcome to STALA',
           body:
-              'Welcome to STALA. This is the main starting page of the application. From here, you can begin the sheet music processing workflow, access import options, view recent projects, and navigate to other parts of the app.',
+              'STALA helps turn a photo of sheet music into guitar tablature. To begin, use the camera button for a new sheet, or open Import if you want to continue from a saved file.\n\nFor better results, take a clear photo with good lighting. Keep the whole sheet in view, avoid shadows or glare, and crop around the music before processing.\n\nTap Start Tour and I will point out the main parts of this screen one by one.',
         );
       case TutorialPage.homePage:
         return const _TutorialContent(
-          title: 'Home Page',
+          title: 'Start a Project',
           body:
-              'Use this page to start the STALA workflow. You can capture a sheet music image using the camera, select an image from the gallery, or open a recent saved project. For best results, use clear and well-lit sheet music images.',
+              'This is where you start new work. You can capture sheet music, choose an image, or reopen something you saved earlier.\n\nTry to use a flat, well-lit image where the staff lines and notes are easy to see. If the photo is blurry, tilted, or cuts off part of the music, the tablature may be less accurate.\n\nTap Start Tour and I will show what each main area does.',
         );
       case TutorialPage.importPage:
         return const _TutorialContent(
-          title: 'Import Page',
+          title: 'Import and Continue',
           body:
-              'Use this page to import or open existing STALA files, saved projects, or supported local files. Imported files can be used to continue previous work or access generated outputs. Some import or cloud-related features may be unavailable if they are not yet implemented.',
+              'Use this page when you want to open previous work or bring in a saved STALA file.\n\nMake sure the selected folder is the one where your files are stored. If something is missing, check that it is in that folder and that the file type is supported.\n\nTap Start Tour and I will show you where to choose a folder, import a file, and find saved items.',
         );
       case TutorialPage.cropPage:
         return const _TutorialContent(
-          title: 'Crop Page',
+          title: 'Prepare the Sheet',
           body:
-              'Use this page to align the sheet music area before processing. Drag the corners or edges until the full music sheet is inside the frame. Make sure the staff lines are visible, clear, and not heavily tilted.',
+              'Before STALA reads the sheet, line up the crop so the music is inside the frame. You can drag the corners or edges to adjust it, or tap Reset to return the frame to its starting position.\n\nKeep the staff lines, clefs, notes, and barlines visible. If the photo is too dark, blurry, tilted, or covered by glare, it is better to retake it.\n\nTap Start Tour and I will show you the crop frame, handles, Reset button, and Continue button.',
         );
       case TutorialPage.processingPage:
         return const _TutorialContent(
-          title: 'Processing Page',
+          title: 'Reading the Music',
           body:
-              'This page analyzes the selected sheet music. STALA detects musical symbols, identifies staff lines, maps notes, and generates pitch-based guitar tablature. Please wait until processing is complete.',
+              'STALA is reading the cropped sheet and turning it into tablature. This can take a moment, especially for busy pages.\n\nPlease wait until it finishes. If it cannot read the sheet, try again with a clearer photo or adjust the crop so the music is easier to see.\n\nTap Start Tour and I will show you what the progress areas mean.',
         );
       case TutorialPage.resultPage:
         return const _TutorialContent(
-          title: 'Result Page',
+          title: 'Review the Tablature',
           body:
-              'This page displays the generated guitar tablature. You can preview playback, switch tablature modes, inspect generated events, and save or export the result.',
+              'This page shows the tablature STALA created from your sheet. You can review it, play it back, check the fretboard view, change modes if available, and export your result.\n\nPlease review the tablature before saving or sharing. Photo quality and complex notation can affect the result, so playback and the fretboard view can help you spot anything unusual.\n\nTap Start Tour and I will walk you through the result tools.',
         );
     }
   }

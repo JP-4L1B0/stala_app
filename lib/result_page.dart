@@ -41,6 +41,7 @@ class _ResultPageState extends State<ResultPage> {
   final GlobalKey _resultModeTourKey = GlobalKey();
   final GlobalKey _resultTabTourKey = GlobalKey();
   final GlobalKey _resultPlaybackTourKey = GlobalKey();
+  final GlobalKey _resultFretboardTourKey = GlobalKey();
 
   bool _isMuted = false;
   bool _isSustainEnabled = false;
@@ -122,12 +123,14 @@ class _ResultPageState extends State<ResultPage> {
       context,
       pageKey: TutorialService.resultPageKey,
       keys: _resultTourKeys,
+      page: TutorialPage.resultPage,
     );
   }
 
   List<GlobalKey> get _resultTourKeys => [
     _resultTabTourKey,
     _resultPlaybackTourKey,
+    _resultFretboardTourKey,
     _resultModeTourKey,
     _resultSaveTourKey,
     _resultHelpTourKey,
@@ -454,9 +457,9 @@ class _ResultPageState extends State<ResultPage> {
         actions: [
           TutorialService.showcase(
             key: _resultHelpTourKey,
-            title: 'Result Help',
+            title: 'Need Result Help?',
             description:
-                'Open this anytime to read result-page help or replay the tour.',
+                'Tap this if you want a reminder about this page or want to replay the tour.',
             targetShapeBorder: const CircleBorder(),
             child: IconButton(
               tooltip: 'Result help',
@@ -474,9 +477,9 @@ class _ResultPageState extends State<ResultPage> {
           ),
           TutorialService.showcase(
             key: _resultSaveTourKey,
-            title: 'Save and Export',
+            title: 'Save or Export',
             description:
-                'Export the current tablature as PNG or PDF from these buttons.',
+                'Use these buttons when you are ready to save the tablature as an image or PDF.',
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -503,9 +506,9 @@ class _ResultPageState extends State<ResultPage> {
             _buildTitleField(),
             TutorialService.showcase(
               key: _resultModeTourKey,
-              title: 'Tablature Mode',
+              title: 'Choose a Tab Style',
               description:
-                  'Switch between available tablature generation modes.',
+                  'If more than one version is available, switch between them here.',
               child: _buildTopDropdown(),
             ),
             _buildAutoSaveStatus(),
@@ -515,9 +518,9 @@ class _ResultPageState extends State<ResultPage> {
                 children: [
                   TutorialService.showcase(
                     key: _resultTabTourKey,
-                    title: 'Tablature Display',
+                    title: 'Your Generated Tab',
                     description:
-                        'This panel shows the generated guitar tablature. Tap a fret number to jump to that event.',
+                        'This is the tab STALA created. Tap a fret number to focus on that note.',
                     child: _ResultCard(
                       title: 'Tablature',
                       subtitle: 'Tap a fret number to jump to that event.',
@@ -532,18 +535,24 @@ class _ResultPageState extends State<ResultPage> {
                   const SizedBox(height: 14),
                   TutorialService.showcase(
                     key: _resultPlaybackTourKey,
-                    title: 'Playback Controls',
+                    title: 'Listen and Check',
                     description:
-                        'Play, pause, step through events, and adjust playback settings here.',
+                        'Use these controls to play the result, pause it, or step through notes.',
                     child: _buildControlCard(),
                   ),
                   const SizedBox(height: 14),
-                  _ResultCard(
+                  TutorialService.showcase(
+                    key: _resultFretboardTourKey,
                     title: 'Fretboard Map',
-                    subtitle: 'Highlighted positions update per event.',
-                    child: _FretboardViewer(
-                      column: _currentColumn,
-                      onPositionTap: _showFretDetail,
+                    description:
+                        'This shows where the selected note is played on the guitar neck.',
+                    child: _ResultCard(
+                      title: 'Fretboard Map',
+                      subtitle: 'Highlighted positions update per event.',
+                      child: _FretboardViewer(
+                        column: _currentColumn,
+                        onPositionTap: _showFretDetail,
+                      ),
                     ),
                   ),
                 ],

@@ -36,7 +36,22 @@ class NoteGroupingService {
       for (final measureNotes in _groupByMeasure(notes)) {
         final spacing = _estimateSpacing(measureNotes);
         final noteheadWidth = _estimateNoteheadWidth(measureNotes);
-        final threshold = (noteheadWidth * 0.9).clamp(6.0, spacing * 0.45);
+        // default
+        //final threshold = (noteheadWidth * 0.9).clamp(6.0, spacing * 0.45);
+
+        // safe
+        //final maxThreshold = spacing * 0.45;
+        //final safeMax = maxThreshold < 6.0 ? 6.0 : maxThreshold;
+        //final threshold = (noteheadWidth * 0.9).clamp(6.0, safeMax);
+
+        // might be better
+        final adaptiveThreshold = noteheadWidth * 0.9;
+        final spacingLimit = spacing * 0.45;
+
+        final threshold =
+        spacingLimit <= 6.0
+            ? 6.0
+            : adaptiveThreshold.clamp(6.0, spacingLimit);
 
         List<TranslatedSymbolViewItem> currentGroup = [];
 

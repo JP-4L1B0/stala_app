@@ -91,6 +91,7 @@ class _MainPanel01PageState extends State<MainPanel01Page>
       context,
       pageKey: TutorialService.homeTabKey,
       keys: _homeTabTourKeys,
+      page: TutorialPage.homeTab,
     );
   }
 
@@ -119,12 +120,7 @@ class _MainPanel01PageState extends State<MainPanel01Page>
         context,
         pageKey: TutorialService.importPageKey,
         keys: _importPageTourKeys,
-      );
-    } else if (tab == PanelTab.home) {
-      TutorialService.autoStartTour(
-        context,
-        pageKey: TutorialService.homePageKey,
-        keys: _homePageTourKeys,
+        page: TutorialPage.importPage,
       );
     }
   }
@@ -198,14 +194,6 @@ class _MainPanel01PageState extends State<MainPanel01Page>
     _importNavTourKey,
     _homeRecentTourKey,
     _homeNavTourKey,
-    _helpTourKey,
-  ];
-
-  List<GlobalKey> get _homePageTourKeys => [
-    _headerTourKey,
-    _cameraNavTourKey,
-    _homeRecentTourKey,
-    _homeBulkTourKey,
     _helpTourKey,
   ];
 
@@ -324,9 +312,9 @@ class _PanelHeader extends StatelessWidget {
           Expanded(
             child: TutorialService.showcase(
               key: headerTourKey,
-              title: 'STALA Workspace',
+              title: 'Your STALA Home',
               description:
-                  'This header shows the current STALA workspace while you move between Home, Import, and Settings.',
+                  'You are in STALA. From here, you can start a new sheet, open saved work, or adjust settings.',
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -348,9 +336,9 @@ class _PanelHeader extends StatelessWidget {
           ),
           TutorialService.showcase(
             key: helpTourKey,
-            title: 'Help and Tutorial',
+            title: 'Help Is Here',
             description:
-                'Open this anytime to read page help or replay the guided tour.',
+                'Tap this anytime if you want a quick reminder or want to replay this tour.',
             targetShapeBorder: const CircleBorder(),
             child: InkWell(
               onTap: onHelpTap,
@@ -829,7 +817,7 @@ class _HomeTabViewState extends State<_HomeTabView> {
           key: widget.recentTourKey,
           title: 'Recent Projects',
           description:
-              'Open previous STALA results here when saved projects are available.',
+              'Your saved work appears here, so you can quickly return to a previous result.',
           child: _SectionHeader(
             title: 'Recent',
             actionIcon: _isSelectionMode
@@ -857,7 +845,7 @@ class _HomeTabViewState extends State<_HomeTabView> {
             key: widget.bulkTourKey,
             title: 'Project Actions',
             description:
-                'Select saved projects to export or delete multiple items at once.',
+                'Use these actions when you want to select, export, or delete several saved projects.',
             child: _HomeBulkActionBar(
               isSelectionMode: _isSelectionMode,
               selectedCount: _selectedItemKeys.length,
@@ -1459,9 +1447,9 @@ class _ImportTabViewState extends State<_ImportTabView> {
         const SizedBox(height: 14),
         TutorialService.showcase(
           key: widget.storageTourKey,
-          title: 'Import Folder',
+          title: 'Your STALA Folder',
           description:
-              'STALA uses this selected folder for imported files, saved projects, and exports.',
+              'This is the folder STALA uses to find imports and keep your saved work together.',
           child: _StorageLocationCard(
             storageInfo: _storageInfo,
             defaultStoragePath: _defaultStoragePath,
@@ -1474,9 +1462,9 @@ class _ImportTabViewState extends State<_ImportTabView> {
         Expanded(
           child: TutorialService.showcase(
             key: widget.listTourKey,
-            title: 'Imported Files',
+            title: 'Saved and Imported Files',
             description:
-                'Available imported or saved STALA files appear here so you can reopen previous work.',
+                'Files you can open appear here. Tap one when you want to continue from it.',
             child: RefreshIndicator(
               onRefresh: _loadImportData,
               child: _isLoading
@@ -1601,9 +1589,9 @@ class _StorageLocationCard extends StatelessWidget {
           const SizedBox(width: 8),
           TutorialService.showcase(
             key: importActionTourKey,
-            title: 'Import Local File',
+            title: 'Import a File',
             description:
-                'Select a .stala or supported archive from device storage.',
+                'Tap here to choose a STALA file or supported archive from your device.',
             child: TextButton(
               onPressed: isImporting ? null : onImport,
               child: isImporting
@@ -2177,36 +2165,36 @@ class _SettingsTabViewState extends State<_SettingsTabView>
                   onChanged: _setTablatureExportOrientation,
                 ),
               ),
-              const SizedBox(height: 10),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(
-                  Icons.replay_circle_filled_outlined,
-                  color: AppColors.accent,
-                ),
-                title: Text('Reset tutorials', style: AppTextStyles.body),
-                subtitle: Text(
-                  'Show first-visit page tours again on supported screens.',
-                  style: AppTextStyles.bodySecondary,
-                ),
-                trailing: TextButton(
-                  onPressed: () async {
-                    await TutorialService.resetTutorials();
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Tutorials reset.')),
-                    );
-                  },
-                  child: Text(
-                    'Reset',
-                    style: AppTextStyles.caption.copyWith(
-                      color: AppColors.accent,
+              // Hidden developer option unlocked from the About row.
+              if (_showDebugControl) ...[
+                const SizedBox(height: 8),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(
+                    Icons.replay_circle_filled_outlined,
+                    color: AppColors.accent,
+                  ),
+                  title: Text('Reset tutorials', style: AppTextStyles.body),
+                  subtitle: Text(
+                    'Show first-visit page tours again on supported screens.',
+                    style: AppTextStyles.bodySecondary,
+                  ),
+                  trailing: TextButton(
+                    onPressed: () async {
+                      await TutorialService.resetTutorials();
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Tutorials reset.')),
+                      );
+                    },
+                    child: Text(
+                      'Reset',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.accent,
+                      ),
                     ),
                   ),
                 ),
-              ),
-              // Hidden developer option unlocked from the About row.
-              if (_showDebugControl) ...[
                 const SizedBox(height: 8),
                 SwitchListTile(
                   value: _debugPageEnabled,
@@ -2750,7 +2738,7 @@ class _PanelFooter extends StatelessWidget {
                           key: importNavTourKey,
                           title: 'Import Tab',
                           description:
-                              'Open existing STALA files, saved projects, or supported local files.',
+                              'Go here when you want to open saved STALA work or bring in a file from your device.',
                           child: _NavItem(
                             icon: Icons.drive_folder_upload_outlined,
                             label: 'Import',
@@ -2768,7 +2756,7 @@ class _PanelFooter extends StatelessWidget {
                           key: homeNavTourKey,
                           title: 'Home Tab',
                           description:
-                              'Return to the main starting area and recent projects.',
+                              'Come back here to start fresh or open one of your recent projects.',
                           child: _NavItem(
                             icon: Icons.home,
                             label: 'Home',
@@ -2796,9 +2784,9 @@ class _PanelFooter extends StatelessWidget {
               },
               child: TutorialService.showcase(
                 key: cameraNavTourKey,
-                title: 'Camera Workflow',
+                title: 'Start with the Camera',
                 description:
-                    'Capture a new sheet music image and begin the STALA processing workflow.',
+                    'Tap this when you are ready to take or choose a sheet music image.',
                 targetShapeBorder: const CircleBorder(),
                 child: GestureDetector(
                   onTap: () => onTabSelected(PanelTab.camera),
