@@ -78,14 +78,12 @@ class PolyphonicToMonophonicResult {
   final List<HarmonicStack> harmonicStacks;
   final List<ChordAwareStack> chordAwareStacks;
   final List<MonophonicNote> strictMelody;
-  final List<MonophonicNote> continuityMelody;
 
   const PolyphonicToMonophonicResult({
     required this.grandStaffId,
     required this.harmonicStacks,
     required this.chordAwareStacks,
     required this.strictMelody,
-    required this.continuityMelody,
   });
 }
 
@@ -121,17 +119,11 @@ class PolyphonicToMonophonicService {
         stacks: stacks,
       );
 
-      final continuity = _prioritizeMelodyContinuity(
-        grandStaffId: pair.id,
-        stacks: stacks,
-      );
-
       return PolyphonicToMonophonicResult(
         grandStaffId: pair.id,
         harmonicStacks: stacks,
         chordAwareStacks: chordAwareStacks,
         strictMelody: strict,
-        continuityMelody: continuity,
       );
     }).toList();
   }
@@ -472,88 +464,6 @@ class PolyphonicToMonophonicService {
               .map((n) => n.defaultKeyLabel ?? 'Unresolved')
               .toList(),
           selectionReason: 'strict_treble_only',
-        ),
-      );
-    }
-
-    return melody;
-  }
-
-  List<MonophonicNote> _prioritizeMelodyContinuity({
-    required String grandStaffId,
-    required List<HarmonicStack> stacks,
-  }) {
-    final melody = <MonophonicNote>[];
-    int? previousMidi;
-
-    for (final stack in stacks) {
-      final candidates = stack.notes.where((n) {
-        return n.defaultKeyLabel != null &&
-            n.defaultKeyLabel!.trim().isNotEmpty;
-      }).toList();
-
-      if (candidates.isEmpty) continue;
-
-      TranslatedSymbolViewItem? best;
-      double bestScore = double.negativeInfinity;
-
-      for (final note in candidates) {
-        final midi = _pitchToMidiValue(note.defaultKeyLabel!);
-        final isTreble = note.staffRole == 'treble';
-
-        double score = 0;
-
-        // Treble priority
-        score += isTreble ? 50 : -20;
-
-        // Continuity
-        if (previousMidi != null) {
-          final jump = (midi - previousMidi).abs();
-
-          if (jump <= 2) {
-            score += 30;
-          } else if (jump <= 5) {
-            score += 20;
-          } else if (jump <= 12) {
-            score += 5;
-          } else {
-            score -= 40;
-          }
-        }
-
-        // Bass restriction
-        if (!isTreble && previousMidi != null) {
-          final jump = (midi - previousMidi).abs();
-          if (jump > 7) score -= 60; // reject bad bass jumps
-        }
-
-        if (score > bestScore) {
-          bestScore = score;
-          best = note;
-        }
-      }
-
-      if (best == null) continue;
-
-      final pitch = best.defaultKeyLabel!;
-      previousMidi = _pitchToMidiValue(pitch);
-
-      melody.add(
-        MonophonicNote(
-          id: '${grandStaffId}_cont_${stack.eventIndex}',
-          grandStaffId: grandStaffId,
-          eventIndex: stack.eventIndex,
-          measureId: stack.measureId,
-          measureIndex: stack.measureIndex,
-          sourceX: stack.sourceX,
-          pitch: pitch,
-          sourceNote: best,
-          harmonyContext: candidates
-              .map((n) => n.defaultKeyLabel ?? 'Unresolved')
-              .toList(),
-          selectionReason: best.staffRole == 'treble'
-              ? 'treble_primary'
-              : 'bass_fallback',
         ),
       );
     }

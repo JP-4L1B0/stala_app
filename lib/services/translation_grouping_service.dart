@@ -191,6 +191,8 @@ class TranslationGroupingService {
           accidentalState:
               accidentalResult?.accidental.name ??
               _defaultAccidentalState(item.className),
+          symbolState: item.symbolState,
+          inferredReason: item.inferredReason,
         );
       }).toList();
 
@@ -263,7 +265,7 @@ class TranslationGroupingService {
         _StaffGeometry(
           staffId: staffId,
           lines: lines,
-          spacing: _toDouble(map['spacing']),
+          spacing: _toDouble(map['validatedStaffSpacing'] ?? map['spacing']),
           topBoundary: _toDouble(map['topBoundary']),
           bottomBoundary: _toDouble(map['bottomBoundary']),
         ),

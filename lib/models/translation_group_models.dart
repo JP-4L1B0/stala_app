@@ -1,5 +1,24 @@
 // Translation Group Model
 
+enum SymbolState {
+  detected,
+  inferred,
+  rejected;
+
+  static SymbolState fromValue(Object? value) {
+    final normalized = value?.toString().trim().toLowerCase();
+    switch (normalized) {
+      case 'inferred':
+        return SymbolState.inferred;
+      case 'rejected':
+        return SymbolState.rejected;
+      case 'detected':
+      default:
+        return SymbolState.detected;
+    }
+  }
+}
+
 class StaffSummary {
   final int lineCount;
   final int symbolCount;
@@ -83,6 +102,8 @@ class TranslatedSymbolViewItem {
   /// - sharp_applied
   /// - natural_cancelled
   final String? accidentalState;
+  final SymbolState symbolState;
+  final String? inferredReason;
 
   const TranslatedSymbolViewItem({
     required this.className,
@@ -99,6 +120,8 @@ class TranslatedSymbolViewItem {
     this.measureIndex,
     this.defaultKeyLabel,
     this.accidentalState,
+    this.symbolState = SymbolState.detected,
+    this.inferredReason,
   });
 
   String get centerDisplay =>

@@ -1,6 +1,6 @@
 import 'polyphonic_to_monophonic_service.dart';
 
-enum InterpretedMusicType { chordAware, strictMelody, continuityMelody }
+enum InterpretedMusicType { grandStaff, trebleOnly }
 
 class InterpretedMusicEvent {
   final int eventIndex;
@@ -44,14 +44,12 @@ class InterpretedMusicLine {
 }
 
 class MusicalInterpretationResult {
-  final InterpretedMusicLine chordAwareLine;
-  final InterpretedMusicLine strictMelodyLine;
-  final InterpretedMusicLine continuityMelodyLine;
+  final InterpretedMusicLine grandStaffLine;
+  final InterpretedMusicLine trebleOnlyLine;
 
   const MusicalInterpretationResult({
-    required this.chordAwareLine,
-    required this.strictMelodyLine,
-    required this.continuityMelodyLine,
+    required this.grandStaffLine,
+    required this.trebleOnlyLine,
   });
 }
 
@@ -59,23 +57,21 @@ class MusicalInterpretationService {
   MusicalInterpretationResult interpret({
     required List<PolyphonicToMonophonicResult> polyMonoResults,
   }) {
-    final chordAwareEvents = <InterpretedMusicEvent>[];
-    final strictEvents = <InterpretedMusicEvent>[];
-    final continuityEvents = <InterpretedMusicEvent>[];
+    final grandStaffEvents = <InterpretedMusicEvent>[];
+    final trebleOnlyEvents = <InterpretedMusicEvent>[];
 
-    int globalChordIndex = 0;
-    int globalStrictIndex = 0;
-    int globalContinuityIndex = 0;
+    int globalGrandStaffIndex = 0;
+    int globalTrebleOnlyIndex = 0;
 
     for (final result in polyMonoResults) {
       for (final stack in result.chordAwareStacks) {
         final label = stack.chordName ?? _fallbackStackLabel(stack);
 
-        chordAwareEvents.add(
+        grandStaffEvents.add(
           InterpretedMusicEvent(
-            eventIndex: globalChordIndex++,
+            eventIndex: globalGrandStaffIndex++,
             sourceGrandStaffId: result.grandStaffId,
-            type: InterpretedMusicType.chordAware,
+            type: InterpretedMusicType.grandStaff,
             measureId: stack.measureId,
             measureIndex: stack.measureIndex,
             sourceX: stack.sourceX,
@@ -90,26 +86,11 @@ class MusicalInterpretationService {
       }
 
       for (final note in result.strictMelody) {
-        strictEvents.add(
+        trebleOnlyEvents.add(
           InterpretedMusicEvent(
-            eventIndex: globalStrictIndex++,
+            eventIndex: globalTrebleOnlyIndex++,
             sourceGrandStaffId: result.grandStaffId,
-            type: InterpretedMusicType.strictMelody,
-            measureId: note.measureId,
-            measureIndex: note.measureIndex,
-            sourceX: note.sourceX,
-            label: note.pitch,
-            pitches: [note.pitch],
-          ),
-        );
-      }
-
-      for (final note in result.continuityMelody) {
-        continuityEvents.add(
-          InterpretedMusicEvent(
-            eventIndex: globalContinuityIndex++,
-            sourceGrandStaffId: result.grandStaffId,
-            type: InterpretedMusicType.continuityMelody,
+            type: InterpretedMusicType.trebleOnly,
             measureId: note.measureId,
             measureIndex: note.measureIndex,
             sourceX: note.sourceX,
@@ -121,23 +102,17 @@ class MusicalInterpretationService {
     }
 
     return MusicalInterpretationResult(
-      chordAwareLine: InterpretedMusicLine(
-        id: 'normalized_chord_aware',
-        title: 'Chord Version',
-        type: InterpretedMusicType.chordAware,
-        events: chordAwareEvents,
+      grandStaffLine: InterpretedMusicLine(
+        id: 'normalized_grand_staff',
+        title: 'Grand Staff',
+        type: InterpretedMusicType.grandStaff,
+        events: grandStaffEvents,
       ),
-      strictMelodyLine: InterpretedMusicLine(
-        id: 'normalized_mprio_strict',
-        title: 'Simple Melody',
-        type: InterpretedMusicType.strictMelody,
-        events: strictEvents,
-      ),
-      continuityMelodyLine: InterpretedMusicLine(
-        id: 'normalized_mprio_continuity',
-        title: 'Smooth Melody',
-        type: InterpretedMusicType.continuityMelody,
-        events: continuityEvents,
+      trebleOnlyLine: InterpretedMusicLine(
+        id: 'normalized_treble_only',
+        title: 'Treble Only',
+        type: InterpretedMusicType.trebleOnly,
+        events: trebleOnlyEvents,
       ),
     );
   }
