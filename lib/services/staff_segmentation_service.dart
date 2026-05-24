@@ -8,13 +8,17 @@ class StaffSegmentationService {
 
   Future<Map<String, dynamic>> segmentStaffLines({
     required String imagePath,
+    List<dynamic> symbolDetections = const [],
   }) async {
     try {
       print('SEGMENT: trying native OpenCV segmentation');
 
       final result = await _visionPipelineChannel.invokeMethod(
         'segmentStaffLines',
-        {'imagePath': imagePath},
+        {
+          'imagePath': imagePath,
+          'symbolDetections': symbolDetections,
+        },
       );
 
       final nativeResult = Map<String, dynamic>.from(result);
@@ -25,15 +29,22 @@ class StaffSegmentationService {
       }
 
       print('SEGMENT: native failed, falling back to Dart');
-      return _segmentStaffLinesFallback(imagePath: imagePath);
+      return _segmentStaffLinesFallback(
+        imagePath: imagePath,
+        symbolDetections: symbolDetections,
+      );
     } catch (e) {
       print('SEGMENT: native exception, falling back to Dart: $e');
-      return _segmentStaffLinesFallback(imagePath: imagePath);
+      return _segmentStaffLinesFallback(
+        imagePath: imagePath,
+        symbolDetections: symbolDetections,
+      );
     }
   }
 
   Future<Map<String, dynamic>> _segmentStaffLinesFallback({
     required String imagePath,
+    List<dynamic> symbolDetections = const [],
   }) async {
     try {
       print('SEGMENT FALLBACK: input imagePath = $imagePath');
@@ -75,11 +86,16 @@ class StaffSegmentationService {
       final rawRows = _collectRawHorizontalRows(binary);
       print('SEGMENT FALLBACK: rawRows = ${rawRows.length}');
 
-      final lineCandidates = _deduplicateRows(rawRows);
+      final lineCandidates = _deduplicateRows(rawRows.map((row) => row.y).toList());
       print('SEGMENT FALLBACK: lineCandidates = ${lineCandidates.length}');
       print('SEGMENT FALLBACK: candidate ys = $lineCandidates');
 
-      final validatedStaffs = _buildValidatedStaffs(lineCandidates);
+      final metricsByY = {for (final row in rawRows) row.y: row};
+      final validatedStaffs = _buildValidatedStaffs(
+        lineCandidates,
+        metricsByY,
+        symbolDetections,
+      );
       print('SEGMENT FALLBACK: validatedStaffs = ${validatedStaffs.length}');
 
       final overlay = img.Image.from(original);
@@ -130,6 +146,8 @@ class StaffSegmentationService {
         'status': 'success',
         'message': 'Fallback Dart segmentation completed',
         'segmentedImagePath': outputPath,
+        'imageWidth': original.width,
+        'imageHeight': original.height,
         'staffLineCount': validatedStaffs.fold<int>(
           0,
           (sum, staff) => sum + ((staff['lines'] as List).length),
@@ -139,6 +157,7 @@ class StaffSegmentationService {
           final topBoundary = staff['topBoundary'] as double;
           final bottomBoundary = staff['bottomBoundary'] as double;
           final spacing = staff['spacing'] as double;
+          final confidence = (staff['confidence'] as num?)?.toDouble() ?? 1.0;
           final lines = (staff['lines'] as List).cast<double>();
 
           return lines.asMap().entries.map((entry) {
@@ -149,10 +168,17 @@ class StaffSegmentationService {
               'topBoundary': topBoundary,
               'bottomBoundary': bottomBoundary,
               'spacing': spacing,
+              'confidence': confidence,
             };
           });
         }).toList(),
         'ledgerLines': const [],
+        'ledgerDiagnostics': const {
+          'rawCandidates': 0,
+          'validatedLedgers': 0,
+          'rejectedFragments': 0,
+          'rejectionReasons': {},
+        },
         'barLines': const [],
         'stems': const [],
         'beams': const [],
@@ -171,6 +197,12 @@ class StaffSegmentationService {
         'staffLineCount': 0,
         'staffLines': [],
         'ledgerLines': [],
+        'ledgerDiagnostics': const {
+          'rawCandidates': 0,
+          'validatedLedgers': 0,
+          'rejectedFragments': 0,
+          'rejectionReasons': {},
+        },
         'barLines': [],
         'stems': [],
         'beams': [],
@@ -185,10 +217,18 @@ class StaffSegmentationService {
       ...result,
       'staffLines': result['staffLines'] ?? const [],
       'ledgerLines': result['ledgerLines'] ?? const [],
+      'ledgerDiagnostics': result['ledgerDiagnostics'] ?? const {
+        'rawCandidates': 0,
+        'validatedLedgers': 0,
+        'rejectedFragments': 0,
+        'rejectionReasons': {},
+      },
       'barLines': result['barLines'] ?? const [],
       'stems': result['stems'] ?? const [],
       'beams': result['beams'] ?? const [],
       'measures': result['measures'] ?? const [],
+      'imageWidth': result['imageWidth'],
+      'imageHeight': result['imageHeight'],
       'validatedStaffs': result['validatedStaffs'] ?? const [],
     };
   }
@@ -214,22 +254,60 @@ class StaffSegmentationService {
     }).toList();
   }
 
-  List<int> _collectRawHorizontalRows(img.Image binary) {
-    final rows = <int>[];
-    final minCoverage = (binary.width * 0.18).toInt();
+  List<_RowCandidate> _collectRawHorizontalRows(img.Image binary) {
+    final rows = <_RowCandidate>[];
+    final minCoverage = (binary.width * 0.42).toInt();
 
     for (int y = 0; y < binary.height; y++) {
       int whiteCount = 0;
+      int segmentCount = 0;
+      int longestRun = 0;
+      int currentRun = 0;
+      bool inSegment = false;
 
       for (int x = 0; x < binary.width; x++) {
         final pixel = binary.getPixel(x, y);
-        if (img.getLuminance(pixel) > 200) {
+        final isInk = img.getLuminance(pixel) > 200;
+        if (isInk) {
           whiteCount++;
+          currentRun++;
+          if (!inSegment) {
+            segmentCount++;
+            inSegment = true;
+          }
+        } else {
+          if (currentRun > longestRun) longestRun = currentRun;
+          currentRun = 0;
+          inSegment = false;
         }
       }
 
-      if (whiteCount >= minCoverage) {
-        rows.add(y);
+      if (currentRun > longestRun) longestRun = currentRun;
+
+      final coverage = whiteCount / binary.width;
+      final longestRunRatio = longestRun / binary.width;
+      final fragmentationPenalty =
+          ((segmentCount - 1).clamp(0, 18)).toDouble() / 18.0;
+      final continuity =
+          (longestRunRatio * 0.70 +
+                  coverage * 0.30 -
+                  fragmentationPenalty * 0.30)
+              .clamp(0.0, 1.0)
+              .toDouble();
+
+      if (whiteCount >= minCoverage &&
+          coverage >= 0.42 &&
+          longestRunRatio >= 0.34 &&
+          continuity >= 0.52 &&
+          segmentCount <= 18) {
+        rows.add(
+          _RowCandidate(
+            y: y,
+            coverage: coverage,
+            longestRunRatio: longestRunRatio,
+            continuity: continuity,
+          ),
+        );
       }
     }
 
@@ -258,7 +336,11 @@ class StaffSegmentationService {
       ..sort();
   }
 
-  List<Map<String, dynamic>> _buildValidatedStaffs(List<double> lines) {
+  List<Map<String, dynamic>> _buildValidatedStaffs(
+    List<double> lines,
+    Map<int, _RowCandidate> metricsByY,
+    List<dynamic> symbolDetections,
+  ) {
     final staffs = <Map<String, dynamic>>[];
     final used = <int>{};
 
@@ -275,14 +357,12 @@ class StaffSegmentationService {
 
       final avgSpacing = spacings.reduce((a, b) => a + b) / spacings.length;
 
-      // reject very tiny or huge spacing
       if (avgSpacing < 6 || avgSpacing > 40) {
         continue;
       }
 
-      // require spacing consistency
       final isConsistent = spacings.every(
-        (s) => (s - avgSpacing).abs() <= avgSpacing * 0.30,
+        (s) => (s - avgSpacing).abs() <= avgSpacing * 0.22,
       );
 
       print(
@@ -291,7 +371,46 @@ class StaffSegmentationService {
 
       if (!isConsistent) continue;
 
-      // avoid overlapping duplicate staff windows
+      final lineMetrics = candidate.map((line) {
+        final center = line.round();
+        return metricsByY[center] ??
+            metricsByY[center - 1] ??
+            metricsByY[center + 1] ??
+            const _RowCandidate(
+              y: -1,
+              coverage: 0,
+              longestRunRatio: 0,
+              continuity: 0,
+            );
+      }).toList();
+
+      final avgCoverage =
+          lineMetrics.map((item) => item.coverage).reduce((a, b) => a + b) /
+              lineMetrics.length;
+      final avgRun = lineMetrics
+              .map((item) => item.longestRunRatio)
+              .reduce((a, b) => a + b) /
+          lineMetrics.length;
+      final avgContinuity =
+          lineMetrics.map((item) => item.continuity).reduce((a, b) => a + b) /
+              lineMetrics.length;
+
+      if (avgCoverage < 0.42 || avgRun < 0.34 || avgContinuity < 0.52) {
+        continue;
+      }
+
+      final symbolSupport = _symbolSupportForStaff(
+        lines: candidate,
+        spacing: avgSpacing,
+        symbolDetections: symbolDetections,
+      );
+
+      if (symbolDetections.isNotEmpty &&
+          symbolSupport <= 0 &&
+          avgCoverage < 0.72) {
+        continue;
+      }
+
       final overlapsUsed = List.generate(
         5,
         (offset) => i + offset,
@@ -307,8 +426,17 @@ class StaffSegmentationService {
         'id': staffId,
         'lines': candidate,
         'spacing': avgSpacing,
+        'validatedStaffSpacing': avgSpacing,
+        'locked': true,
+        'coordinateSpace': 'original_image',
         'topBoundary': topBoundary,
         'bottomBoundary': bottomBoundary,
+        'confidence': 0.72,
+        'matchedLineCount': 5,
+        'repairedLineCount': 0,
+        'projectionStrength': avgCoverage,
+        'continuity': avgContinuity,
+        'symbolSupport': symbolSupport,
       });
 
       for (int offset = 0; offset < 5; offset++) {
@@ -318,4 +446,80 @@ class StaffSegmentationService {
 
     return staffs;
   }
+
+  double _symbolSupportForStaff({
+    required List<double> lines,
+    required double spacing,
+    required List<dynamic> symbolDetections,
+  }) {
+    if (symbolDetections.isEmpty) return 0.0;
+
+    final top = lines.first - spacing * 3.0;
+    final bottom = lines.last + spacing * 3.0;
+    double support = 0;
+
+    for (final item in symbolDetections) {
+      if (item is! Map) continue;
+      final className =
+          (item['className'] ?? item['labelName'] ?? item['label'] ?? '')
+              .toString()
+              .trim()
+              .toLowerCase();
+      if (!{
+        'notehead',
+        'treble_clef',
+        'bass_clef',
+        'sharp',
+        'flat',
+        'natural',
+      }.contains(className)) {
+        continue;
+      }
+
+      final centerY = _symbolCenterY(item);
+      if (centerY == null || centerY < top || centerY > bottom) continue;
+
+      if (className == 'treble_clef' || className == 'bass_clef') {
+        support += 0.28;
+      } else if (className == 'notehead') {
+        support += 0.08;
+      } else {
+        support += 0.05;
+      }
+    }
+
+    return support.clamp(0.0, 1.0).toDouble();
+  }
+
+  double? _symbolCenterY(Map<dynamic, dynamic> item) {
+    final direct = item['centerY'] ?? item['y'];
+    if (direct is num) return direct.toDouble();
+    final parsed = double.tryParse(direct?.toString() ?? '');
+    if (parsed != null) return parsed;
+
+    final bbox = item['bbox'];
+    if (bbox is! List || bbox.length < 4) return null;
+    final y1 = bbox[1] is num
+        ? (bbox[1] as num).toDouble()
+        : double.tryParse(bbox[1].toString());
+    final y2 = bbox[3] is num
+        ? (bbox[3] as num).toDouble()
+        : double.tryParse(bbox[3].toString());
+    if (y1 == null || y2 == null) return null;
+    return (y1 + y2) / 2.0;
+  }
+}
+
+class _RowCandidate {
+  final int y;
+  final double coverage;
+  final double longestRunRatio;
+  final double continuity;
+
+  const _RowCandidate({
+    required this.y,
+    required this.coverage,
+    required this.longestRunRatio,
+    required this.continuity,
+  });
 }

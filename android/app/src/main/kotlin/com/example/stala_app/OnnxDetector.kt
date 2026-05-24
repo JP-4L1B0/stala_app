@@ -70,6 +70,8 @@ class OnnxDetector(private val context: Context) {
             TAG,
             "detectFromImagePath: original bitmap width=${originalBitmap.width} height=${originalBitmap.height}"
         )
+        val originalWidth = originalBitmap.width
+        val originalHeight = originalBitmap.height
 
         return try {
             val enhancedBitmap = applyClaheEnhancement(originalBitmap)
@@ -119,6 +121,8 @@ class OnnxDetector(private val context: Context) {
                 "inputImagePath" to imagePath,
                 "preprocessedImagePath" to preprocessedImagePath,
                 "detectionImagePath" to preprocessedImagePath,
+                "originalImageWidth" to originalWidth,
+                "originalImageHeight" to originalHeight,
                 "imageWidth" to MODEL_INPUT_WIDTH,
                 "imageHeight" to MODEL_INPUT_HEIGHT,
                 "detections" to detections,
