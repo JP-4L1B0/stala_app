@@ -1,5 +1,4 @@
 import 'event_manager_service.dart';
-import 'chord_voicing_service.dart';
 import 'rhythm_interpretation_service.dart';
 import '../models/tablature_result.dart';
 
@@ -23,26 +22,8 @@ class TablatureResultAdapter {
     }).toList();
   }
 
-  List<TablatureResult> fromChordVoicingResult({
-    required ChordVoicingResult result,
-    RhythmInterpretationResult? rhythmResult,
-    String titleFallback = 'Untitled',
-  }) {
-    return result.lines.map((line) {
-      return TablatureResult(
-        title: line.title.isNotEmpty ? line.title : titleFallback,
-        mode: TranslationMode.chordAware,
-        sourceLineId: line.sourceLineId,
-        events: line.events
-            .map((event) => _fromChordVoicedEvent(event, rhythmResult))
-            .toList(),
-      );
-    }).toList();
-  }
-
   List<TablatureResult> combine({
     EventManagerResult? eventManagerResult,
-    ChordVoicingResult? chordVoicingResult,
     RhythmInterpretationResult? rhythmResult,
     String titleFallback = 'Untitled',
   }) {
@@ -50,12 +31,6 @@ class TablatureResultAdapter {
       if (eventManagerResult != null)
         ...fromEventManagerResult(
           result: eventManagerResult,
-          rhythmResult: rhythmResult,
-          titleFallback: titleFallback,
-        ),
-      if (chordVoicingResult != null)
-        ...fromChordVoicingResult(
-          result: chordVoicingResult,
           rhythmResult: rhythmResult,
           titleFallback: titleFallback,
         ),
@@ -95,53 +70,19 @@ class TablatureResultAdapter {
     );
   }
 
-  TablatureEvent _fromChordVoicedEvent(
-    ChordVoicedEvent event,
-    RhythmInterpretationResult? rhythmResult,
-  ) {
-    final duration = _durationFor(
-      rhythmResult: rhythmResult,
-      measureIndex: event.measureIndex,
-      sourceX: event.sourceX,
-      fallback: 1.0,
-    );
-
-    return TablatureEvent(
-      eventIndex: event.eventIndex,
-      label: event.label,
-      durationSeconds: duration,
-      positions: event.chosenPositions.map((p) {
-        return TabPosition(
-          stringNumber: p.stringNumber,
-          fret: p.fret,
-          pitch: p.pitch,
-        );
-      }).toList(),
-      metadata: {
-        'source': 'chord_voicing',
-        'cost': event.cost,
-        'voicingReason': event.voicingReason,
-        'measureId': event.measureId,
-        'measureIndex': event.measureIndex,
-        'sourceX': event.sourceX,
-        'durationBeats': duration,
-      },
-    );
-  }
-
   TranslationMode _modeFromLineId(String id) {
     final normalized = id.toLowerCase();
 
     if (normalized.contains('strict')) {
-      return TranslationMode.strict;
+      return TranslationMode.trebleOnly;
     }
 
-    if (normalized.contains('continuity')) {
-      return TranslationMode.continuity;
+    if (normalized.contains('treble')) {
+      return TranslationMode.trebleOnly;
     }
 
-    if (normalized.contains('chord')) {
-      return TranslationMode.chordAware;
+    if (normalized.contains('grand') || normalized.contains('chord')) {
+      return TranslationMode.grandStaff;
     }
 
     return TranslationMode.unknown;

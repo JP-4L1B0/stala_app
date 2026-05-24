@@ -1,13 +1,17 @@
 enum TranslationMode {
-  strict,
-  continuity,
-  chordAware,
+  trebleOnly,
+  grandStaff,
   unknown,
 }
 
 TranslationMode translationModeFromString(dynamic value) {
+  final raw = value?.toString();
+  if (raw == 'strict') return TranslationMode.trebleOnly;
+  if (raw == 'chordAware') return TranslationMode.grandStaff;
+  if (raw == 'continuity') return TranslationMode.unknown;
+
   return TranslationMode.values.firstWhere(
-        (mode) => mode.name == value?.toString(),
+        (mode) => mode.name == raw,
     orElse: () => TranslationMode.unknown,
   );
 }

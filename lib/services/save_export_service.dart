@@ -272,6 +272,10 @@ class SaveExportService {
       ..color = Colors.black87
       ..strokeWidth = 1.8;
 
+    final measurePaint = Paint()
+      ..color = Colors.black87
+      ..strokeWidth = 1.6;
+
     final borderPaint = Paint()
       ..color = Colors.black26
       ..style = PaintingStyle.stroke
@@ -307,6 +311,25 @@ class SaveExportService {
         linePaint,
       );
     }
+
+    final tabTop = topPadding;
+    final tabBottom = topPadding + (rows.length - 1) * rowHeight;
+    canvas.drawLine(
+      Offset(margin + labelWidth, tabTop),
+      Offset(margin + labelWidth, tabBottom),
+      measurePaint,
+    );
+    for (int localIndex = 0; localIndex < page.columns.length; localIndex++) {
+      final column = page.columns[localIndex];
+      if (!column.startsMeasure || localIndex == 0) continue;
+      final x = margin + labelWidth + (localIndex * columnWidth);
+      canvas.drawLine(Offset(x, tabTop), Offset(x, tabBottom), measurePaint);
+    }
+    canvas.drawLine(
+      Offset(pageWidth - margin, tabTop),
+      Offset(pageWidth - margin, tabBottom),
+      measurePaint,
+    );
 
     for (int localIndex = 0; localIndex < page.columns.length; localIndex++) {
       final column = page.columns[localIndex];
@@ -452,6 +475,10 @@ class SaveExportService {
       ..color = Colors.black87
       ..strokeWidth = 1.5;
 
+    final measurePaint = Paint()
+      ..color = Colors.black87
+      ..strokeWidth = 1.4;
+
     final borderPaint = Paint()
       ..color = Colors.black26
       ..style = PaintingStyle.stroke
@@ -503,6 +530,24 @@ class SaveExportService {
           linePaint,
         );
       }
+
+      final tabBottom = tabTop + (GenerationService.standardGuitarRows.length - 1) * rowHeight;
+      canvas.drawLine(
+        Offset(margin + labelWidth, tabTop),
+        Offset(margin + labelWidth, tabBottom),
+        measurePaint,
+      );
+      for (int localIndex = 0; localIndex < page.columns.length; localIndex++) {
+        final column = page.columns[localIndex];
+        if (!column.startsMeasure || localIndex == 0) continue;
+        final x = margin + labelWidth + (localIndex * columnWidth);
+        canvas.drawLine(Offset(x, tabTop), Offset(x, tabBottom), measurePaint);
+      }
+      canvas.drawLine(
+        Offset(pageWidth - margin, tabTop),
+        Offset(pageWidth - margin, tabBottom),
+        measurePaint,
+      );
 
       for (int localIndex = 0; localIndex < page.columns.length; localIndex++) {
         final column = page.columns[localIndex];
