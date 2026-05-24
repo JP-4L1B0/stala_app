@@ -78,9 +78,8 @@ class FretboardMappingService {
     required MusicalInterpretationResult interpretation,
   }) {
     final lines = [
-      _mapLine(interpretation.chordAwareLine),
-      _mapLine(interpretation.strictMelodyLine),
-      _mapLine(interpretation.continuityMelodyLine),
+      _mapLine(interpretation.grandStaffLine),
+      _mapLine(interpretation.trebleOnlyLine),
     ];
 
     return FretboardMappingResult(lines: lines);

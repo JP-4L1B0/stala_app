@@ -1,4 +1,5 @@
 import 'fretboard_mapping_service.dart';
+import 'playability_scoring_service.dart';
 
 class PlayableEvent {
   final int eventIndex;
@@ -41,14 +42,16 @@ class EventManagerResult {
 }
 
 class EventManagerService {
+  final PlayabilityScoringService _playabilityScoring =
+      const PlayabilityScoringService();
+
   EventManagerResult manage({
     required FretboardMappingResult fretboardMapping,
   }) {
     final lines = fretboardMapping.lines
-        // For now, optimize melody lines first.
         .where(
           (line) =>
-              line.id.contains('strict') || line.id.contains('continuity'),
+              line.id.contains('treble') || line.id.contains('grand_staff'),
         )
         .map(_optimizeLine)
         .whereType<ManagedEventLine>()
@@ -190,98 +193,14 @@ class EventManagerService {
   }
 
   double _initialCandidateCost(FretboardCandidate candidate) {
-    final positions = candidate.positions;
-    if (positions.isEmpty) return 9999;
-
-    final avgFret =
-        positions.map((p) => p.fret).reduce((a, b) => a + b) / positions.length;
-
-    final span = _fretSpan(positions);
-    final openCount = positions.where((p) => p.fret == 0).length;
-
-    double cost = 0;
-
-    // Prefer lower/mid fret starting area.
-    cost += avgFret * 0.8;
-
-    // Avoid wide chord shapes.
-    cost += span * 3.0;
-
-    // Slight reward for open strings.
-    cost -= openCount * 1.5;
-
-    return cost;
+    return _playabilityScoring.initialCandidateCost(candidate).cost;
   }
 
   double _transitionCost(
     FretboardCandidate previous,
     FretboardCandidate current,
   ) {
-    final prevCenter = _candidateCenter(previous);
-    final currCenter = _candidateCenter(current);
-
-    final fretDistance = (currCenter.fret - prevCenter.fret).abs();
-    final stringDistance = (currCenter.stringNumber - prevCenter.stringNumber)
-        .abs();
-
-    final currentSpan = _fretSpan(current.positions);
-    final openCount = current.positions.where((p) => p.fret == 0).length;
-
-    double cost = 0;
-
-    cost += fretDistance * 4.0;
-    cost += stringDistance * 2.0;
-    cost += currentSpan * 3.0;
-
-    // Big penalty for large jumps.
-    if (fretDistance > 5) {
-      cost += 20;
-    }
-
-    if (fretDistance > 9) {
-      cost += 40;
-    }
-
-    // Reward staying on nearby/same string.
-    if (stringDistance == 0) {
-      cost -= 2;
-    }
-
-    // Slight reward for open strings.
-    cost -= openCount * 1.0;
-
-    return cost;
-  }
-
-  _CandidateCenter _candidateCenter(FretboardCandidate candidate) {
-    final positions = candidate.positions;
-
-    if (positions.isEmpty) {
-      return const _CandidateCenter(stringNumber: 3, fret: 0);
-    }
-
-    final avgString =
-        positions.map((p) => p.stringNumber).reduce((a, b) => a + b) /
-        positions.length;
-
-    final avgFret =
-        positions.map((p) => p.fret).reduce((a, b) => a + b) / positions.length;
-
-    return _CandidateCenter(
-      stringNumber: avgString.round(),
-      fret: avgFret.round(),
-    );
-  }
-
-  int _fretSpan(List<GuitarPosition> positions) {
-    final fretted = positions.where((p) => p.fret > 0).toList();
-    if (fretted.length < 2) return 0;
-
-    final minFret = fretted.map((p) => p.fret).reduce((a, b) => a < b ? a : b);
-
-    final maxFret = fretted.map((p) => p.fret).reduce((a, b) => a > b ? a : b);
-
-    return maxFret - minFret;
+    return _playabilityScoring.transitionCost(previous, current);
   }
 }
 
@@ -290,11 +209,4 @@ class _PathState {
   final int? previousIndex;
 
   const _PathState({required this.cost, required this.previousIndex});
-}
-
-class _CandidateCenter {
-  final int stringNumber;
-  final int fret;
-
-  const _CandidateCenter({required this.stringNumber, required this.fret});
 }
