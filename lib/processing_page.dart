@@ -188,6 +188,11 @@ class _NoteheadValidation {
   final double? attachmentStemCenterX;
   final double attachmentPenalty;
   final String reason;
+  final bool ledgerCandidate;
+  final bool ledgerPreserved;
+  final bool edgeLedgerCandidate;
+  final bool continuityRelaxed;
+  final String? ledgerRejectionReason;
 
   const _NoteheadValidation({
     required this.valid,
@@ -199,6 +204,11 @@ class _NoteheadValidation {
     required this.attachmentStemCenterX,
     required this.attachmentPenalty,
     required this.reason,
+    required this.ledgerCandidate,
+    required this.ledgerPreserved,
+    required this.edgeLedgerCandidate,
+    required this.continuityRelaxed,
+    required this.ledgerRejectionReason,
   });
 
   const _NoteheadValidation.invalid(String failureReason)
@@ -210,6 +220,11 @@ class _NoteheadValidation {
       attachmentType = StemAttachmentType.unknown,
       attachmentStemCenterX = null,
       attachmentPenalty = 0.0,
+      ledgerCandidate = false,
+      ledgerPreserved = false,
+      edgeLedgerCandidate = false,
+      continuityRelaxed = false,
+      ledgerRejectionReason = null,
       reason = failureReason;
 }
 
@@ -1401,7 +1416,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
   List<Map<String, dynamic>> _freezeValidatedStaffs(dynamic rawStaffs) {
     if (rawStaffs is! List) return const [];
 
-    return rawStaffs
+    final frozen = rawStaffs
         .whereType<Map>()
         .map((item) {
           final staff = Map<String, dynamic>.from(
@@ -1437,7 +1452,27 @@ class _ProcessingPageState extends State<ProcessingPage> {
             'coordinateSpace': 'original_image',
           });
         })
-        .toList(growable: false);
+        .toList();
+
+    frozen.sort((a, b) {
+      final aLines =
+          (a['lines'] as List?)?.whereType<double>().toList() ??
+          const <double>[];
+      final bLines =
+          (b['lines'] as List?)?.whereType<double>().toList() ??
+          const <double>[];
+      final aY = aLines.isEmpty ? double.infinity : aLines.first;
+      final bY = bLines.isEmpty ? double.infinity : bLines.first;
+      final yCompare = aY.compareTo(bY);
+      if (yCompare != 0) return yCompare;
+      final aSpacing = _toDouble(a['spacing']) ?? 0.0;
+      final bSpacing = _toDouble(b['spacing']) ?? 0.0;
+      final spacingCompare = aSpacing.compareTo(bSpacing);
+      if (spacingCompare != 0) return spacingCompare;
+      return (a['id']?.toString() ?? '').compareTo(b['id']?.toString() ?? '');
+    });
+
+    return List<Map<String, dynamic>>.unmodifiable(frozen);
   }
 
   Map<String, dynamic> _staffIntegrityReport(List<dynamic> validatedStaffs) {
@@ -1820,7 +1855,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
       return className == 'treble_clef' || className == 'bass_clef';
     }).toList();
 
-    final semanticRegions = _buildPostClefSemanticRegions(
+    final semanticRegions = _buildPreMeasureSemanticRegions(
       clefs: clefs,
       validatedStaffs: validatedStaffs,
     );
@@ -1851,12 +1886,24 @@ class _ProcessingPageState extends State<ProcessingPage> {
       StemAttachmentType.unknown: 0,
     };
     var centerAttachmentPenaltyCount = 0;
+    var rawDetectedLedgerCount = 0;
+    var preservedLedgerCount = 0;
+    var rejectedLedgerCount = 0;
+    var edgeLedgerCount = 0;
+    var continuityRelaxationCount = 0;
+    final ledgerRejectionReasonCounts = <String, int>{};
 
     void countReasons(List<String> reasons) {
       for (final reason in reasons) {
         rejectionReasonCounts[reason] =
             (rejectionReasonCounts[reason] ?? 0) + 1;
       }
+    }
+
+    void countLedgerReason(String? reason) {
+      if (reason == null || reason.isEmpty) return;
+      ledgerRejectionReasonCounts[reason] =
+          (ledgerRejectionReasonCounts[reason] ?? 0) + 1;
     }
 
     for (final item in symbols.where((item) {
@@ -1916,6 +1963,10 @@ class _ProcessingPageState extends State<ProcessingPage> {
             validation.attachmentType == StemAttachmentType.center) {
           centerAttachmentPenaltyCount++;
         }
+        if (validation.ledgerCandidate) rawDetectedLedgerCount++;
+        if (validation.ledgerPreserved) preservedLedgerCount++;
+        if (validation.edgeLedgerCandidate) edgeLedgerCount++;
+        if (validation.continuityRelaxed) continuityRelaxationCount++;
 
         if (validation.valid) {
           final node = SymbolNode(
@@ -1933,6 +1984,10 @@ class _ProcessingPageState extends State<ProcessingPage> {
               'stemAttachmentType': validation.attachmentType.name,
               'stemAttachmentX': validation.attachmentStemCenterX,
               'stemAttachmentPenalty': validation.attachmentPenalty,
+              'ledgerCandidate': validation.ledgerCandidate,
+              'ledgerPreserved': validation.ledgerPreserved,
+              'edgeLedgerCandidate': validation.edgeLedgerCandidate,
+              'continuityRelaxed': validation.continuityRelaxed,
             },
           ).toMap();
           symbolGraph.add(node);
@@ -1954,10 +2009,19 @@ class _ProcessingPageState extends State<ProcessingPage> {
               'stemAttachmentType': validation.attachmentType.name,
               'stemAttachmentX': validation.attachmentStemCenterX,
               'stemAttachmentPenalty': validation.attachmentPenalty,
+              'ledgerCandidate': validation.ledgerCandidate,
+              'ledgerPreserved': validation.ledgerPreserved,
+              'edgeLedgerCandidate': validation.edgeLedgerCandidate,
+              'continuityRelaxed': validation.continuityRelaxed,
+              'ledgerRejectionReason': validation.ledgerRejectionReason,
             },
           ).toMap();
           symbolGraph.add(node);
           rejectedNoteheads.add({...node, 'className': 'notehead'});
+          if (validation.ledgerCandidate) {
+            rejectedLedgerCount++;
+            countLedgerReason(validation.ledgerRejectionReason);
+          }
           countReasons(reasons);
         }
         continue;
@@ -1972,6 +2036,15 @@ class _ProcessingPageState extends State<ProcessingPage> {
       'unknown=${stemAttachmentCounts[StemAttachmentType.unknown] ?? 0}',
     );
     print('CENTER_ATTACHMENT_PENALTIES=$centerAttachmentPenaltyCount');
+    print(
+      'LEDGER_STABILITY: '
+      'rawDetectedLedgerCount=$rawDetectedLedgerCount '
+      'preservedLedgerCount=$preservedLedgerCount '
+      'rejectedLedgerCount=$rejectedLedgerCount '
+      'edgeLedgerCount=$edgeLedgerCount '
+      'continuityRelaxationCount=$continuityRelaxationCount '
+      'rejectionReasons=$ledgerRejectionReasonCounts',
+    );
 
     final inferredSymbols = _generateInferredLedgerNoteheads(
       validSymbols: translationDetections,
@@ -1999,6 +2072,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
           validSymbols: translationDetections,
           ledgerLines: ledgerLines,
           validatedStaffs: validatedStaffs,
+          semanticRegions: semanticRegions,
           clefSafetyRegions: clefSafetyRegions,
         );
         if (validation.valid) {
@@ -2165,7 +2239,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
     return regions;
   }
 
-  List<Map<String, dynamic>> _buildPostClefSemanticRegions({
+  List<Map<String, dynamic>> _buildPreMeasureSemanticRegions({
     required List<Map<String, dynamic>> clefs,
     required List<dynamic> validatedStaffs,
   }) {
@@ -2185,17 +2259,50 @@ class _ProcessingPageState extends State<ProcessingPage> {
       final bottom = _toDouble(staff['bottomBoundary']);
       if (staffId.isEmpty || top == null || bottom == null) continue;
 
-      final width = spacing * 6.0;
+      final clefTransitionWidth = spacing * 1.1;
+      final keySignatureWidth = spacing * 4.2;
+      final timeSignatureWidth = spacing * 2.7;
+      final regionTop = top - spacing * 0.5;
+      final regionBottom = bottom + spacing * 0.5;
+      final clefRight = clefGeometry.x2;
+      final keyStart = clefRight + spacing * 0.45;
+      final timeStart = keyStart + keySignatureWidth;
+
       regions.add({
-        'id': 'post_clef_${regions.length}',
+        'id': 'clef_transition_${regions.length}',
         'staffId': staffId,
-        'type': 'postClefSemanticRegion',
-        'x1': clefGeometry.x2,
-        'x2': clefGeometry.x2 + width,
-        'y1': top - spacing * 0.5,
-        'y2': bottom + spacing * 0.5,
+        'type': 'clefTransitionSemanticRegion',
+        'semanticRole': 'clef',
+        'x1': clefRight,
+        'x2': clefRight + clefTransitionWidth,
+        'y1': regionTop,
+        'y2': regionBottom,
         'sourceClass': _symbolClassName(clef),
         'penalty': 0.25,
+      });
+      regions.add({
+        'id': 'key_signature_${regions.length}',
+        'staffId': staffId,
+        'type': 'keySignatureSemanticRegion',
+        'semanticRole': 'keySignature',
+        'x1': keyStart,
+        'x2': keyStart + keySignatureWidth,
+        'y1': regionTop,
+        'y2': regionBottom,
+        'sourceClass': _symbolClassName(clef),
+        'penalty': 0.0,
+      });
+      regions.add({
+        'id': 'time_signature_${regions.length}',
+        'staffId': staffId,
+        'type': 'timeSignatureSemanticRegion',
+        'semanticRole': 'timeSignature',
+        'x1': timeStart - spacing * 0.35,
+        'x2': timeStart + timeSignatureWidth,
+        'y1': regionTop,
+        'y2': regionBottom,
+        'sourceClass': _symbolClassName(clef),
+        'penalty': 0.32,
       });
     }
 
@@ -2332,6 +2439,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
     double score = confidence;
     final reasons = <String>[];
     var attachmentPenalty = 0.0;
+    var ledgerPreserved = false;
+    var continuityRelaxed = false;
+    String? ledgerRejectionReason;
 
     if (!baseValid && !wholeNote) {
       if (!insideStaff && !ledgerSupported) reasons.add('outside staff/ledger');
@@ -2348,7 +2458,10 @@ class _ProcessingPageState extends State<ProcessingPage> {
       reasons.add('clef overlap penalty');
     }
 
-    final inPostClefRegion = _regionContaining(geometry, semanticRegions);
+    final inPostClefRegion = _penalizingSemanticRegionContaining(
+      geometry,
+      semanticRegions,
+    );
     final inClefSafetyRegion = _regionContaining(geometry, clefSafetyRegions);
     final attachment = wholeNote
         ? const _StemAttachmentAnalysis(
@@ -2368,6 +2481,16 @@ class _ProcessingPageState extends State<ProcessingPage> {
       allSymbols,
       spacing: spacing,
     );
+    final ledgerContinuitySupport = _ledgerContinuitySupportForNotehead(
+      symbol: geometry,
+      ledgerLines: ledgerLines,
+      spacing: spacing,
+    );
+    final edgeLedgerCandidate =
+        ledgerSupported && !hasNearbyNotehead && !hasRhythmicNeighbor;
+    final rawDetectedLedgerCandidate =
+        ledgerSupported &&
+        SymbolState.fromValue(item['symbolState']) != SymbolState.inferred;
     final attachedToValidEdgeStem =
         attachment.type == StemAttachmentType.leftEdge ||
         attachment.type == StemAttachmentType.rightEdge;
@@ -2466,6 +2589,34 @@ class _ProcessingPageState extends State<ProcessingPage> {
       reasons.add('stem direction attachment mismatch');
     }
 
+    final semanticConflict =
+        inPostClefRegion != null || timeSignatureLike.contains(item);
+    final clefCoreConflict =
+        inClefSafetyRegion != null &&
+        _insideClefCore(geometry, inClefSafetyRegion);
+    final centerStemConflict =
+        attachment.type == StemAttachmentType.center &&
+        !hasBeamSupport &&
+        !hasRhythmicNeighbor;
+    final plausibleRawLedger =
+        rawDetectedLedgerCandidate &&
+        confidence >= 0.62 &&
+        morphology >= 0.34 &&
+        alignment >= 0.26 &&
+        !semanticConflict &&
+        !clefCoreConflict &&
+        !centerStemConflict;
+
+    if (plausibleRawLedger) {
+      final continuityBias = ledgerContinuitySupport > 0.0 ? 0.05 : 0.0;
+      final edgeBias = edgeLedgerCandidate ? 0.03 : 0.0;
+      score += 0.06 + continuityBias + edgeBias;
+      ledgerPreserved = true;
+      continuityRelaxed = continuityBias > 0.0;
+      reasons.remove('isolated notehead');
+      reasons.remove('weak staff alignment');
+    }
+
     if (timeSignatureLike.contains(item)) {
       score -= 0.38;
       reasons.add('vertical time-signature-like stack');
@@ -2483,10 +2634,22 @@ class _ProcessingPageState extends State<ProcessingPage> {
     }
 
     final threshold = inPostClefRegion == null ? 0.45 : 0.52;
+    final ledgerThreshold = plausibleRawLedger ? threshold - 0.04 : threshold;
     final finalScore = score.clamp(0.0, 1.0).toDouble();
     final valid = wholeNote
         ? finalScore >= 0.56 && !timeSignatureLike.contains(item)
-        : baseValid && finalScore >= threshold;
+        : baseValid && finalScore >= ledgerThreshold;
+
+    if (rawDetectedLedgerCandidate && !valid) {
+      ledgerRejectionReason = _ledgerRejectionReason(
+        ledgerSupported: ledgerSupported,
+        semanticConflict: semanticConflict,
+        clefCoreConflict: clefCoreConflict,
+        morphology: morphology,
+        alignment: alignment,
+        supportScore: support.total,
+      );
+    }
 
     return _NoteheadValidation(
       valid: valid,
@@ -2497,10 +2660,15 @@ class _ProcessingPageState extends State<ProcessingPage> {
       attachmentType: attachment.type,
       attachmentStemCenterX: attachment.stemCenterX,
       attachmentPenalty: attachmentPenalty.clamp(0.0, 1.0).toDouble(),
+      ledgerCandidate: rawDetectedLedgerCandidate,
+      ledgerPreserved: valid && ledgerPreserved,
+      edgeLedgerCandidate: edgeLedgerCandidate,
+      continuityRelaxed: continuityRelaxed,
+      ledgerRejectionReason: ledgerRejectionReason,
       reason: valid
           ? wholeNote
                 ? 'accepted whole-note geometry score=${finalScore.toStringAsFixed(2)}'
-                : 'accepted score=${finalScore.toStringAsFixed(2)} support=${support.total.toStringAsFixed(2)} nonStem=${support.nonStem.toStringAsFixed(2)} attachment=${attachment.type.name}'
+                : 'accepted score=${finalScore.toStringAsFixed(2)} support=${support.total.toStringAsFixed(2)} nonStem=${support.nonStem.toStringAsFixed(2)} attachment=${attachment.type.name}${ledgerPreserved ? ' ledger_preserved' : ''}'
           : (reasons.isEmpty ? 'score below threshold' : reasons.join(', ')),
     );
   }
@@ -2724,11 +2892,20 @@ class _ProcessingPageState extends State<ProcessingPage> {
     required List<Map<String, dynamic>> validSymbols,
     required List<dynamic> ledgerLines,
     required List<dynamic> validatedStaffs,
+    required List<Map<String, dynamic>> semanticRegions,
     required List<Map<String, dynamic>> clefSafetyRegions,
   }) {
     final staff = _nearestStaffForSymbol(symbol, validatedStaffs);
     final spacing =
         _toDouble(staff?['validatedStaffSpacing'] ?? staff?['spacing']) ?? 12.0;
+    final semanticRole = _semanticRoleContaining(symbol, semanticRegions);
+    if (semanticRole == 'keySignature') {
+      return const _SymbolAttachmentValidation(
+        valid: true,
+        reason: 'key signature semantic region',
+      );
+    }
+
     final clefPenalty = computeClefOverlapPenalty(
       symbol: symbol,
       clefSafetyRegions: clefSafetyRegions,
@@ -2989,6 +3166,78 @@ class _ProcessingPageState extends State<ProcessingPage> {
     return false;
   }
 
+  double _ledgerContinuitySupportForNotehead({
+    required _SymbolGeometry symbol,
+    required List<dynamic> ledgerLines,
+    required double spacing,
+  }) {
+    final unit = spacing > 0 ? spacing : 12.0;
+    final matchingLedgers = <_SymbolGeometry>[];
+
+    for (final item in ledgerLines) {
+      if (item is! Map) continue;
+      final x1 = _toDouble(item['x1']);
+      final x2 = _toDouble(item['x2']);
+      final y = _toDouble(item['y']);
+      if (x1 == null || x2 == null || y == null) continue;
+
+      final yClose = (symbol.centerY - y).abs() <= unit * 1.35;
+      final xClose =
+          symbol.centerX >= x1 - unit * 1.8 &&
+          symbol.centerX <= x2 + unit * 1.8;
+      if (!yClose || !xClose) continue;
+
+      matchingLedgers.add(
+        _SymbolGeometry(
+          x1: x1 < x2 ? x1 : x2,
+          y1: y,
+          x2: x1 < x2 ? x2 : x1,
+          y2: y,
+          centerX: (x1 + x2) / 2.0,
+          centerY: y,
+        ),
+      );
+    }
+
+    if (matchingLedgers.isEmpty) return 0.0;
+
+    final hasNeighboringLedger = ledgerLines.whereType<Map>().any((item) {
+      final x1 = _toDouble(item['x1']);
+      final x2 = _toDouble(item['x2']);
+      final y = _toDouble(item['y']);
+      if (x1 == null || x2 == null || y == null) return false;
+      final centerX = (x1 + x2) / 2.0;
+      final dx = (centerX - symbol.centerX).abs();
+      final dy = (y - symbol.centerY).abs();
+      final supportsCurrentNote =
+          dy <= unit * 0.35 &&
+          symbol.centerX >= x1 - unit * 1.8 &&
+          symbol.centerX <= x2 + unit * 1.8;
+      if (supportsCurrentNote) return false;
+      final xAligned = dx <= unit * 1.6;
+      final yStepAligned = (1 <= dy / unit && dy / unit <= 3.2) ||
+          dy <= unit * 0.75;
+      return xAligned && yStepAligned;
+    });
+
+    return hasNeighboringLedger ? 1.0 : 0.0;
+  }
+
+  String _ledgerRejectionReason({
+    required bool ledgerSupported,
+    required bool semanticConflict,
+    required bool clefCoreConflict,
+    required double morphology,
+    required double alignment,
+    required double supportScore,
+  }) {
+    if (!ledgerSupported) return 'no ledger support';
+    if (semanticConflict || clefCoreConflict) return 'semantic conflict';
+    if (morphology < 0.34 || alignment < 0.26) return 'geometry mismatch';
+    if (supportScore < 0.12) return 'weak structure support';
+    return 'virtual alignment fail';
+  }
+
   bool _supportedByStem(
     _SymbolGeometry symbol,
     List<dynamic> stems, {
@@ -3242,6 +3491,26 @@ class _ProcessingPageState extends State<ProcessingPage> {
     return null;
   }
 
+  String? _semanticRoleContaining(
+    _SymbolGeometry symbol,
+    List<Map<String, dynamic>> regions,
+  ) {
+    final region = _regionContaining(symbol, regions);
+    return region?['semanticRole']?.toString();
+  }
+
+  Map<String, dynamic>? _penalizingSemanticRegionContaining(
+    _SymbolGeometry symbol,
+    List<Map<String, dynamic>> regions,
+  ) {
+    for (final region in regions) {
+      final role = region['semanticRole']?.toString();
+      if (role == 'keySignature') continue;
+      if (_regionContaining(symbol, [region]) != null) return region;
+    }
+    return null;
+  }
+
   bool _insideClefCore(
     _SymbolGeometry symbol,
     Map<String, dynamic> clefSafetyRegion,
@@ -3303,6 +3572,7 @@ class _ProcessingPageState extends State<ProcessingPage> {
 
       final hasProtectiveSupport =
           support.ledger || support.edgeStem || support.beam || support.chord;
+      final hasCoreStructuralSupport = support.ledger || support.beam;
       final outsideTransition = symbol.centerX > transition.x2 + spacing * 0.35;
       if (outsideTransition) {
         return const _ClefOverlapPenalty(
@@ -3328,8 +3598,16 @@ class _ProcessingPageState extends State<ProcessingPage> {
       var penalty = 0.0;
 
       if (inCore) {
-        penalty += hasProtectiveSupport ? 0.34 : 0.62;
+        penalty += hasCoreStructuralSupport ? 0.38 : 0.68;
         reasons.add('overlap_core');
+        if (!hasCoreStructuralSupport) {
+          penalty += 0.14;
+          reasons.add('clef_core_dominance');
+        }
+        if (region['sourceClass']?.toString() == 'bass_clef') {
+          penalty += 0.06;
+          reasons.add('bass_clef_core');
+        }
       } else if (inExpansion) {
         penalty += hasProtectiveSupport ? 0.10 : 0.34;
         reasons.add('clef_expansion_overlap');
@@ -3349,9 +3627,9 @@ class _ProcessingPageState extends State<ProcessingPage> {
       }
 
       return _ClefOverlapPenalty(
-        penalty: penalty.clamp(0.0, 0.82).toDouble(),
+        penalty: penalty.clamp(0.0, 0.92).toDouble(),
         reasons: reasons,
-        coreRejected: inCore && penalty >= 0.50,
+        coreRejected: inCore && penalty >= 0.56,
         transitionPenalty: inTransition,
         validNearClef: hasProtectiveSupport && penalty < 0.20,
       );
@@ -3401,9 +3679,12 @@ class _ProcessingPageState extends State<ProcessingPage> {
     final likely = <Map<String, dynamic>>{};
 
     for (final region in semanticRegions) {
+      final role = region['semanticRole']?.toString();
+      if (role != null && role != 'timeSignature') continue;
+
       final regionSpacing =
           ((_toDouble(region['x2']) ?? 0) - (_toDouble(region['x1']) ?? 0)) /
-          6.0;
+          (role == 'timeSignature' ? 2.7 : 6.0);
       final spacing = regionSpacing > 0 ? regionSpacing : 12.0;
       final inside = noteheadCandidates.where((item) {
         final geometry = _symbolGeometry(item);
