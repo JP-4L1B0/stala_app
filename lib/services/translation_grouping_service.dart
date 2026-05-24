@@ -273,7 +273,15 @@ class TranslationGroupingService {
     }
 
     if (fromValidated.isNotEmpty) {
-      fromValidated.sort((a, b) => a.lines.first.compareTo(b.lines.first));
+      fromValidated.sort((a, b) {
+        final yCompare = a.lines.first.compareTo(b.lines.first);
+        if (yCompare != 0) return yCompare;
+
+        final spacingCompare = (a.spacing ?? 0.0).compareTo(b.spacing ?? 0.0);
+        if (spacingCompare != 0) return spacingCompare;
+
+        return a.staffId.compareTo(b.staffId);
+      });
       return fromValidated;
     }
 
