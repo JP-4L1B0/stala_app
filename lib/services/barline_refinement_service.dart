@@ -270,7 +270,17 @@ class BarlineRefinementService {
       final bLines = (b['lines'] as List?) ?? const [];
       final aY = aLines.isEmpty ? 0.0 : _toDouble(aLines.first) ?? 0.0;
       final bY = bLines.isEmpty ? 0.0 : _toDouble(bLines.first) ?? 0.0;
-      return aY.compareTo(bY);
+      final yCompare = aY.compareTo(bY);
+      if (yCompare != 0) return yCompare;
+
+      final aSpacing =
+          _toDouble(a['validatedStaffSpacing'] ?? a['spacing']) ?? 0.0;
+      final bSpacing =
+          _toDouble(b['validatedStaffSpacing'] ?? b['spacing']) ?? 0.0;
+      final spacingCompare = aSpacing.compareTo(bSpacing);
+      if (spacingCompare != 0) return spacingCompare;
+
+      return (a['id']?.toString() ?? '').compareTo(b['id']?.toString() ?? '');
     });
 
     return staffs
