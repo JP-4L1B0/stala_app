@@ -7,9 +7,14 @@ import 'services/generation_service.dart';
 import 'services/save_export_service.dart';
 import 'services/audio_playback_service.dart';
 import 'data/app_settings_repository.dart';
+import 'data/debug_settings_repository.dart';
 import 'data/recent_items_repository.dart';
+import 'dummy_page.dart';
 import 'models/session_data.dart';
 import 'models/saved_item_data.dart';
+import 'models/translation_group_models.dart';
+import 'processing_page.dart';
+import 'services/processing_session_navigation.dart';
 import 'services/tutorial_service.dart';
 
 class ResultPage extends StatefulWidget {
@@ -43,7 +48,6 @@ class _ResultPageState extends State<ResultPage> {
   final GlobalKey _resultPlaybackTourKey = GlobalKey();
   final GlobalKey _resultFretboardTourKey = GlobalKey();
 
-  bool _isMuted = false;
   bool _isSustainEnabled = false;
   double _playbackSpeed = 1.0;
   List<int> _activeMidiNotes = [];
@@ -88,6 +92,7 @@ class _ResultPageState extends State<ResultPage> {
   bool _isSavingTitle = false;
   bool _isExporting = false;
   bool _showAutoSaveStatus = false;
+  bool _debugPageEnabled = false;
 
   GeneratedTabResult get _currentTab =>
       widget.generatedTabs[_selectedModeIndex];
@@ -125,6 +130,17 @@ class _ResultPageState extends State<ResultPage> {
       keys: _resultTourKeys,
       page: TutorialPage.resultPage,
     );
+
+    _loadDebugSetting();
+    ProcessingSessionNavigation.enterResult(_session.id);
+  }
+
+  Future<void> _loadDebugSetting() async {
+    final enabled = await const DebugSettingsRepository().isDebugPageEnabled();
+    if (!mounted) return;
+    setState(() {
+      _debugPageEnabled = enabled;
+    });
   }
 
   List<GlobalKey> get _resultTourKeys => [
@@ -144,6 +160,7 @@ class _ResultPageState extends State<ResultPage> {
     _audioService.stopAll();
     _tabScrollController.dispose();
     _titleController.dispose();
+    ProcessingSessionNavigation.exitResult(_session.id);
     super.dispose();
   }
 
@@ -177,7 +194,7 @@ class _ResultPageState extends State<ResultPage> {
 
     _scrollToCurrent();
 
-    // Play tapped note/chord once, unless muted.
+    // Play tapped note/chord once.
     await _playCurrentColumnAudio();
 
     await Future.delayed(_previewDurationForColumn(_currentColumn));
@@ -191,6 +208,38 @@ class _ResultPageState extends State<ResultPage> {
 
   void _next() {
     _jumpToColumn(_currentColumnIndex + 1);
+  }
+
+  Future<void> _startProgression() async {
+    if (_currentTab.columns.isEmpty) return;
+
+    _timer?.cancel();
+    await _stopActiveAudio();
+
+    if (!mounted) return;
+
+    setState(() {
+      _currentColumnIndex = 0;
+      _isPlaying = false;
+    });
+
+    _scrollToCurrent();
+  }
+
+  Future<void> _endProgression() async {
+    if (_currentTab.columns.isEmpty) return;
+
+    _timer?.cancel();
+    await _stopActiveAudio();
+
+    if (!mounted) return;
+
+    setState(() {
+      _currentColumnIndex = _currentTab.columns.length - 1;
+      _isPlaying = false;
+    });
+
+    _scrollToCurrent();
   }
 
   Future<void> _togglePlay() async {
@@ -209,8 +258,7 @@ class _ResultPageState extends State<ResultPage> {
       return;
     }
 
-    final shouldRestart =
-        _currentColumnIndex >= _currentTab.columns.length - 1;
+    final shouldRestart = _currentColumnIndex >= _currentTab.columns.length - 1;
 
     setState(() {
       if (shouldRestart) {
@@ -305,6 +353,119 @@ class _ResultPageState extends State<ResultPage> {
     Navigator.pop(context, true);
   }
 
+  Future<void> _openDebugPage() async {
+    final session = _session;
+    final snapshot = session.segmentationData;
+    final debugSnapshot = session.debugSnapshot;
+    final generatedTabViews = _parseGeneratedTabViews(
+      debugSnapshot['generatedTabs'],
+    );
+
+    ProcessingSessionNavigation.logTransition(
+      session.id,
+      debugReused: true,
+      resultReused: true,
+    );
+    await Navigator.pushReplacement<Object?, Object?>(
+      context,
+      MaterialPageRoute(
+        builder: (debugContext) => DummyPage(
+          croppedImagePath:
+              session.croppedImagePath ?? session.originalImagePath,
+          detectedImagePath:
+              session.detectionImagePath ??
+              session.preprocessedImagePath ??
+              session.croppedImagePath ??
+              session.originalImagePath,
+          segmentedImagePath: session.segmentationImagePath,
+          detections: _parseDetectionPoints(session.detectedSymbols),
+          classItems: _parseClassItems(session.detectedSymbols),
+          staffOverlays: _snapshotItems(snapshot, 'validatedStaff'),
+          barLineOverlays: _snapshotItems(snapshot, 'barLine'),
+          stemOverlays: _snapshotItems(snapshot, 'stem'),
+          beamOverlays: _snapshotItems(snapshot, 'beam'),
+          semanticRegions: _snapshotItems(snapshot, 'semanticRegion'),
+          clefSafetyRegions: _snapshotItems(snapshot, 'clefSafetyRegion'),
+          rejectedNoteheads: session.pitchMappingData,
+          translateGroups: _parseTranslateGroups(
+            debugSnapshot['translateGroups'],
+          ),
+          noteGroups: _parseNoteGroups(debugSnapshot['noteGroups']),
+          rhythmEvents: _parseRhythmEvents(debugSnapshot['rhythmEvents']),
+          grandStaffPairs: _parseGrandStaffPairs(
+            debugSnapshot['grandStaffPairs'],
+          ),
+          polyMonoResults: _parsePolyMonoResults(
+            debugSnapshot['polyMonoResults'],
+          ),
+          musicInterpretations: _parseMusicInterpretations(
+            debugSnapshot['musicInterpretations'],
+          ),
+          fretboardMappings: _parseFretboardMappings(
+            debugSnapshot['fretboardMappings'],
+          ),
+          eventManagerResults: _parseEventManagerResults(
+            debugSnapshot['eventManagerResults'],
+          ),
+          chordVoicingResults: _parseChordVoicingResults(
+            debugSnapshot['chordVoicingResults'],
+          ),
+          session: session,
+          onRetry: () {
+            final sourcePath = session.originalImagePath;
+            final croppedPath =
+                session.croppedImagePath ?? session.originalImagePath;
+            if (sourcePath.trim().isEmpty || croppedPath.trim().isEmpty) {
+              return;
+            }
+            ProcessingSessionNavigation.logTransition(
+              session.id,
+              debugReused: true,
+              resultReused: true,
+            );
+            Navigator.of(debugContext).pushReplacement(
+              MaterialPageRoute(
+                builder: (_) => ProcessingPage(
+                  sourceImagePath: sourcePath,
+                  croppedImagePath: croppedPath,
+                ),
+              ),
+            );
+          },
+          replaceWithResultPage: true,
+          generatedTabResults: widget.generatedTabs,
+          generatedTabs: generatedTabViews.isNotEmpty
+              ? generatedTabViews
+              : widget.generatedTabs.map((tab) {
+                  final first = tab.columns.isNotEmpty
+                      ? tab.columns.first
+                      : null;
+                  return GeneratedTabViewItem(
+                    mode: tab.mode.name,
+                    columns: tab.columns.length,
+                    fretboardFrames: tab.fretboardFrames.length,
+                    exportPages: tab.exportPages.length,
+                    firstEventSummary: first == null
+                        ? 'No events'
+                        : '${first.label} -> ${first.numbers.length} note(s)',
+                  );
+                }).toList(),
+          pipelineReport: Map<String, dynamic>.from(
+            debugSnapshot['pipelineReport'] as Map? ?? const {},
+          ),
+          ledgerLines: _snapshotItems(snapshot, 'ledgerLine').map((item) {
+            return LedgerLineViewItem(
+              staffId: item['staffId']?.toString() ?? '',
+              x1: _toDouble(item['x1']) ?? 0.0,
+              x2: _toDouble(item['x2']) ?? 0.0,
+              y: _toDouble(item['y']) ?? 0.0,
+            );
+          }).toList(),
+        ),
+      ),
+    );
+  }
+
   String _initialProjectName(SessionData session) {
     final rawName = session.projectName.trim();
     if (rawName.isNotEmpty && rawName != 'Untitled' && rawName != 'Sample 1') {
@@ -317,6 +478,254 @@ class _ResultPageState extends State<ResultPage> {
   String _formatDefaultFileName(DateTime value) {
     String two(int number) => number.toString().padLeft(2, '0');
     return '${two(value.month)}/${two(value.day)}/${value.year}_${two(value.hour)}:${two(value.minute)}:${two(value.second)}';
+  }
+
+  List<Map<String, dynamic>> _snapshotItems(
+    List<Map<String, dynamic>> snapshot,
+    String kind,
+  ) {
+    return snapshot.where((item) => item['kind'] == kind).map((item) {
+      final copy = Map<String, dynamic>.from(item);
+      copy.remove('kind');
+      return copy;
+    }).toList();
+  }
+
+  List<DetectionPoint> _parseDetectionPoints(List<Map<String, dynamic>> raw) {
+    return _parseClassItems(raw).map((item) {
+      return DetectionPoint(
+        className: item.className,
+        centerX: item.x,
+        centerY: item.y,
+        score: item.score,
+      );
+    }).toList();
+  }
+
+  List<SymbolClassItem> _parseClassItems(List<Map<String, dynamic>> raw) {
+    final items = <SymbolClassItem>[];
+
+    for (final map in raw) {
+      final className =
+          map['className']?.toString() ??
+          map['labelName']?.toString() ??
+          map['label']?.toString() ??
+          'unknown';
+      final score = _toDouble(map['score'] ?? map['confidence']);
+      List<double>? bbox;
+      double? centerX = _toDouble(map['centerX'] ?? map['x']);
+      double? centerY = _toDouble(map['centerY'] ?? map['y']);
+
+      if (map['bbox'] is List && (map['bbox'] as List).length >= 4) {
+        final rawBbox = List.from(map['bbox']);
+        final x1 = _toDouble(rawBbox[0]);
+        final y1 = _toDouble(rawBbox[1]);
+        final x2 = _toDouble(rawBbox[2]);
+        final y2 = _toDouble(rawBbox[3]);
+        if (x1 != null && y1 != null && x2 != null && y2 != null) {
+          bbox = [x1, y1, x2, y2];
+          centerX ??= (x1 + x2) / 2.0;
+          centerY ??= (y1 + y2) / 2.0;
+        }
+      }
+
+      if (centerX == null || centerY == null) continue;
+      items.add(
+        SymbolClassItem(
+          className: className,
+          x: centerX,
+          y: centerY,
+          score: score,
+          bbox: bbox,
+          symbolState: SymbolState.fromValue(map['symbolState']),
+          validationReason: map['validationReason']?.toString(),
+          inferredReason: map['inferredReason']?.toString(),
+        ),
+      );
+    }
+
+    return items;
+  }
+
+  List<StaffTranslateGroup> _parseTranslateGroups(dynamic raw) {
+    if (raw is! List) return const [];
+    return raw.whereType<Map>().map((item) {
+      final map = Map<String, dynamic>.from(item);
+      final summary = Map<String, dynamic>.from(
+        map['summary'] as Map? ?? const {},
+      );
+      return StaffTranslateGroup(
+        staffId: map['staffId']?.toString() ?? '',
+        summary: StaffSummary(
+          lineCount: _toInt(summary['lineCount']) ?? 0,
+          symbolCount: _toInt(summary['symbolCount']) ?? 0,
+          clefStatusLabel: summary['clefStatusLabel']?.toString() ?? '',
+        ),
+        segmentMap: _mapList(map['segmentMap']).map((segment) {
+          return SegmentMapItem(
+            id: segment['id']?.toString() ?? '',
+            type: segment['type']?.toString() ?? 'line',
+            centerY: _toDouble(segment['centerY']) ?? 0.0,
+            startY: _toDouble(segment['startY']),
+            endY: _toDouble(segment['endY']),
+            defaultKeyLabel: segment['defaultKeyLabel']?.toString() ?? '',
+          );
+        }).toList(),
+        symbols: _mapList(map['symbols']).map((symbol) {
+          return TranslatedSymbolViewItem(
+            className: symbol['className']?.toString() ?? 'unknown',
+            centerX: _toDouble(symbol['centerX']) ?? 0.0,
+            centerY: _toDouble(symbol['centerY']) ?? 0.0,
+            score: _toDouble(symbol['score']),
+            bbox: _doubleList(symbol['bbox']),
+            staffId: symbol['staffId']?.toString() ?? '',
+            staffRole: symbol['staffRole']?.toString() ?? 'unknown',
+            locationId: symbol['locationId']?.toString() ?? '',
+            locationType: symbol['locationType']?.toString() ?? '',
+            assignmentStatus: symbol['assignmentStatus']?.toString() ?? '',
+            measureId: symbol['measureId']?.toString(),
+            measureIndex: _toInt(symbol['measureIndex']),
+            defaultKeyLabel: symbol['defaultKeyLabel']?.toString(),
+            accidentalState: symbol['accidentalState']?.toString(),
+            symbolState: SymbolState.fromValue(symbol['symbolState']),
+            inferredReason: symbol['inferredReason']?.toString(),
+          );
+        }).toList(),
+      );
+    }).toList();
+  }
+
+  List<NoteGroupViewItem> _parseNoteGroups(dynamic raw) {
+    return _mapList(raw).map((item) {
+      return NoteGroupViewItem(
+        staffId: item['staffId']?.toString() ?? '',
+        groups: _stringGroups(item['groups']),
+      );
+    }).toList();
+  }
+
+  List<RhythmEventViewItem> _parseRhythmEvents(dynamic raw) {
+    return _mapList(raw).map((item) {
+      return RhythmEventViewItem(
+        staffId: item['staffId']?.toString() ?? '',
+        measureIndex: _toInt(item['measureIndex']),
+        label: item['label']?.toString() ?? '',
+        durationBeats: _toDouble(item['durationBeats']) ?? 0.0,
+        timingSource: item['timingSource']?.toString() ?? '',
+        confidence: _toDouble(item['confidence']) ?? 0.0,
+        hasStem: item['hasStem'] == true,
+        hasBeam: item['hasBeam'] == true,
+      );
+    }).toList();
+  }
+
+  List<GrandStaffPairViewItem> _parseGrandStaffPairs(dynamic raw) {
+    return _mapList(raw).map((item) {
+      return GrandStaffPairViewItem(
+        id: item['id']?.toString() ?? '',
+        trebleStaffId: item['trebleStaffId']?.toString() ?? '',
+        bassStaffId: item['bassStaffId']?.toString(),
+        trebleGroups: _stringGroups(item['trebleGroups']),
+        bassGroups: _stringGroups(item['bassGroups']),
+      );
+    }).toList();
+  }
+
+  List<PolyMonoViewItem> _parsePolyMonoResults(dynamic raw) {
+    return _mapList(raw).map((item) {
+      return PolyMonoViewItem(
+        grandStaffId: item['grandStaffId']?.toString() ?? '',
+        harmonicStacks: _stringGroups(item['harmonicStacks']),
+        chordAwareStacks: _stringList(item['chordAwareStacks']),
+        strictMelody: _stringList(item['strictMelody']),
+      );
+    }).toList();
+  }
+
+  List<MusicInterpretationViewItem> _parseMusicInterpretations(dynamic raw) {
+    return _mapList(raw).map((item) {
+      return MusicInterpretationViewItem(
+        title: item['title']?.toString() ?? '',
+        labels: _stringList(item['labels']),
+      );
+    }).toList();
+  }
+
+  List<FretboardMappingViewItem> _parseFretboardMappings(dynamic raw) {
+    return _mapList(raw).map((item) {
+      return FretboardMappingViewItem(
+        title: item['title']?.toString() ?? '',
+        eventSummaries: _stringList(item['eventSummaries']),
+      );
+    }).toList();
+  }
+
+  List<EventManagerViewItem> _parseEventManagerResults(dynamic raw) {
+    return _mapList(raw).map((item) {
+      return EventManagerViewItem(
+        title: item['title']?.toString() ?? '',
+        totalCost: item['totalCost']?.toString() ?? '',
+        events: _stringList(item['events']),
+      );
+    }).toList();
+  }
+
+  List<ChordVoicingViewItem> _parseChordVoicingResults(dynamic raw) {
+    return _mapList(raw).map((item) {
+      return ChordVoicingViewItem(
+        title: item['title']?.toString() ?? '',
+        events: _stringList(item['events']),
+      );
+    }).toList();
+  }
+
+  List<GeneratedTabViewItem> _parseGeneratedTabViews(dynamic raw) {
+    return _mapList(raw).map((item) {
+      return GeneratedTabViewItem(
+        mode: item['mode']?.toString() ?? '',
+        columns: _toInt(item['columns']) ?? 0,
+        fretboardFrames: _toInt(item['fretboardFrames']) ?? 0,
+        exportPages: _toInt(item['exportPages']) ?? 0,
+        firstEventSummary: item['firstEventSummary']?.toString() ?? 'No events',
+      );
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> _mapList(dynamic value) {
+    if (value is! List) return const [];
+    return value
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
+  List<List<String>> _stringGroups(dynamic value) {
+    if (value is! List) return const [];
+    return value.map((group) => _stringList(group)).toList();
+  }
+
+  List<String> _stringList(dynamic value) {
+    if (value is! List) return const [];
+    return value.map((item) => item.toString()).toList();
+  }
+
+  List<double>? _doubleList(dynamic value) {
+    if (value is! List) return null;
+    final result = value.map(_toDouble).whereType<double>().toList();
+    return result.isEmpty ? null : result;
+  }
+
+  int? _toInt(dynamic value) {
+    if (value == null) return null;
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value.toString());
+  }
+
+  double? _toDouble(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString());
   }
 
   String get _currentExportTitle {
@@ -383,6 +792,10 @@ class _ResultPageState extends State<ResultPage> {
           _sourceItem!,
           nextTitle,
         );
+        final updatedPath = _sourceItem?.filePath;
+        if (updatedPath != null && updatedPath.trim().isNotEmpty) {
+          _session = _session.copyWith(autoSavedFilePath: updatedPath);
+        }
       } else if (_session.autoSavedFilePath != null) {
         final updatedPath = await RecentItemsRepository.updateFileTitle(
           filePath: _session.autoSavedFilePath!,
@@ -455,6 +868,13 @@ class _ResultPageState extends State<ResultPage> {
           style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
         ),
         actions: [
+          if (_debugPageEnabled)
+            IconButton(
+              tooltip: 'Open debug page',
+              icon: const Icon(Icons.code_rounded),
+              color: AppColors.textPrimary,
+              onPressed: _openDebugPage,
+            ),
           TutorialService.showcase(
             key: _resultHelpTourKey,
             title: 'Need Result Help?',
@@ -654,6 +1074,11 @@ class _ResultPageState extends State<ResultPage> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               _RoundControlButton(
+                icon: Icons.first_page_rounded,
+                onTap: _currentColumnIndex == 0 ? null : _startProgression,
+              ),
+              const SizedBox(width: 10),
+              _RoundControlButton(
                 icon: Icons.skip_previous_rounded,
                 onTap: _currentColumnIndex == 0 ? null : _previous,
               ),
@@ -674,22 +1099,10 @@ class _ResultPageState extends State<ResultPage> {
               ),
               const SizedBox(width: 10),
               _RoundControlButton(
-                icon: _isMuted
-                    ? Icons.volume_off_rounded
-                    : Icons.volume_up_rounded,
-                onTap: () async {
-                  final nextMuted = !_isMuted;
-
-                  setState(() {
-                    _isMuted = nextMuted;
-                  });
-
-                  if (nextMuted) {
-                    await _stopActiveAudio();
-                  } else if (_isPlaying) {
-                    await _playCurrentColumnAudio();
-                  }
-                },
+                icon: Icons.last_page_rounded,
+                onTap: _currentColumnIndex >= _currentTab.columns.length - 1
+                    ? null
+                    : _endProgression,
               ),
             ],
           ),
@@ -872,12 +1285,10 @@ class _ResultPageState extends State<ResultPage> {
 
   String _formatMode(String raw) {
     switch (raw) {
-      case 'strict':
-        return 'Strict Melody';
-      case 'continuity':
-        return 'Continuity Melody';
-      case 'chordAware':
-        return 'Chord-Aware';
+      case 'trebleOnly':
+        return 'Treble Only';
+      case 'grandStaff':
+        return 'Grand Staff';
       default:
         return raw;
     }
@@ -885,10 +1296,6 @@ class _ResultPageState extends State<ResultPage> {
 
   /// This is the audio helper block
   Future<void> _playCurrentColumnAudio() async {
-    if (_isMuted) {
-      return;
-    }
-
     final notes = _currentColumn.numbers.map((number) {
       final midi = _toMidiNote(
         stringNumber: number.stringNumber,
@@ -1088,8 +1495,8 @@ class _AnchoredOptionButton<T> extends StatelessWidget {
 
   Future<void> _showMenu(BuildContext context) async {
     final box = context.findRenderObject() as RenderBox?;
-    final overlay = Navigator.of(context).overlay?.context.findRenderObject()
-        as RenderBox?;
+    final overlay =
+        Navigator.of(context).overlay?.context.findRenderObject() as RenderBox?;
 
     if (box == null || overlay == null) return;
 
@@ -1368,6 +1775,10 @@ class _TabPainter extends CustomPainter {
       ..color = AppColors.success
       ..strokeWidth = 2.5;
 
+    final measurePaint = Paint()
+      ..color = Colors.white70
+      ..strokeWidth = 1.4;
+
     final currentColumnPaint = Paint()
       ..color = AppColors.success.withValues(alpha: 0.08)
       ..style = PaintingStyle.fill;
@@ -1402,6 +1813,27 @@ class _TabPainter extends CustomPainter {
         linePaint,
       );
     }
+
+    final tabTop = topPadding;
+    final tabBottom = topPadding + (tab.rows.length - 1) * tab.rowHeight;
+    canvas.drawLine(
+      Offset(leftLabelWidth, tabTop),
+      Offset(leftLabelWidth, tabBottom),
+      measurePaint,
+    );
+    for (final column in tab.columns) {
+      if (!column.startsMeasure ||
+          column.eventIndex == tab.columns.first.eventIndex) {
+        continue;
+      }
+      final x = leftLabelWidth + column.x - (tab.columnWidth * 0.22);
+      canvas.drawLine(Offset(x, tabTop), Offset(x, tabBottom), measurePaint);
+    }
+    canvas.drawLine(
+      Offset(leftLabelWidth + tab.totalWidth + 28, tabTop),
+      Offset(leftLabelWidth + tab.totalWidth + 28, tabBottom),
+      measurePaint,
+    );
 
     for (final column in tab.columns) {
       for (final number in column.numbers) {

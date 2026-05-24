@@ -734,9 +734,23 @@ class MainActivity : FlutterActivity() {
 
         Thread {
             try {
+                val rawSymbolDetections =
+                    call.argument<List<Any?>>("symbolDetections")
+                        ?: call.argument<List<Any?>>("detections")
+                        ?: emptyList()
+
+                val symbolDetections = rawSymbolDetections
+                    .mapNotNull { it as? Map<*, *> }
+                    .map { rawMap ->
+                        rawMap.entries.associate { entry ->
+                            entry.key.toString() to entry.value
+                        }
+                    }
+
                 val response = StaffSegmentationProcessor.segmentStaffLines(
                     context = this,
-                    imagePath = imagePath
+                    imagePath = imagePath,
+                    symbolDetections = symbolDetections
                 )
 
                 runOnUiThread {

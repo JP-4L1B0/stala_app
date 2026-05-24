@@ -16,6 +16,7 @@ class SessionData {
   final List<Map<String, dynamic>> segmentationData;
   final List<Map<String, dynamic>> pitchMappingData;
   final List<Map<String, dynamic>> fretboardEvents;
+  final Map<String, dynamic> debugSnapshot;
 
   // Final source-of-truth result
   final List<TablatureResult> tablatureResults;
@@ -42,6 +43,7 @@ class SessionData {
     this.segmentationData = const [],
     this.pitchMappingData = const [],
     this.fretboardEvents = const [],
+    this.debugSnapshot = const {},
     this.tablatureResults = const [],
     required this.processingTimestamp,
     required this.modelVersion,
@@ -63,6 +65,7 @@ class SessionData {
     List<Map<String, dynamic>>? segmentationData,
     List<Map<String, dynamic>>? pitchMappingData,
     List<Map<String, dynamic>>? fretboardEvents,
+    Map<String, dynamic>? debugSnapshot,
     List<TablatureResult>? tablatureResults,
     DateTime? processingTimestamp,
     String? modelVersion,
@@ -85,6 +88,7 @@ class SessionData {
       segmentationData: segmentationData ?? this.segmentationData,
       pitchMappingData: pitchMappingData ?? this.pitchMappingData,
       fretboardEvents: fretboardEvents ?? this.fretboardEvents,
+      debugSnapshot: debugSnapshot ?? this.debugSnapshot,
       tablatureResults: tablatureResults ?? this.tablatureResults,
       processingTimestamp: processingTimestamp ?? this.processingTimestamp,
       modelVersion: modelVersion ?? this.modelVersion,
@@ -109,6 +113,7 @@ class SessionData {
       'segmentation_data': segmentationData,
       'pitch_mapping_data': pitchMappingData,
       'fretboard_events': fretboardEvents,
+      'debug_snapshot': debugSnapshot,
 
       'tablature_results': tablatureResults.map((r) => r.toJson()).toList(),
 
@@ -136,6 +141,7 @@ class SessionData {
       segmentationData: _mapList(json['segmentation_data']),
       pitchMappingData: _mapList(json['pitch_mapping_data']),
       fretboardEvents: _mapList(json['fretboard_events']),
+      debugSnapshot: _dynamicMap(json['debug_snapshot']),
 
       tablatureResults: (json['tablature_results'] as List? ?? const []).map((
         item,
@@ -163,5 +169,12 @@ class SessionData {
         .whereType<Map>()
         .map((item) => Map<String, dynamic>.from(item))
         .toList();
+  }
+
+  static Map<String, dynamic> _dynamicMap(dynamic value) {
+    if (value is! Map) return const {};
+    return Map<String, dynamic>.from(
+      value.map((key, item) => MapEntry(key.toString(), item)),
+    );
   }
 }

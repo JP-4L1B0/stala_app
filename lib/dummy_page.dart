@@ -8,14 +8,16 @@ import 'models/translation_group_models.dart';
 import 'models/session_data.dart';
 import 'result_page.dart';
 import 'services/generation_service.dart';
+import 'services/processing_session_navigation.dart';
 
 enum DummyViewOption {
-  cropped,
-  detected,
-  segments,
-  classList,
-  translate,
-  generate,
+  inputCrop,
+  onnxDetection,
+  staffValidation,
+  structuralSegmentation,
+  musicalInterpretation,
+  tablatureGeneration,
+  reports,
 }
 
 class DetectionPoint {
@@ -52,6 +54,9 @@ class SymbolClassItem {
   final double y;
   final double? score;
   final List<double>? bbox;
+  final SymbolState symbolState;
+  final String? validationReason;
+  final String? inferredReason;
 
   const SymbolClassItem({
     required this.className,
@@ -59,6 +64,9 @@ class SymbolClassItem {
     required this.y,
     this.score,
     this.bbox,
+    this.symbolState = SymbolState.detected,
+    this.validationReason,
+    this.inferredReason,
   });
 }
 
@@ -119,14 +127,12 @@ class PolyMonoViewItem {
   final List<List<String>> harmonicStacks;
   final List<String> chordAwareStacks;
   final List<String> strictMelody;
-  final List<String> continuityMelody;
 
   const PolyMonoViewItem({
     required this.grandStaffId,
     required this.harmonicStacks,
     required this.chordAwareStacks,
     required this.strictMelody,
-    required this.continuityMelody,
   });
 }
 
@@ -193,6 +199,14 @@ class DummyPage extends StatefulWidget {
   final List<DetectionPoint> detections;
   final List<LedgerLineViewItem> ledgerLines;
   final List<SymbolClassItem> classItems;
+  final List<Map<String, dynamic>> staffOverlays;
+  final List<Map<String, dynamic>> barLineOverlays;
+  final List<Map<String, dynamic>> stemOverlays;
+  final List<Map<String, dynamic>> beamOverlays;
+  final List<Map<String, dynamic>> semanticRegions;
+  final List<Map<String, dynamic>> clefSafetyRegions;
+  final List<Map<String, dynamic>> rejectedNoteheads;
+  final Map<String, dynamic> pipelineReport;
   final List<StaffTranslateGroup> translateGroups;
   final List<GenerateOutputItem> generateOutputs;
   final List<NoteGroupViewItem> noteGroups;
@@ -206,6 +220,8 @@ class DummyPage extends StatefulWidget {
   final SessionData? session;
   final List<GeneratedTabResult> generatedTabResults;
   final List<GeneratedTabViewItem> generatedTabs;
+  final VoidCallback? onRetry;
+  final bool replaceWithResultPage;
 
   const DummyPage({
     super.key,
@@ -215,6 +231,14 @@ class DummyPage extends StatefulWidget {
     this.detections = const [],
     this.ledgerLines = const [],
     this.classItems = const [],
+    this.staffOverlays = const [],
+    this.barLineOverlays = const [],
+    this.stemOverlays = const [],
+    this.beamOverlays = const [],
+    this.semanticRegions = const [],
+    this.clefSafetyRegions = const [],
+    this.rejectedNoteheads = const [],
+    this.pipelineReport = const {},
     this.translateGroups = const [],
     this.generateOutputs = const [],
     this.noteGroups = const [],
@@ -228,6 +252,8 @@ class DummyPage extends StatefulWidget {
     this.generatedTabs = const [],
     this.generatedTabResults = const [],
     this.session,
+    this.onRetry,
+    this.replaceWithResultPage = false,
   });
 
   @override
@@ -235,7 +261,25 @@ class DummyPage extends StatefulWidget {
 }
 
 class _DummyPageState extends State<DummyPage> {
-  DummyViewOption _selectedOption = DummyViewOption.cropped;
+  DummyViewOption _selectedOption = DummyViewOption.inputCrop;
+
+  @override
+  void initState() {
+    super.initState();
+    final sessionId = widget.session?.id;
+    if (sessionId != null && sessionId.isNotEmpty) {
+      ProcessingSessionNavigation.enterDebug(sessionId);
+    }
+  }
+
+  @override
+  void dispose() {
+    final sessionId = widget.session?.id;
+    if (sessionId != null && sessionId.isNotEmpty) {
+      ProcessingSessionNavigation.exitDebug(sessionId);
+    }
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -248,6 +292,17 @@ class _DummyPageState extends State<DummyPage> {
           'Debug Results',
           style: AppTextStyles.sectionTitle.copyWith(fontSize: 20),
         ),
+        actions: [
+          if (widget.onRetry != null)
+            TextButton.icon(
+              onPressed: widget.onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('Retry'),
+              style: TextButton.styleFrom(
+                foregroundColor: AppColors.textPrimary,
+              ),
+            ),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -294,51 +349,77 @@ class _DummyPageState extends State<DummyPage> {
 
   Widget _buildSelectedPanel() {
     switch (_selectedOption) {
-      case DummyViewOption.cropped:
+      case DummyViewOption.inputCrop:
         return _ImagePanel(
-          title: 'A. Preprocess - Cropped',
-          subtitle: 'Preprocessed or cropped image output',
+          title: 'A. Input & Crop',
+          subtitle: 'Frozen cropped image used by the pipeline',
           imagePath: widget.croppedImagePath,
           emptyMessage: 'No cropped image available yet.',
         );
 
-      case DummyViewOption.detected:
+      case DummyViewOption.onnxDetection:
         return _DetectedPanel(
-          title: 'B. Detecting Symbol - Detected',
-          subtitle: 'Detected image output',
+          title: 'B. Detection Results',
+          subtitle: 'Raw multiclass symbol detection in locked image space',
           imagePath: widget.detectedImagePath,
           detections: widget.detections,
         );
 
-      case DummyViewOption.segments:
-        return _DetectedPanel(
-          title: 'C. Segmenting - Segments',
-          subtitle: 'Staff lines with confirmed ledger overlays',
-          imagePath: widget.segmentedImagePath,
-          detections: const [],
+      case DummyViewOption.staffValidation:
+        return _SegmentOverlayPanel(
+          title: 'C. Staff Validation',
+          subtitle: 'Locked staff geometry validation',
+          imagePath:
+              widget.detectedImagePath ??
+              widget.croppedImagePath ??
+              widget.segmentedImagePath,
+          staffs: widget.staffOverlays,
+          symbols: const [],
+          translateGroups: const [],
+          ledgerLines: const [],
+          barLines: const [],
+          stems: const [],
+          beams: const [],
+          semanticRegions: const [],
+          clefSafetyRegions: const [],
+          rejectedNoteheads: const [],
+          geometryOnly: true,
+        );
+
+      case DummyViewOption.structuralSegmentation:
+        return _SegmentOverlayPanel(
+          title: 'D. Structural Segmentation',
+          subtitle: 'Staff geometry, symbols, and structural overlays',
+          imagePath:
+              widget.detectedImagePath ??
+              widget.croppedImagePath ??
+              widget.segmentedImagePath,
+          staffs: widget.staffOverlays,
+          symbols: widget.classItems,
+          translateGroups: widget.translateGroups,
           ledgerLines: widget.ledgerLines,
+          barLines: widget.barLineOverlays,
+          stems: widget.stemOverlays,
+          beams: widget.beamOverlays,
+          semanticRegions: widget.semanticRegions,
+          clefSafetyRegions: widget.clefSafetyRegions,
+          rejectedNoteheads: widget.rejectedNoteheads,
         );
 
-      case DummyViewOption.classList:
-        return _ClassListPanel(
-          title: 'D. Translating - Class',
-          subtitle: 'Detected symbols sorted top-left to bottom-right',
-          items: widget.classItems,
-        );
-
-      case DummyViewOption.translate:
+      case DummyViewOption.musicalInterpretation:
         return _TranslatePanel(
-          title: 'E. Translating - Map',
+          title: 'E. Musical Interpretation',
           subtitle: 'Grouped translation result by staff line',
           groups: widget.translateGroups,
           noteGroups: widget.noteGroups,
           rhythmEvents: widget.rhythmEvents,
         );
 
-      case DummyViewOption.generate:
+      case DummyViewOption.tablatureGeneration:
         return _GeneratePanel(
-          title: 'F. Generating - Generate',
-          subtitle: 'Prepared output for graph / API generation',
+          title: 'F. Tablature Generation',
+          subtitle:
+              'Downstream interpretation, mapping, generation, and export data',
           outputs: widget.generateOutputs,
           grandStaffPairs: widget.grandStaffPairs,
           polyMonoResults: widget.polyMonoResults,
@@ -349,6 +430,14 @@ class _DummyPageState extends State<DummyPage> {
           generatedTabResults: widget.generatedTabResults,
           generatedTabs: widget.generatedTabs,
           session: widget.session,
+          replaceWithResultPage: widget.replaceWithResultPage,
+        );
+
+      case DummyViewOption.reports:
+        return _ReportPanel(
+          title: 'G. Reports',
+          subtitle: 'Structured validation and translation report',
+          report: widget.pipelineReport,
         );
     }
   }
@@ -377,28 +466,32 @@ class _OptionDropdown extends StatelessWidget {
           style: AppTextStyles.button,
           items: const [
             DropdownMenuItem(
-              value: DummyViewOption.cropped,
-              child: Text('Cropped'),
+              value: DummyViewOption.inputCrop,
+              child: Text('Input & Crop'),
             ),
             DropdownMenuItem(
-              value: DummyViewOption.detected,
-              child: Text('Detected'),
+              value: DummyViewOption.onnxDetection,
+              child: Text('Detection Results'),
             ),
             DropdownMenuItem(
-              value: DummyViewOption.segments,
-              child: Text('Segments'),
+              value: DummyViewOption.staffValidation,
+              child: Text('Staff Validation'),
             ),
             DropdownMenuItem(
-              value: DummyViewOption.classList,
-              child: Text('Class'),
+              value: DummyViewOption.structuralSegmentation,
+              child: Text('Structural Segmentation'),
             ),
             DropdownMenuItem(
-              value: DummyViewOption.translate,
-              child: Text('Translate'),
+              value: DummyViewOption.musicalInterpretation,
+              child: Text('Musical Interpretation'),
             ),
             DropdownMenuItem(
-              value: DummyViewOption.generate,
-              child: Text('Generate'),
+              value: DummyViewOption.tablatureGeneration,
+              child: Text('Tablature Generation'),
+            ),
+            DropdownMenuItem(
+              value: DummyViewOption.reports,
+              child: Text('Reports'),
             ),
           ],
           onChanged: onChanged,
@@ -702,6 +795,693 @@ class DetectionOverlayPainter extends CustomPainter {
         oldDelegate.imageWidth != imageWidth ||
         oldDelegate.imageHeight != imageHeight;
   }
+}
+
+class _SegmentOverlaySettings {
+  final bool showStaffLines;
+  final bool showSymbols;
+  final bool showLedgerLines;
+  final bool showBarlines;
+  final bool showBoundaries;
+  final bool showStems;
+  final bool showBeams;
+  final bool showSemanticRegions;
+  final bool showClefSafetyRegions;
+  final bool showRejected;
+  final double originalOpacity;
+
+  const _SegmentOverlaySettings({
+    this.showStaffLines = true,
+    this.showSymbols = true,
+    this.showLedgerLines = true,
+    this.showBarlines = true,
+    this.showBoundaries = true,
+    this.showStems = false,
+    this.showBeams = false,
+    this.showSemanticRegions = true,
+    this.showClefSafetyRegions = true,
+    this.showRejected = true,
+    this.originalOpacity = 1.0,
+  });
+
+  _SegmentOverlaySettings copyWith({
+    bool? showStaffLines,
+    bool? showSymbols,
+    bool? showLedgerLines,
+    bool? showBarlines,
+    bool? showBoundaries,
+    bool? showStems,
+    bool? showBeams,
+    bool? showSemanticRegions,
+    bool? showClefSafetyRegions,
+    bool? showRejected,
+    double? originalOpacity,
+  }) {
+    return _SegmentOverlaySettings(
+      showStaffLines: showStaffLines ?? this.showStaffLines,
+      showSymbols: showSymbols ?? this.showSymbols,
+      showLedgerLines: showLedgerLines ?? this.showLedgerLines,
+      showBarlines: showBarlines ?? this.showBarlines,
+      showBoundaries: showBoundaries ?? this.showBoundaries,
+      showStems: showStems ?? this.showStems,
+      showBeams: showBeams ?? this.showBeams,
+      showSemanticRegions: showSemanticRegions ?? this.showSemanticRegions,
+      showClefSafetyRegions:
+          showClefSafetyRegions ?? this.showClefSafetyRegions,
+      showRejected: showRejected ?? this.showRejected,
+      originalOpacity: originalOpacity ?? this.originalOpacity,
+    );
+  }
+}
+
+class _SegmentOverlayPanel extends StatefulWidget {
+  final String title;
+  final String subtitle;
+  final String? imagePath;
+  final List<Map<String, dynamic>> staffs;
+  final List<SymbolClassItem> symbols;
+  final List<StaffTranslateGroup> translateGroups;
+  final List<LedgerLineViewItem> ledgerLines;
+  final List<Map<String, dynamic>> barLines;
+  final List<Map<String, dynamic>> stems;
+  final List<Map<String, dynamic>> beams;
+  final List<Map<String, dynamic>> semanticRegions;
+  final List<Map<String, dynamic>> clefSafetyRegions;
+  final List<Map<String, dynamic>> rejectedNoteheads;
+  final bool geometryOnly;
+
+  const _SegmentOverlayPanel({
+    required this.title,
+    required this.subtitle,
+    required this.imagePath,
+    required this.staffs,
+    required this.symbols,
+    required this.translateGroups,
+    required this.ledgerLines,
+    required this.barLines,
+    required this.stems,
+    required this.beams,
+    required this.semanticRegions,
+    required this.clefSafetyRegions,
+    required this.rejectedNoteheads,
+    this.geometryOnly = false,
+  });
+
+  @override
+  State<_SegmentOverlayPanel> createState() => _SegmentOverlayPanelState();
+}
+
+class _SegmentOverlayPanelState extends State<_SegmentOverlayPanel> {
+  _SegmentOverlaySettings _settings = const _SegmentOverlaySettings();
+
+  @override
+  Widget build(BuildContext context) {
+    final exists =
+        widget.imagePath != null && File(widget.imagePath!).existsSync();
+
+    return Column(
+      children: [
+        _PanelHeader(title: widget.title, subtitle: widget.subtitle),
+        _buildControls(),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: !exists
+                ? const _EmptyPanelMessage(
+                    message: 'No segment image available yet.',
+                  )
+                : ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Container(
+                      color: Colors.black,
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          return InteractiveViewer(
+                            child: Center(
+                              child: _SegmentImageWithOverlay(
+                                imagePath: widget.imagePath!,
+                                settings: _settings,
+                                staffs: widget.staffs,
+                                symbols: widget.symbols,
+                                translateGroups: widget.translateGroups,
+                                ledgerLines: widget.ledgerLines,
+                                barLines: widget.barLines,
+                                stems: widget.stems,
+                                beams: widget.beams,
+                                semanticRegions: widget.semanticRegions,
+                                clefSafetyRegions: widget.clefSafetyRegions,
+                                rejectedNoteheads: widget.rejectedNoteheads,
+                                maxWidth: constraints.maxWidth,
+                                maxHeight: constraints.maxHeight,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildControls() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: AppColors.divider)),
+      ),
+      child: Column(
+        children: [
+          Wrap(
+            spacing: 6,
+            runSpacing: 4,
+            children: [
+              _toggle('Staff Lines', _settings.showStaffLines, (value) {
+                _update(_settings.copyWith(showStaffLines: value));
+              }),
+              _toggle('Staff Boundaries', _settings.showBoundaries, (value) {
+                _update(_settings.copyWith(showBoundaries: value));
+              }),
+              if (!widget.geometryOnly) ...[
+                _toggle('Symbols', _settings.showSymbols, (value) {
+                  _update(_settings.copyWith(showSymbols: value));
+                }),
+                _toggle('Ledger Lines', _settings.showLedgerLines, (value) {
+                  _update(_settings.copyWith(showLedgerLines: value));
+                }),
+                _toggle('Barlines', _settings.showBarlines, (value) {
+                  _update(_settings.copyWith(showBarlines: value));
+                }),
+                _toggle('Stems', _settings.showStems, (value) {
+                  _update(_settings.copyWith(showStems: value));
+                }),
+                _toggle('Beams', _settings.showBeams, (value) {
+                  _update(_settings.copyWith(showBeams: value));
+                }),
+                _toggle('Semantic Regions', _settings.showSemanticRegions, (
+                  value,
+                ) {
+                  _update(_settings.copyWith(showSemanticRegions: value));
+                }),
+                _toggle('Clef Safety', _settings.showClefSafetyRegions, (
+                  value,
+                ) {
+                  _update(_settings.copyWith(showClefSafetyRegions: value));
+                }),
+                _toggle('Rejected', _settings.showRejected, (value) {
+                  _update(_settings.copyWith(showRejected: value));
+                }),
+              ],
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              SizedBox(
+                width: 112,
+                child: Text('Original opacity', style: AppTextStyles.caption),
+              ),
+              Expanded(
+                child: Slider(
+                  value: _settings.originalOpacity,
+                  min: 0.0,
+                  max: 1.0,
+                  divisions: 10,
+                  activeColor: AppColors.accent,
+                  inactiveColor: AppColors.border,
+                  onChanged: (value) {
+                    _update(_settings.copyWith(originalOpacity: value));
+                  },
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _toggle(String label, bool value, ValueChanged<bool> onChanged) {
+    return SizedBox(
+      width: 150,
+      height: 30,
+      child: InkWell(
+        onTap: () => onChanged(!value),
+        borderRadius: BorderRadius.circular(4),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 28,
+              height: 28,
+              child: Checkbox(
+                value: value,
+                onChanged: (next) => onChanged(next ?? false),
+                activeColor: AppColors.accent,
+                checkColor: AppColors.textPrimary,
+                side: const BorderSide(color: AppColors.border),
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _update(_SegmentOverlaySettings settings) {
+    setState(() {
+      _settings = settings;
+    });
+  }
+}
+
+class _SegmentImageWithOverlay extends StatelessWidget {
+  final String imagePath;
+  final _SegmentOverlaySettings settings;
+  final List<Map<String, dynamic>> staffs;
+  final List<SymbolClassItem> symbols;
+  final List<StaffTranslateGroup> translateGroups;
+  final List<LedgerLineViewItem> ledgerLines;
+  final List<Map<String, dynamic>> barLines;
+  final List<Map<String, dynamic>> stems;
+  final List<Map<String, dynamic>> beams;
+  final List<Map<String, dynamic>> semanticRegions;
+  final List<Map<String, dynamic>> clefSafetyRegions;
+  final List<Map<String, dynamic>> rejectedNoteheads;
+  final double maxWidth;
+  final double maxHeight;
+
+  const _SegmentImageWithOverlay({
+    required this.imagePath,
+    required this.settings,
+    required this.staffs,
+    required this.symbols,
+    required this.translateGroups,
+    required this.ledgerLines,
+    required this.barLines,
+    required this.stems,
+    required this.beams,
+    required this.semanticRegions,
+    required this.clefSafetyRegions,
+    required this.rejectedNoteheads,
+    required this.maxWidth,
+    required this.maxHeight,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final file = File(imagePath);
+
+    return FutureBuilder<ImageInfo>(
+      future: _loadImageInfo(file),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final imageInfo = snapshot.data!;
+        final imageWidth = imageInfo.image.width.toDouble();
+        final imageHeight = imageInfo.image.height.toDouble();
+        final fitted = applyBoxFit(
+          BoxFit.contain,
+          Size(imageWidth, imageHeight),
+          Size(maxWidth, maxHeight),
+        );
+
+        return SizedBox(
+          width: fitted.destination.width,
+          height: fitted.destination.height,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: ColoredBox(
+                  color: settings.originalOpacity > 0
+                      ? AppColors.surface
+                      : Colors.black,
+                ),
+              ),
+              if (settings.originalOpacity > 0)
+                Positioned.fill(
+                  child: Opacity(
+                    opacity: settings.originalOpacity,
+                    child: Image.file(file, fit: BoxFit.contain),
+                  ),
+                ),
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: SegmentOverlayPainter(
+                    settings: settings,
+                    staffs: staffs,
+                    symbols: symbols,
+                    translateGroups: translateGroups,
+                    ledgerLines: ledgerLines,
+                    barLines: barLines,
+                    stems: stems,
+                    beams: beams,
+                    semanticRegions: semanticRegions,
+                    clefSafetyRegions: clefSafetyRegions,
+                    rejectedNoteheads: rejectedNoteheads,
+                    imageWidth: imageWidth,
+                    imageHeight: imageHeight,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<ImageInfo> _loadImageInfo(File file) async {
+    final imageProvider = FileImage(file);
+    final completer = Completer<ImageInfo>();
+    final stream = imageProvider.resolve(const ImageConfiguration());
+
+    late final ImageStreamListener listener;
+    listener = ImageStreamListener(
+      (info, _) {
+        completer.complete(info);
+        stream.removeListener(listener);
+      },
+      onError: (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+        stream.removeListener(listener);
+      },
+    );
+
+    stream.addListener(listener);
+    return completer.future;
+  }
+}
+
+class SegmentOverlayPainter extends CustomPainter {
+  final _SegmentOverlaySettings settings;
+  final List<Map<String, dynamic>> staffs;
+  final List<SymbolClassItem> symbols;
+  final List<StaffTranslateGroup> translateGroups;
+  final List<LedgerLineViewItem> ledgerLines;
+  final List<Map<String, dynamic>> barLines;
+  final List<Map<String, dynamic>> stems;
+  final List<Map<String, dynamic>> beams;
+  final List<Map<String, dynamic>> semanticRegions;
+  final List<Map<String, dynamic>> clefSafetyRegions;
+  final List<Map<String, dynamic>> rejectedNoteheads;
+  final double imageWidth;
+  final double imageHeight;
+
+  SegmentOverlayPainter({
+    required this.settings,
+    required this.staffs,
+    required this.symbols,
+    required this.translateGroups,
+    required this.ledgerLines,
+    required this.barLines,
+    required this.stems,
+    required this.beams,
+    required this.semanticRegions,
+    required this.clefSafetyRegions,
+    required this.rejectedNoteheads,
+    required this.imageWidth,
+    required this.imageHeight,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    double sx(double x) => (x / imageWidth) * size.width;
+    double sy(double y) => (y / imageHeight) * size.height;
+
+    final assigned = translateGroups.expand((group) => group.symbols).toList();
+
+    if (settings.showBoundaries) {
+      final fillPaint = Paint()
+        ..color = Colors.purpleAccent.withValues(alpha: 0.08)
+        ..style = PaintingStyle.fill;
+      final strokePaint = Paint()
+        ..color = Colors.purpleAccent.withValues(alpha: 0.45)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.7;
+
+      for (final staff in staffs) {
+        final top = _toDouble(staff['topBoundary']);
+        final bottom = _toDouble(staff['bottomBoundary']);
+        if (top == null || bottom == null) continue;
+        final rect = Rect.fromLTRB(0, sy(top), size.width, sy(bottom));
+        canvas.drawRect(rect, fillPaint);
+        canvas.drawRect(rect, strokePaint);
+      }
+    }
+
+    if (settings.showSemanticRegions) {
+      final fillPaint = Paint()
+        ..color = Colors.amberAccent.withValues(alpha: 0.10)
+        ..style = PaintingStyle.fill;
+      final strokePaint = Paint()
+        ..color = Colors.amberAccent.withValues(alpha: 0.42)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.7;
+
+      for (final region in semanticRegions) {
+        final x1 = _toDouble(region['x1']);
+        final x2 = _toDouble(region['x2']);
+        final y1 = _toDouble(region['y1']);
+        final y2 = _toDouble(region['y2']);
+        if (x1 == null || x2 == null || y1 == null || y2 == null) continue;
+        final rect = Rect.fromLTRB(sx(x1), sy(y1), sx(x2), sy(y2));
+        canvas.drawRect(rect, fillPaint);
+        canvas.drawRect(rect, strokePaint);
+      }
+    }
+
+    if (settings.showClefSafetyRegions) {
+      final fillPaint = Paint()
+        ..color = Colors.redAccent.withValues(alpha: 0.08)
+        ..style = PaintingStyle.fill;
+      final strokePaint = Paint()
+        ..color = Colors.redAccent.withValues(alpha: 0.42)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.8;
+
+      for (final region in clefSafetyRegions) {
+        final x1 = _toDouble(region['x1']);
+        final x2 = _toDouble(region['x2']);
+        final y1 = _toDouble(region['y1']);
+        final y2 = _toDouble(region['y2']);
+        if (x1 == null || x2 == null || y1 == null || y2 == null) continue;
+        final rect = Rect.fromLTRB(sx(x1), sy(y1), sx(x2), sy(y2));
+        canvas.drawRect(rect, fillPaint);
+        canvas.drawRect(rect, strokePaint);
+      }
+    }
+
+    if (settings.showStaffLines) {
+      final linePaint = Paint()
+        ..color = Colors.grey.withValues(alpha: 0.72)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.9;
+
+      for (final staff in staffs) {
+        final rawLines = staff['lines'];
+        if (rawLines is! List) continue;
+        for (final line in rawLines) {
+          final y = _toDouble(line);
+          if (y == null) continue;
+          canvas.drawLine(
+            Offset(0, sy(y)),
+            Offset(size.width, sy(y)),
+            linePaint,
+          );
+        }
+      }
+    }
+
+    if (settings.showLedgerLines) {
+      final ledgerPaint = Paint()
+        ..color = const Color(0xffff5131).withValues(alpha: 0.78)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0;
+      for (final ledger in ledgerLines) {
+        canvas.drawLine(
+          Offset(sx(ledger.x1), sy(ledger.y)),
+          Offset(sx(ledger.x2), sy(ledger.y)),
+          ledgerPaint,
+        );
+      }
+    }
+
+    if (settings.showBarlines) {
+      final barPaint = Paint()
+        ..color = Colors.white.withValues(alpha: 0.72)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0;
+      for (final bar in barLines) {
+        final x = _toDouble(bar['x']);
+        final y1 = _toDouble(bar['y1']);
+        final y2 = _toDouble(bar['y2']);
+        if (x == null || y1 == null || y2 == null) continue;
+        canvas.drawLine(Offset(sx(x), sy(y1)), Offset(sx(x), sy(y2)), barPaint);
+      }
+    }
+
+    if (settings.showStems) {
+      final stemPaint = Paint()
+        ..color = Colors.tealAccent.withValues(alpha: 0.60)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.8;
+      for (final stem in stems) {
+        final x = _toDouble(stem['x']);
+        final y1 = _toDouble(stem['y1']);
+        final y2 = _toDouble(stem['y2']);
+        if (x == null || y1 == null || y2 == null) continue;
+        canvas.drawLine(
+          Offset(sx(x), sy(y1)),
+          Offset(sx(x), sy(y2)),
+          stemPaint,
+        );
+      }
+    }
+
+    if (settings.showBeams) {
+      final beamPaint = Paint()
+        ..color = Colors.lightBlueAccent.withValues(alpha: 0.65)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0;
+      for (final beam in beams) {
+        final x1 = _toDouble(beam['x1']);
+        final x2 = _toDouble(beam['x2']);
+        final y = _toDouble(beam['y']);
+        if (x1 == null || x2 == null || y == null) continue;
+        canvas.drawLine(
+          Offset(sx(x1), sy(y)),
+          Offset(sx(x2), sy(y)),
+          beamPaint,
+        );
+      }
+    }
+
+    if (settings.showSymbols) {
+      for (final symbol in symbols) {
+        final isAssigned = assigned.any((item) {
+          return item.className == symbol.className &&
+              (item.centerX - symbol.x).abs() <= 2.0 &&
+              (item.centerY - symbol.y).abs() <= 2.0;
+        });
+
+        final paint = Paint()
+          ..color = _symbolDebugColor(
+            symbol.className,
+            symbolState: symbol.symbolState,
+          ).withValues(alpha: isAssigned ? 0.76 : 0.58)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = symbol.symbolState == SymbolState.inferred
+              ? 1.4
+              : 0.9;
+
+        if (symbol.bbox != null && symbol.bbox!.length >= 4) {
+          final bbox = symbol.bbox!;
+          canvas.drawRect(
+            Rect.fromLTRB(sx(bbox[0]), sy(bbox[1]), sx(bbox[2]), sy(bbox[3])),
+            paint,
+          );
+        } else {
+          canvas.drawCircle(Offset(sx(symbol.x), sy(symbol.y)), 4.0, paint);
+        }
+      }
+    }
+
+    if (settings.showRejected) {
+      final rejectedPaint = Paint()
+        ..color = const Color(0xff8b0000).withValues(alpha: 0.62)
+        ..style = PaintingStyle.fill;
+      final rejectedStroke = Paint()
+        ..color = const Color(0xff8b0000).withValues(alpha: 0.88)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.9;
+
+      for (final rejected in rejectedNoteheads) {
+        final bbox = rejected['bbox'];
+        final x = _toDouble(rejected['centerX'] ?? rejected['x']);
+        final y = _toDouble(rejected['centerY'] ?? rejected['y']);
+        if (bbox is List && bbox.length >= 4) {
+          final x1 = _toDouble(bbox[0]);
+          final y1 = _toDouble(bbox[1]);
+          final x2 = _toDouble(bbox[2]);
+          final y2 = _toDouble(bbox[3]);
+          if (x1 == null || y1 == null || x2 == null || y2 == null) continue;
+          final rect = Rect.fromLTRB(sx(x1), sy(y1), sx(x2), sy(y2));
+          canvas.drawRect(rect, rejectedPaint);
+          canvas.drawRect(rect, rejectedStroke);
+        } else if (x != null && y != null) {
+          canvas.drawCircle(Offset(sx(x), sy(y)), 4.0, rejectedPaint);
+        }
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant SegmentOverlayPainter oldDelegate) {
+    return oldDelegate.settings != settings ||
+        oldDelegate.staffs != staffs ||
+        oldDelegate.symbols != symbols ||
+        oldDelegate.translateGroups != translateGroups ||
+        oldDelegate.ledgerLines != ledgerLines ||
+        oldDelegate.barLines != barLines ||
+        oldDelegate.stems != stems ||
+        oldDelegate.beams != beams ||
+        oldDelegate.semanticRegions != semanticRegions ||
+        oldDelegate.rejectedNoteheads != rejectedNoteheads ||
+        oldDelegate.imageWidth != imageWidth ||
+        oldDelegate.imageHeight != imageHeight;
+  }
+}
+
+Color _symbolDebugColor(
+  String className, {
+  SymbolState symbolState = SymbolState.detected,
+}) {
+  if (symbolState == SymbolState.inferred) {
+    return Colors.limeAccent;
+  }
+  if (symbolState == SymbolState.rejected) {
+    return const Color(0xff8b0000);
+  }
+
+  switch (className.trim().toLowerCase()) {
+    case 'treble_clef':
+      return Colors.lightGreenAccent;
+    case 'bass_clef':
+      return Colors.green.shade800;
+    case 'notehead':
+      return Colors.cyanAccent;
+    case 'sharp':
+      return Colors.orangeAccent;
+    case 'flat':
+      return Colors.yellowAccent;
+    case 'natural':
+      return Colors.purpleAccent;
+    default:
+      return Colors.redAccent;
+  }
+}
+
+double? _toDouble(dynamic value) {
+  if (value == null) return null;
+  if (value is num) return value.toDouble();
+  return double.tryParse(value.toString());
 }
 
 Widget _buildImageOrEmpty({
@@ -1294,15 +2074,19 @@ class _TranslatePanelState extends State<_TranslatePanel> {
         : 'n/a';
 
     final yText = 'y: ${symbol.centerY.toStringAsFixed(1)} px';
+    final stateText = symbol.symbolState.name;
+    final reasonText = symbol.inferredReason == null
+        ? ''
+        : ' -- ${symbol.inferredReason}';
 
     if (symbol.className.trim().toLowerCase() == 'notehead') {
       return '${symbol.className} -- $yText -- $confidenceText -- '
           '${symbol.locationId} -- ${symbol.defaultKeyLabel ?? 'Unresolved'} -- '
-          '${symbol.assignmentStatus}';
+          '${symbol.assignmentStatus} -- $stateText$reasonText';
     }
 
     return '${symbol.className} -- $yText -- $confidenceText -- '
-        '${symbol.locationId} -- ${symbol.assignmentStatus}';
+        '${symbol.locationId} -- ${symbol.assignmentStatus} -- $stateText$reasonText';
   }
 
   String _formatTimingSource(String source) {
@@ -1388,6 +2172,135 @@ class _TranslateBox extends StatelessWidget {
   }
 }
 
+class _ReportPanel extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final Map<String, dynamic> report;
+
+  const _ReportPanel({
+    required this.title,
+    required this.subtitle,
+    required this.report,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final sections = [
+      _ReportSectionData('Staff Report', report['staff']),
+      _ReportSectionData('Symbol Report', report['symbols']),
+      _ReportSectionData('Segment Report', report['segments']),
+      _ReportSectionData('Ledger Report', report['ledger']),
+      _ReportSectionData('Validation Report', report['validation']),
+      _ReportSectionData('Translation Report', report['translation']),
+      _ReportSectionData('Coordinate Lock', report['coordinates']),
+    ];
+
+    return Column(
+      children: [
+        _PanelHeader(title: title, subtitle: subtitle),
+        Expanded(
+          child: report.isEmpty
+              ? const _EmptyPanelMessage(
+                  message: 'No report data available yet.',
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: sections.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final section = sections[index];
+                    return _ReportSection(
+                      title: section.title,
+                      data: section.data,
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ReportSectionData {
+  final String title;
+  final Object? data;
+
+  const _ReportSectionData(this.title, this.data);
+}
+
+class _ReportSection extends StatelessWidget {
+  final String title;
+  final Object? data;
+
+  const _ReportSection({required this.title, required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: AppTextStyles.body.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 10),
+          ..._reportLines(data).map((line) {
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(
+                line,
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+}
+
+List<String> _reportLines(Object? data) {
+  if (data == null) return const ['No data'];
+  if (data is List) {
+    if (data.isEmpty) return const ['No entries'];
+    return data.take(80).map(_formatReportValue).toList(growable: false);
+  }
+  if (data is Map) {
+    if (data.isEmpty) return const ['No entries'];
+    return data.entries
+        .map((entry) {
+          return '${entry.key}: ${_formatReportValue(entry.value)}';
+        })
+        .toList(growable: false);
+  }
+  return [_formatReportValue(data)];
+}
+
+String _formatReportValue(Object? value) {
+  if (value == null) return '-';
+  if (value is num) return value.toStringAsFixed(value is int ? 0 : 2);
+  if (value is List) {
+    return value.map(_formatReportValue).join(', ');
+  }
+  if (value is Map) {
+    return value.entries
+        .map((entry) {
+          return '${entry.key}=${_formatReportValue(entry.value)}';
+        })
+        .join(' | ');
+  }
+  return value.toString();
+}
+
 class _GeneratePanel extends StatefulWidget {
   final String title;
   final String subtitle;
@@ -1401,6 +2314,7 @@ class _GeneratePanel extends StatefulWidget {
   final List<GeneratedTabResult> generatedTabResults;
   final List<GeneratedTabViewItem> generatedTabs;
   final SessionData? session;
+  final bool replaceWithResultPage;
 
   const _GeneratePanel({
     required this.title,
@@ -1415,6 +2329,7 @@ class _GeneratePanel extends StatefulWidget {
     required this.generatedTabResults,
     required this.generatedTabs,
     required this.session,
+    required this.replaceWithResultPage,
   });
 
   @override
@@ -1469,14 +2384,6 @@ class _GeneratePanelState extends State<_GeneratePanel> {
                 subtitle:
                     '${widget.eventManagerResults.length} optimized lines prepared',
                 child: _buildEventManagerContent(),
-              ),
-              const SizedBox(height: 10),
-              _buildGenerateSection(
-                sectionId: 'chord_voicing',
-                title: 'Chord Voicing',
-                subtitle:
-                    '${widget.chordVoicingResults.length} voiced lines prepared',
-                child: _buildChordVoicingContent(),
               ),
               const SizedBox(height: 10),
               _buildGenerateSection(
@@ -1632,7 +2539,7 @@ class _GeneratePanelState extends State<_GeneratePanel> {
                 const SizedBox(height: 12),
 
                 Text(
-                  'H-detr Chord-Aware',
+                  'Grand Staff',
                   style: AppTextStyles.caption.copyWith(
                     color: AppColors.textPrimary,
                     fontWeight: FontWeight.w600,
@@ -1642,7 +2549,7 @@ class _GeneratePanelState extends State<_GeneratePanel> {
                 _buildTextWrap(item.chordAwareStacks),
                 const SizedBox(height: 12),
                 Text(
-                  'M-prio (Strict)',
+                  'Treble Only',
                   style: AppTextStyles.caption.copyWith(
                     color: AppColors.textPrimary,
                     fontWeight: FontWeight.w600,
@@ -1650,18 +2557,6 @@ class _GeneratePanelState extends State<_GeneratePanel> {
                 ),
                 const SizedBox(height: 6),
                 _buildGroupWrap(item.strictMelody.map((p) => [p]).toList()),
-
-                const SizedBox(height: 12),
-
-                Text(
-                  'M-prio (Continuity)',
-                  style: AppTextStyles.caption.copyWith(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                _buildGroupWrap(item.continuityMelody.map((p) => [p]).toList()),
               ],
             ),
           ),
@@ -1781,15 +2676,26 @@ class _GeneratePanelState extends State<_GeneratePanel> {
           onPressed: widget.generatedTabResults.isEmpty || session == null
               ? null
               : () async {
-                  final shouldRefreshHome = await Navigator.push<bool>(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => ResultPage(
-                        session: session,
-                        generatedTabs: widget.generatedTabResults,
-                      ),
-                    ),
+                  if (!widget.replaceWithResultPage) {
+                    Navigator.pop(context, 'openResult');
+                    return;
+                  }
+
+                  ProcessingSessionNavigation.logTransition(
+                    session.id,
+                    debugReused: true,
+                    resultReused: true,
                   );
+                  final shouldRefreshHome =
+                      await Navigator.pushReplacement<bool, bool>(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => ResultPage(
+                            session: session,
+                            generatedTabs: widget.generatedTabResults,
+                          ),
+                        ),
+                      );
 
                   if (!mounted) return;
 
