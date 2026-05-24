@@ -476,7 +476,10 @@ object StaffSegmentationProcessor {
             .sortedWith(
                 compareByDescending<StaffCandidate> { it.matchedLineCount }
                     .thenByDescending { it.confidence }
+                    .thenByDescending { it.projectionStrength }
+                    .thenByDescending { it.continuity }
                     .thenBy { it.lines.first() }
+                    .thenBy { it.spacing }
             )
             .fold(mutableListOf<StaffCandidate>()) { kept, candidate ->
                 val overlaps = kept.any { existing ->
@@ -489,7 +492,11 @@ object StaffSegmentationProcessor {
                 if (!overlaps) kept.add(candidate)
                 kept
             }
-            .sortedBy { it.lines.first() }
+            .sortedWith(
+                compareBy<StaffCandidate> { it.lines.first() }
+                    .thenBy { it.spacing }
+                    .thenByDescending { it.confidence }
+            )
             .mapIndexed { index, candidate ->
                 mapOf(
                     "id" to "staff_$index",
@@ -891,7 +898,7 @@ object StaffSegmentationProcessor {
 
                 if (nearestVirtualLineY == null) continue
 
-                if (kotlin.math.abs(y.toDouble() - nearestVirtualLineY) > spacing * 0.25) {
+                if (kotlin.math.abs(y.toDouble() - nearestVirtualLineY) > spacing * 0.30) {
                     continue
                 }
 
@@ -900,9 +907,17 @@ object StaffSegmentationProcessor {
                     val x1 = segment.first
                     val x2 = segment.second
                     val width = x2 - x1
+                    val continuitySupport = ledgerContinuitySupport(
+                        existingLedgers = ledgerLines,
+                        staffId = staffId,
+                        x1 = x1,
+                        x2 = x2,
+                        y = y.toDouble(),
+                        spacing = spacing
+                    )
 
-                    val minWidth = spacing * 1.65
-                    val maxWidth = spacing * 3.65
+                    val minWidth = spacing * (if (continuitySupport > 0.0) 1.52 else 1.65)
+                    val maxWidth = spacing * (if (continuitySupport > 0.0) 3.82 else 3.65)
 
                     if (width < minWidth) {
                         reject("too short")
@@ -986,10 +1001,12 @@ object StaffSegmentationProcessor {
                     val score = 0.34 +
                         (if (supportingNotehead != null) 0.34 else 0.0) +
                         (if (supportingStem != null) 0.18 else 0.0) +
+                        continuitySupport +
                         (if (fragmentCount == 0) 0.08 else -0.08) -
                         virtualLinePenalty
 
-                    if (score < 0.56) {
+                    val requiredScore = if (continuitySupport > 0.0) 0.52 else 0.56
+                    if (score < requiredScore) {
                         reject("isolated")
                         continue
                     }
@@ -1007,6 +1024,8 @@ object StaffSegmentationProcessor {
                         "confidence" to score.coerceIn(0.0, 1.0),
                         "validationReason" to if (supportingNotehead == null) {
                             "ledger validated with stem-supported inferred note structure"
+                        } else if (continuitySupport > 0.0) {
+                            "ledger validated with nearby notehead and ledger continuity"
                         } else {
                             "ledger validated with nearby notehead"
                         }
@@ -1036,6 +1055,36 @@ object StaffSegmentationProcessor {
             validatedLedgers = deduped,
             report = report
         )
+    }
+
+    private fun ledgerContinuitySupport(
+        existingLedgers: List<Map<String, Any>>,
+        staffId: String,
+        x1: Int,
+        x2: Int,
+        y: Double,
+        spacing: Double
+    ): Double {
+        if (existingLedgers.isEmpty() || spacing <= 0.0) return 0.0
+
+        val centerX = (x1 + x2) / 2.0
+        val width = (x2 - x1).coerceAtLeast(1)
+        val hasNeighbor = existingLedgers.any { ledger ->
+            if (ledger["staffId"].toString() != staffId) return@any false
+            val otherX1 = ledger["x1"] as? Int ?: return@any false
+            val otherX2 = ledger["x2"] as? Int ?: return@any false
+            val otherY = ledger["y"] as? Double ?: return@any false
+            val otherCenterX = (otherX1 + otherX2) / 2.0
+            val xAligned = abs(otherCenterX - centerX) <= spacing * 1.45
+            val widthSimilar = abs((otherX2 - otherX1) - width) <= spacing * 1.25
+            val dy = abs(otherY - y)
+            val yStepAligned = (1..3).any { step ->
+                abs(dy - spacing * step) <= spacing * 0.34
+            }
+            xAligned && widthSimilar && yStepAligned
+        }
+
+        return if (hasNeighbor) 0.05 else 0.0
     }
 
     private fun findHorizontalSegmentsAtRow(
