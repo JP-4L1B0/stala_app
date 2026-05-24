@@ -1,3 +1,0 @@
-D:/MyApps/AndroidStudio_Folder/stala_app/opencv/.cxx/Debug/2p2q1825/x86/CMakeFiles/opencv_jni_shared.dir
-D:/MyApps/AndroidStudio_Folder/stala_app/opencv/.cxx/Debug/2p2q1825/x86/CMakeFiles/edit_cache.dir
-D:/MyApps/AndroidStudio_Folder/stala_app/opencv/.cxx/Debug/2p2q1825/x86/CMakeFiles/rebuild_cache.dir

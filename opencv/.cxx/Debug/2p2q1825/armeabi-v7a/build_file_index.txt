@@ -1,1 +1,0 @@
-D:\MyApps\AndroidStudio_Folder\stala_app\opencv\libcxx_helper\CMakeLists.txt
