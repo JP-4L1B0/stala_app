@@ -18,6 +18,7 @@ class BarlineRefinementService {
     required List<dynamic> rawMeasures,
     required List<dynamic> rawValidatedStaffs,
     required List<SymbolClassItem> classItems,
+    List<dynamic> rawStems = const [],
   }) {
     final barLines = _normalizeMaps(rawBarLines);
     if (barLines.isEmpty) {
@@ -28,6 +29,8 @@ class BarlineRefinementService {
     }
 
     final staffOrder = _staffOrder(rawValidatedStaffs);
+    final staffs = _normalizeMaps(rawValidatedStaffs);
+    final stems = _normalizeMaps(rawStems);
     final noteheads = classItems
         .where((item) => item.className.trim().toLowerCase() == 'notehead')
         .toList();
@@ -41,14 +44,33 @@ class BarlineRefinementService {
         staffOrder: staffOrder,
       );
 
+      final spansGrandStaff = _spansGrandStaff(
+        barLine: barLine,
+        staffs: staffs,
+        staffOrder: staffOrder,
+      );
+
       final attachedToNotehead = _hasAttachedNotehead(
         barLine: barLine,
         noteheads: noteheads,
       );
 
-      if (alignedAcrossGrandStaff || !attachedToNotehead) {
-        kept.add(barLine);
+      final overlapsStem = _overlapsStem(barLine: barLine, stems: stems);
+      if (staffOrder.length < 2) {
+        if (!attachedToNotehead && !overlapsStem) kept.add(barLine);
+        continue;
       }
+
+      final singleStaffOnly = _existsOnlyInsideSingleStaff(
+        barLine: barLine,
+        staffs: staffs,
+      );
+
+      if (!spansGrandStaff && !alignedAcrossGrandStaff) continue;
+      if (attachedToNotehead || overlapsStem) continue;
+      if (!alignedAcrossGrandStaff && singleStaffOnly) continue;
+
+      kept.add(barLine);
     }
 
     return BarlineRefinementResult(
@@ -78,10 +100,93 @@ class BarlineRefinementService {
         other['staffId']?.toString() ?? '',
       );
       final otherX = _toDouble(other['x']);
+      final otherY1 = _toDouble(other['y1']);
+      final otherY2 = _toDouble(other['y2']);
       if (otherStaffIndex < 0 || otherX == null) return false;
 
       return (otherStaffIndex - staffIndex).abs() == 1 &&
-          (otherX - x).abs() <= 8.0;
+          (otherX - x).abs() <= 8.0 &&
+          otherY1 != null &&
+          otherY2 != null &&
+          otherY2 > otherY1;
+    });
+  }
+
+  bool _spansGrandStaff({
+    required Map<String, dynamic> barLine,
+    required List<Map<String, dynamic>> staffs,
+    required List<String> staffOrder,
+  }) {
+    if (staffOrder.length < 2) return true;
+
+    final staffId = barLine['staffId']?.toString();
+    final index = staffOrder.indexOf(staffId ?? '');
+    if (index < 0) return false;
+
+    final pairedIndex = index.isEven ? index + 1 : index - 1;
+    if (pairedIndex < 0 || pairedIndex >= staffOrder.length) return false;
+
+    final first = _staffById(staffs, staffOrder[index]);
+    final second = _staffById(staffs, staffOrder[pairedIndex]);
+    final y1 = _toDouble(barLine['y1']);
+    final y2 = _toDouble(barLine['y2']);
+    if (first == null || second == null || y1 == null || y2 == null) {
+      return false;
+    }
+
+    final firstTop = _toDouble(first['topBoundary']) ?? _staffTop(first);
+    final secondTop = _toDouble(second['topBoundary']) ?? _staffTop(second);
+    final firstBottom =
+        _toDouble(first['bottomBoundary']) ?? _staffBottom(first);
+    final secondBottom =
+        _toDouble(second['bottomBoundary']) ?? _staffBottom(second);
+    if (firstTop == null ||
+        secondTop == null ||
+        firstBottom == null ||
+        secondBottom == null) {
+      return false;
+    }
+
+    final top = firstTop < secondTop ? firstTop : secondTop;
+    final bottom = firstBottom > secondBottom ? firstBottom : secondBottom;
+
+    return y1 <= top + 10.0 && y2 >= bottom - 10.0;
+  }
+
+  bool _existsOnlyInsideSingleStaff({
+    required Map<String, dynamic> barLine,
+    required List<Map<String, dynamic>> staffs,
+  }) {
+    final y1 = _toDouble(barLine['y1']);
+    final y2 = _toDouble(barLine['y2']);
+    if (y1 == null || y2 == null) return true;
+
+    var crossingCount = 0;
+    for (final staff in staffs) {
+      final top = _toDouble(staff['topBoundary']) ?? _staffTop(staff);
+      final bottom = _toDouble(staff['bottomBoundary']) ?? _staffBottom(staff);
+      if (top == null || bottom == null) continue;
+      if (y2 >= top && y1 <= bottom) crossingCount++;
+    }
+
+    return crossingCount <= 1;
+  }
+
+  bool _overlapsStem({
+    required Map<String, dynamic> barLine,
+    required List<Map<String, dynamic>> stems,
+  }) {
+    final x = _toDouble(barLine['x']);
+    final y1 = _toDouble(barLine['y1']);
+    final y2 = _toDouble(barLine['y2']);
+    if (x == null || y1 == null || y2 == null) return false;
+
+    return stems.any((stem) {
+      final stemX = _toDouble(stem['x']);
+      final stemY1 = _toDouble(stem['y1']);
+      final stemY2 = _toDouble(stem['y2']);
+      if (stemX == null || stemY1 == null || stemY2 == null) return false;
+      return (stemX - x).abs() <= 4.0 && stemY2 >= y1 - 8 && stemY1 <= y2 + 8;
     });
   }
 
@@ -172,6 +277,28 @@ class BarlineRefinementService {
         .map((staff) => staff['id']?.toString() ?? '')
         .where((id) => id.isNotEmpty)
         .toList();
+  }
+
+  Map<String, dynamic>? _staffById(
+    List<Map<String, dynamic>> staffs,
+    String staffId,
+  ) {
+    for (final staff in staffs) {
+      if (staff['id']?.toString() == staffId) return staff;
+    }
+    return null;
+  }
+
+  double? _staffTop(Map<String, dynamic> staff) {
+    final lines = (staff['lines'] as List?) ?? const [];
+    if (lines.isEmpty) return null;
+    return _toDouble(lines.first);
+  }
+
+  double? _staffBottom(Map<String, dynamic> staff) {
+    final lines = (staff['lines'] as List?) ?? const [];
+    if (lines.isEmpty) return null;
+    return _toDouble(lines.last);
   }
 
   double _imageRight(
