@@ -12,55 +12,6 @@ STALA implements a complete end-to-end processing pipeline that captures or impo
 
 ---
 
-# Table of Contents
-
-- [Overview](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#overview)
-  
-- [Research Context](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#research-context)
-  
-- [Features](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#features)
-  
-- [System Workflow](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#system-workflow)
-  
-- [Technologies Used](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#technologies-used)
-  
-- [Repository Structure](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#repository-structure)
-  
-- [AI Model Information](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#ai-model-information)
-  
-- [Prerequisites](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#prerequisites)
-  
-- [Development Environment Setup](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#development-environment-setup)
-  
-- [Cloning the Repository](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#cloning-the-repository)
-  
-- [Opening the Project](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#opening-the-project)
-  
-- [Installing Dependencies](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#installing-dependencies)
-  
-- [Running the Application](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#running-the-application)
-  
-- [Building the Application](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#building-the-application)
-  
-- [Repository Reproducibility](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#repository-reproducibility)
-  
-- [Updating the Project](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#updating-the-project)
-  
-- [Troubleshooting](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#troubleshooting)
-  
-- [Documentation](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#documentation)
-  
-- [Researchers](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#researchers)
-  
-- [Adviser](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#adviser)
-  
-- [Citation](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#citation)
-  
-- [License](https://chatgpt.com/g/g-p-69de58d499888191b680e9949caab459-thesis/c/6a33f461-8c24-83ec-b5cc-8e2d3c4221a0#license)
-  
-
----
-
 # Research Context
 
 This study falls under the fields of:
