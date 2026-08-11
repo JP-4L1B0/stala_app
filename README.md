@@ -236,9 +236,13 @@ Users may:
 
 ## Artificial Intelligence
 
+- Python
+  
 - ONNX Runtime
   
 - Faster R-CNN
+  
+- OpenCV
   
 - Computer Vision
   
